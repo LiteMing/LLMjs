@@ -1,0 +1,29 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+
+[[mods]]
+modId="llmjs"
+version="1.0.0"
+displayName="LLMjs"
+description='''
+A KubeJS addon that provides LLM (Large Language Model) integration with OpenAI-compatible APIs.
+Allows KubeJS scripts to interact with various LLM services.
+'''
+logoFile="logo.png"
+credits="Created for KubeJS community"
+authors="LittleMing"
+
+[[dependencies.llmjs]]
+modId="forge"
+mandatory=true
+versionRange="[47.2.0,)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.llmjs]]
+modId="kubejs"
+mandatory=true
+versionRange="[2001.6.0,)"
+ordering="AFTER"
+side="BOTH"

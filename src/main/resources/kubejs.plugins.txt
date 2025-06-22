@@ -1,0 +1,1 @@
+com.liteming.llmjs.kubejs.LLMjsPlugin
