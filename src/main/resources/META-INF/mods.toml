@@ -4,7 +4,7 @@ license="MIT"
 
 [[mods]]
 modId="llmjs"
-version="1.0.0"
+version="1.1.0"
 displayName="LLMjs"
 description='''
 A KubeJS addon that provides LLM (Large Language Model) integration with OpenAI-compatible APIs.

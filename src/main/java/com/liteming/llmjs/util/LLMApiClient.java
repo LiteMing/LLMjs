@@ -21,16 +21,16 @@ public class LLMApiClient {
     private static final HttpClient client = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build();
-
+    
     public static class Message {
         public String role;
         public String content;
-
+        
         public Message(String role, String content) {
             this.role = role;
             this.content = content;
         }
-
+        
         public JsonObject toJson() {
             JsonObject obj = new JsonObject();
             obj.addProperty("role", role);
@@ -38,49 +38,49 @@ public class LLMApiClient {
             return obj;
         }
     }
-
+    
     public static class ChatRequest {
         public String model;
         public List<Message> messages;
         public Double temperature;
         public Integer maxTokens;
-
+        
         public ChatRequest(String model, List<Message> messages) {
             this.model = model;
             this.messages = messages;
         }
-
+        
         public ChatRequest temperature(double temp) {
             this.temperature = temp;
             return this;
         }
-
+        
         public ChatRequest maxTokens(int tokens) {
             this.maxTokens = tokens;
             return this;
         }
-
+        
         public JsonObject toJson() {
             JsonObject obj = new JsonObject();
             obj.addProperty("model", model);
-
+            
             JsonArray messagesArray = new JsonArray();
             for (Message msg : messages) {
                 messagesArray.add(msg.toJson());
             }
             obj.add("messages", messagesArray);
-
+            
             if (temperature != null) {
                 obj.addProperty("temperature", temperature);
             }
             if (maxTokens != null) {
                 obj.addProperty("max_tokens", maxTokens);
             }
-
+            
             return obj;
         }
     }
-
+    
     public static class ChatResponse {
         public boolean success;
         public String content;
@@ -89,11 +89,11 @@ public class LLMApiClient {
         public int promptTokens;
         public int completionTokens;
         public int totalTokens;
-
+        
         public ChatResponse(boolean success) {
             this.success = success;
         }
-
+        
         public static ChatResponse success(String content, String model, int promptTokens, int completionTokens) {
             ChatResponse response = new ChatResponse(true);
             response.content = content;
@@ -103,13 +103,13 @@ public class LLMApiClient {
             response.totalTokens = promptTokens + completionTokens;
             return response;
         }
-
+        
         public static ChatResponse error(String error) {
             ChatResponse response = new ChatResponse(false);
             response.error = error;
             return response;
         }
-
+        
         public JsonObject toJson() {
             JsonObject obj = new JsonObject();
             obj.addProperty("success", success);
@@ -125,59 +125,74 @@ public class LLMApiClient {
             return obj;
         }
     }
-
+    
     public static CompletableFuture<ChatResponse> chatAsync(@NotNull ChatRequest request) {
+        return chatAsync(request, null);
+    }
+    
+    public static CompletableFuture<ChatResponse> chatAsync(@NotNull ChatRequest request, @Nullable ProviderConfig provider) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                return chat(request);
+                return chat(request, provider);
             } catch (Exception e) {
                 LLMjs.LOGGER.error("Async chat request failed", e);
                 return ChatResponse.error("Async request failed: " + e.getMessage());
             }
         });
     }
-
+    
     public static ChatResponse chat(@NotNull ChatRequest request) {
+        return chat(request, null);
+    }
+    
+    public static ChatResponse chat(@NotNull ChatRequest request, @Nullable ProviderConfig provider) {
         try {
-            String url = LLMConfig.API_URL.get();
-            String apiKey = LLMConfig.API_KEY.get();
-
+            // 使用指定的provider或默认配置
+            String url, apiKey;
+            if (provider != null) {
+                url = provider.url;
+                apiKey = provider.key;
+            } else {
+                url = LLMConfig.DEFAULT_API_URL.get();
+                apiKey = LLMConfig.DEFAULT_API_KEY.get();
+            }
+            
             if (apiKey.equals("your-api-key-here") || apiKey.isEmpty()) {
                 return ChatResponse.error("API key not configured");
             }
-
+            
             HttpRequest httpRequest = HttpRequest.newBuilder()
                     .uri(URI.create(url))
-                    .timeout(Duration.ofSeconds(LLMConfig.TIMEOUT.get()))
+                    .timeout(Duration.ofSeconds(LLMConfig.DEFAULT_TIMEOUT.get()))
                     .header("Content-Type", "application/json")
                     .header("Authorization", "Bearer " + apiKey)
                     .POST(HttpRequest.BodyPublishers.ofString(request.toJson().toString()))
                     .build();
-
+            
             HttpResponse<String> response = client.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-
+            
             if (response.statusCode() != 200) {
                 return ChatResponse.error("HTTP " + response.statusCode() + ": " + response.body());
             }
-
+            
             JsonObject responseJson = JsonParser.parseString(response.body()).getAsJsonObject();
-
+            
             if (responseJson.has("error")) {
                 JsonObject error = responseJson.getAsJsonObject("error");
                 return ChatResponse.error(error.get("message").getAsString());
             }
-
+            
             JsonArray choices = responseJson.getAsJsonArray("choices");
             if (choices.size() == 0) {
                 return ChatResponse.error("No choices in response");
             }
-
+            
             JsonObject firstChoice = choices.get(0).getAsJsonObject();
             JsonObject message = firstChoice.getAsJsonObject("message");
             String content = message.get("content").getAsString();
-
+            
             String model = responseJson.get("model").getAsString();
-
+            
             int promptTokens = 0;
             int completionTokens = 0;
             if (responseJson.has("usage")) {
@@ -185,9 +200,9 @@ public class LLMApiClient {
                 promptTokens = usage.get("prompt_tokens").getAsInt();
                 completionTokens = usage.get("completion_tokens").getAsInt();
             }
-
+            
             return ChatResponse.success(content, model, promptTokens, completionTokens);
-
+            
         } catch (IOException | InterruptedException e) {
             LLMjs.LOGGER.error("Failed to send chat request", e);
             return ChatResponse.error("Request failed: " + e.getMessage());
@@ -196,26 +211,30 @@ public class LLMApiClient {
             return ChatResponse.error("Unexpected error: " + e.getMessage());
         }
     }
-
+    
     public static String simpleChat(@NotNull String prompt) {
-        return simpleChat(prompt, null);
+        return simpleChat(prompt, null, null);
     }
-
+    
     public static String simpleChat(@NotNull String prompt, @Nullable String systemPrompt) {
-        String model = LLMConfig.MODEL.get();
-
+        return simpleChat(prompt, systemPrompt, null);
+    }
+    
+    public static String simpleChat(@NotNull String prompt, @Nullable String systemPrompt, @Nullable ProviderConfig provider) {
+        String model = provider != null ? provider.model : LLMConfig.DEFAULT_MODEL.get();
+        
         java.util.List<Message> messages = new java.util.ArrayList<>();
         if (systemPrompt != null && !systemPrompt.isEmpty()) {
             messages.add(new Message("system", systemPrompt));
         }
         messages.add(new Message("user", prompt));
-
+        
         ChatRequest request = new ChatRequest(model, messages)
-                .temperature(LLMConfig.TEMPERATURE.get())
-                .maxTokens(LLMConfig.MAX_TOKENS.get());
-
-        ChatResponse response = chat(request);
-
+                .temperature(LLMConfig.DEFAULT_TEMPERATURE.get())
+                .maxTokens(LLMConfig.DEFAULT_MAX_TOKENS.get());
+        
+        ChatResponse response = chat(request, provider);
+        
         if (response.success) {
             return response.content;
         } else {
