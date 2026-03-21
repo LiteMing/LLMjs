@@ -22,7 +22,7 @@ public class S2CLogPacket {
 
     public static void handle(S2CLogPacket msg, Supplier<NetworkEvent.Context> ctx) {
         ctx.get().enqueueWork(() -> {
-            // Client-side handler - will be connected to UI in Task 12
+            com.liteming.llmjs.client.ClientEventHandler.handleLogEntry(msg.logEntryJson);
         });
         ctx.get().setPacketHandled(true);
     }

@@ -25,7 +25,11 @@ public class S2CStatusResponsePacket {
 
     public static void handle(S2CStatusResponsePacket msg, Supplier<NetworkEvent.Context> ctx) {
         ctx.get().enqueueWork(() -> {
-            // Client-side handler - will be connected to UI in Task 12
+            if (msg.openConsole) {
+                com.liteming.llmjs.client.ClientEventHandler.openConsole(msg.statusJson);
+            } else {
+                com.liteming.llmjs.client.ClientEventHandler.updateStatus(msg.statusJson);
+            }
         });
         ctx.get().setPacketHandled(true);
     }

@@ -40,7 +40,8 @@ public class S2CChatResponsePacket {
 
     public static void handle(S2CChatResponsePacket msg, Supplier<NetworkEvent.Context> ctx) {
         ctx.get().enqueueWork(() -> {
-            // Client-side handler - will be connected to UI in Task 12
+            com.liteming.llmjs.client.ClientEventHandler.handleChatResponse(
+                    msg.requestId, msg.success, msg.content, msg.error);
         });
         ctx.get().setPacketHandled(true);
     }
