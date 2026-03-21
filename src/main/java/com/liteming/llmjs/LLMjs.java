@@ -1,6 +1,7 @@
 package com.liteming.llmjs;
 
 import com.liteming.llmjs.command.LLMCommand;
+import com.liteming.llmjs.config.GlobalConfig;
 import com.liteming.llmjs.config.LLMConfig;
 import com.liteming.llmjs.log.LLMLogger;
 import com.liteming.llmjs.network.LLMNetwork;
@@ -30,9 +31,10 @@ public class LLMjs {
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) {
         var server = event.getServer();
-        var configDir = server.getServerDirectory().toPath().resolve("serverconfig");
         var gameRoot = server.getServerDirectory().toPath();
-        ProviderManager.INSTANCE.init(configDir, gameRoot);
+        var serverConfigDir = gameRoot.resolve("serverconfig");
+        GlobalConfig.init(gameRoot);
+        ProviderManager.INSTANCE.init(serverConfigDir, gameRoot);
         LLMLogger.INSTANCE.resize(LLMConfig.LOG_BUFFER_SIZE.get());
         // Wire logger to push log entries to connected clients
         LLMLogger.INSTANCE.addListener(entry -> {

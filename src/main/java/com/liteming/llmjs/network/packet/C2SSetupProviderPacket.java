@@ -49,7 +49,15 @@ public class C2SSetupProviderPacket {
             if (player == null) return;
             if (!player.hasPermissions(2)) return;
 
-            boolean ok = ProviderLoader.setup(msg.name, msg.url, msg.model, msg.key, msg.format);
+            // __KEEP__ means don't change the key (edit mode)
+            String effectiveKey = "__KEEP__".equals(msg.key) ? null : msg.key;
+            boolean ok;
+            if (effectiveKey == null) {
+                // Update only non-key fields
+                ok = ProviderLoader.updateWithoutKey(msg.name, msg.url, msg.model, msg.format);
+            } else {
+                ok = ProviderLoader.setup(msg.name, msg.url, msg.model, effectiveKey, msg.format);
+            }
             if (ok) {
                 ProviderManager.INSTANCE.reload();
                 String statusJson = ProviderManager.INSTANCE.getStatusJson().toString();

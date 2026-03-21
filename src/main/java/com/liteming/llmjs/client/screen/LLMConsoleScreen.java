@@ -51,15 +51,20 @@ public class LLMConsoleScreen extends Screen {
         int panelW = width - 20;
         int panelX = 10;
 
+        // LogPanel and ProviderListPanel are AbstractWidgets (no EditBox, just render+scroll)
         logPanel = new LogPanel(panelX, panelY, panelW, panelH);
         providerPanel = new ProviderListPanel(panelX, panelY, panelW, panelH, initialStatusJson);
-        testPanel = new TestPanel(panelX, panelY, panelW, panelH, font);
-        setupPanel = new SetupPanel(panelX, panelY, panelW, panelH, font);
-
         addRenderableWidget(logPanel);
         addRenderableWidget(providerPanel);
-        addRenderableWidget(testPanel);
-        addRenderableWidget(setupPanel);
+
+        // TestPanel and SetupPanel are plain objects - register their child widgets directly
+        testPanel = new TestPanel(panelX, panelY, panelW, panelH, font);
+        setupPanel = new SetupPanel(panelX, panelY, panelW, panelH, font);
+        for (var w : testPanel.getWidgets()) addRenderableWidget(w);
+        for (var w : setupPanel.getWidgets()) addRenderableWidget(w);
+
+        // Sync initial provider names for tab-complete
+        testPanel.updateProviderNames(providerPanel.getProviderNames());
 
         switchTab(Tab.LOG);
     }
@@ -68,8 +73,8 @@ public class LLMConsoleScreen extends Screen {
         activeTab = tab;
         logPanel.visible = (tab == Tab.LOG);
         providerPanel.visible = (tab == Tab.PROVIDERS);
-        testPanel.visible = (tab == Tab.TEST);
-        setupPanel.visible = (tab == Tab.SETUP);
+        testPanel.setVisible(tab == Tab.TEST);
+        setupPanel.setVisible(tab == Tab.SETUP);
     }
 
     @Override
@@ -77,11 +82,24 @@ public class LLMConsoleScreen extends Screen {
         renderBackground(graphics);
         graphics.drawCenteredString(font, title, width / 2, 2, 0xFFFFFF);
         super.render(graphics, mouseX, mouseY, partialTick);
+
+        // Render panel backgrounds and labels (non-widget parts)
+        testPanel.render(graphics, mouseX, mouseY, partialTick);
+        setupPanel.render(graphics, mouseX, mouseY, partialTick);
     }
 
     @Override
     public boolean isPauseScreen() {
         return false;
+    }
+
+    @Override
+    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+        // Forward Tab to TestPanel for provider cycling
+        if (keyCode == 258 && activeTab == Tab.TEST && testPanel != null) {
+            if (testPanel.handleTabComplete(keyCode)) return true;
+        }
+        return super.keyPressed(keyCode, scanCode, modifiers);
     }
 
     @Override
@@ -95,18 +113,21 @@ public class LLMConsoleScreen extends Screen {
     }
 
     public void onStatusUpdate(String statusJson) {
-        if (providerPanel != null) providerPanel.updateStatus(statusJson);
+        if (providerPanel != null) {
+            providerPanel.updateStatus(statusJson);
+            // Sync provider names to TestPanel for tab-complete
+            if (testPanel != null) {
+                testPanel.updateProviderNames(providerPanel.getProviderNames());
+            }
+        }
     }
 
     public void onLogEntry(String logEntryJson) {
         if (logPanel != null) logPanel.addEntry(logEntryJson);
     }
 
-    /**
-     * Switch to Setup tab and pre-fill for an existing provider.
-     */
-    public void openSetupFor(String name, String format, String url, String model) {
+    public void openSetupFor(String name, String format, String url, String model, @Nullable String maskedKey) {
         switchTab(Tab.SETUP);
-        if (setupPanel != null) setupPanel.prefill(name, format, url, model);
+        if (setupPanel != null) setupPanel.prefill(name, format, url, model, maskedKey);
     }
 }

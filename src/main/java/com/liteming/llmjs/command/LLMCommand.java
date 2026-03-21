@@ -7,11 +7,19 @@ import com.liteming.llmjs.network.packet.S2CStatusResponsePacket;
 import com.liteming.llmjs.provider.ProviderManager;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
+import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.suggestion.Suggestions;
+import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.network.PacketDistributor;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 public class LLMCommand {
 
@@ -23,6 +31,7 @@ public class LLMCommand {
                         .executes(ctx -> showStatus(ctx.getSource())))
                 .then(Commands.literal("test")
                         .then(Commands.argument("provider", StringArgumentType.string())
+                                .suggests(LLMCommand::suggestProvidersWithStar)
                                 .executes(ctx -> testProvider(ctx.getSource(),
                                         StringArgumentType.getString(ctx, "provider")))))
                 .then(Commands.literal("reload")
@@ -31,6 +40,7 @@ public class LLMCommand {
                 .then(Commands.literal("setkey")
                         .requires(src -> src.hasPermission(2))
                         .then(Commands.argument("provider", StringArgumentType.string())
+                                .suggests(LLMCommand::suggestProviders)
                                 .then(Commands.argument("key", StringArgumentType.greedyString())
                                         .executes(ctx -> setKey(ctx.getSource(),
                                                 StringArgumentType.getString(ctx, "provider"),
@@ -105,5 +115,17 @@ public class LLMCommand {
             source.sendFailure(Component.literal("[LLMjs] Failed to write key. Check server logs."));
             return 0;
         }
+    }
+
+    private static CompletableFuture<Suggestions> suggestProviders(
+            CommandContext<CommandSourceStack> ctx, SuggestionsBuilder builder) {
+        return SharedSuggestionProvider.suggest(ProviderManager.INSTANCE.getProviderNames(), builder);
+    }
+
+    private static CompletableFuture<Suggestions> suggestProvidersWithStar(
+            CommandContext<CommandSourceStack> ctx, SuggestionsBuilder builder) {
+        List<String> names = new ArrayList<>(ProviderManager.INSTANCE.getProviderNames());
+        names.add(0, "*");
+        return SharedSuggestionProvider.suggest(names, builder);
     }
 }

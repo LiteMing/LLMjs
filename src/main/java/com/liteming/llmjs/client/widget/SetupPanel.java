@@ -5,17 +5,18 @@ import com.liteming.llmjs.network.packet.C2SSetupProviderPacket;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
-import net.minecraft.client.gui.narration.NarrationElementOutput;
 import net.minecraft.network.chat.Component;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.List;
+
 @OnlyIn(Dist.CLIENT)
-public class SetupPanel extends AbstractWidget {
+public class SetupPanel {
+    private final int x, y, width, height;
     private final EditBox nameInput;
     private final EditBox formatInput;
     private final EditBox urlInput;
@@ -24,12 +25,16 @@ public class SetupPanel extends AbstractWidget {
     private final Button saveButton;
     private @Nullable String statusMessage;
     private int statusColor = 0xFFFFFF;
+    private boolean visible = true;
 
     private static final int LABEL_W = 60;
     private static final int ROW_H = 24;
 
     public SetupPanel(int x, int y, int width, int height, Font font) {
-        super(x, y, width, height, Component.literal("Setup"));
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.height = height;
 
         int inputX = x + LABEL_W + 8;
         int inputW = Math.min(width - LABEL_W - 20, 300);
@@ -64,17 +69,41 @@ public class SetupPanel extends AbstractWidget {
                 .pos(inputX, row).size(160, 20).build();
     }
 
-    /**
-     * Pre-fill the form for setting key on an existing provider.
-     */
-    public void prefill(String name, String format, String url, String model) {
+    /** Return all interactive widgets for the Screen to register. */
+    public List<net.minecraft.client.gui.components.AbstractWidget> getWidgets() {
+        return List.of(nameInput, formatInput, urlInput, modelInput, keyInput, saveButton);
+    }
+
+    public void setVisible(boolean v) {
+        this.visible = v;
+        nameInput.visible = v;
+        formatInput.visible = v;
+        urlInput.visible = v;
+        modelInput.visible = v;
+        keyInput.visible = v;
+        saveButton.visible = v;
+    }
+
+    public boolean isVisible() { return visible; }
+
+    /** Whether we are editing an existing provider (key optional). */
+    private boolean editMode = false;
+
+    public void prefill(String name, String format, String url, String model, @Nullable String maskedKey) {
+        editMode = true;
         nameInput.setValue(name);
         if (format != null && !format.isEmpty() && !"-".equals(format)) formatInput.setValue(format);
         if (url != null && !url.isEmpty()) urlInput.setValue(url);
         if (model != null && !model.isEmpty()) modelInput.setValue(model);
         keyInput.setValue("");
-        statusMessage = "Fill in your API key for '" + name + "'";
-        statusColor = 0xFFFF55;
+        if (maskedKey != null && !maskedKey.equals("***")) {
+            statusMessage = "Current key: " + maskedKey + " | Enter new key to change, or leave empty to keep";
+            statusColor = 0x55FF55;
+        } else {
+            statusMessage = "Fill in your API key for '" + name + "'";
+            statusColor = 0xFFFF55;
+            editMode = false;
+        }
     }
 
     private void save() {
@@ -94,92 +123,54 @@ public class SetupPanel extends AbstractWidget {
             statusColor = 0xFF5555;
             return;
         }
-        if (key.isEmpty()) {
+        if (key.isEmpty() && !editMode) {
             statusMessage = "API Key is required";
             statusColor = 0xFF5555;
             return;
         }
 
-        LLMNetwork.CHANNEL.sendToServer(new C2SSetupProviderPacket(name, url, model, key, format));
+        // In edit mode with empty key, send special marker to keep existing key
+        String sendKey = key.isEmpty() ? "__KEEP__" : key;
+
+        LLMNetwork.CHANNEL.sendToServer(new C2SSetupProviderPacket(name, url, model, sendKey, format));
         statusMessage = "Saved! Provider '" + name + "' sent to server.";
         statusColor = 0x55FF55;
         keyInput.setValue("");
+        editMode = false;
     }
 
-    @Override
-    protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+    public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
+        if (!visible) return;
         var font = Minecraft.getInstance().font;
-        graphics.fill(getX(), getY(), getX() + width, getY() + height, 0x80000000);
+        graphics.fill(x, y, x + width, y + height, 0x80000000);
 
-        int labelX = getX() + 4;
-        int row = getY() + 9;
+        int labelX = x + 4;
+        int row = y + 9;
 
         graphics.drawString(font, "Name:", labelX, row, 0xFFFFFF, false);
-        nameInput.render(graphics, mouseX, mouseY, partialTick);
         row += ROW_H;
 
         graphics.drawString(font, "Format:", labelX, row, 0xFFFFFF, false);
-        formatInput.render(graphics, mouseX, mouseY, partialTick);
-        graphics.drawString(font, "(openai/claude/gemini)", getX() + LABEL_W + 318, row, 0x666666, false);
+        graphics.drawString(font, "(openai/claude/gemini)", x + LABEL_W + 318, row, 0x666666, false);
         row += ROW_H;
 
         graphics.drawString(font, "URL:", labelX, row, 0xFFFFFF, false);
-        urlInput.render(graphics, mouseX, mouseY, partialTick);
         row += ROW_H;
 
         graphics.drawString(font, "Model:", labelX, row, 0xFFFFFF, false);
-        modelInput.render(graphics, mouseX, mouseY, partialTick);
         row += ROW_H;
 
         graphics.drawString(font, "API Key:", labelX, row, 0xFFFFFF, false);
-        keyInput.render(graphics, mouseX, mouseY, partialTick);
         row += ROW_H + 4;
 
-        saveButton.render(graphics, mouseX, mouseY, partialTick);
+        // saveButton renders itself via Screen
 
         if (statusMessage != null) {
             graphics.drawString(font, statusMessage, labelX, row + 28, statusColor, false);
         }
 
-        // Help text at bottom
-        int helpY = getY() + height - 28;
+        int helpY = y + height - 28;
         graphics.drawString(font, "This creates a provider entry in llmjs.secret (not distributed with modpacks)", labelX, helpY, 0x666666, false);
         graphics.drawString(font, "Modpack presets from providers.json can be configured with /llm setkey <name> <key>", labelX, helpY + 10, 0x666666, false);
     }
-
-    @Override
-    public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (!visible) return false;
-        boolean handled = false;
-        handled |= nameInput.mouseClicked(mouseX, mouseY, button);
-        handled |= formatInput.mouseClicked(mouseX, mouseY, button);
-        handled |= urlInput.mouseClicked(mouseX, mouseY, button);
-        handled |= modelInput.mouseClicked(mouseX, mouseY, button);
-        handled |= keyInput.mouseClicked(mouseX, mouseY, button);
-        handled |= saveButton.mouseClicked(mouseX, mouseY, button);
-        return handled || super.mouseClicked(mouseX, mouseY, button);
-    }
-
-    @Override
-    public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (nameInput.isFocused()) return nameInput.keyPressed(keyCode, scanCode, modifiers);
-        if (formatInput.isFocused()) return formatInput.keyPressed(keyCode, scanCode, modifiers);
-        if (urlInput.isFocused()) return urlInput.keyPressed(keyCode, scanCode, modifiers);
-        if (modelInput.isFocused()) return modelInput.keyPressed(keyCode, scanCode, modifiers);
-        if (keyInput.isFocused()) return keyInput.keyPressed(keyCode, scanCode, modifiers);
-        return super.keyPressed(keyCode, scanCode, modifiers);
-    }
-
-    @Override
-    public boolean charTyped(char c, int modifiers) {
-        if (nameInput.isFocused()) return nameInput.charTyped(c, modifiers);
-        if (formatInput.isFocused()) return formatInput.charTyped(c, modifiers);
-        if (urlInput.isFocused()) return urlInput.charTyped(c, modifiers);
-        if (modelInput.isFocused()) return modelInput.charTyped(c, modifiers);
-        if (keyInput.isFocused()) return keyInput.charTyped(c, modifiers);
-        return super.charTyped(c, modifiers);
-    }
-
-    @Override
-    protected void updateWidgetNarration(NarrationElementOutput output) {}
 }

@@ -19,10 +19,11 @@ import java.util.List;
 
 @OnlyIn(Dist.CLIENT)
 public class ProviderListPanel extends AbstractWidget {
-    private record ProviderEntry(String name, String type, String format, String model,
-                                  String status, boolean configured) {}
+    public record ProviderEntry(String name, String type, String format, String model,
+                                 String maskedKey, String status, boolean configured) {}
 
     private final List<ProviderEntry> providers = new ArrayList<>();
+    private int hoveredRow = -1;
     private static final int ROW_HEIGHT = 16;
 
     public ProviderListPanel(int x, int y, int width, int height, String statusJson) {
@@ -42,6 +43,7 @@ public class ProviderListPanel extends AbstractWidget {
                 String type = p.has("type") ? p.get("type").getAsString() : "?";
                 String format = p.has("format") ? p.get("format").getAsString() : "-";
                 String model = p.has("model") ? p.get("model").getAsString() : "?";
+                String maskedKey = p.has("maskedKey") ? p.get("maskedKey").getAsString() : "***";
                 boolean configured = !p.has("configured") || p.get("configured").getAsBoolean();
 
                 String status;
@@ -55,9 +57,16 @@ public class ProviderListPanel extends AbstractWidget {
                 } else {
                     status = "untested";
                 }
-                providers.add(new ProviderEntry(name, type, format, model, status, configured));
+                providers.add(new ProviderEntry(name, type, format, model, maskedKey, status, configured));
             }
         } catch (Exception ignored) {}
+    }
+
+    /** Get provider names for auto-complete in other panels. */
+    public List<String> getProviderNames() {
+        List<String> names = new ArrayList<>();
+        for (ProviderEntry p : providers) names.add(p.name);
+        return names;
     }
 
     @Override
@@ -80,16 +89,30 @@ public class ProviderListPanel extends AbstractWidget {
             return;
         }
 
-        for (ProviderEntry p : providers) {
+        // Calculate hovered row
+        int headerH = getY() + 4 + ROW_HEIGHT;
+        hoveredRow = -1;
+        if (mouseX >= getX() && mouseX < getX() + width && mouseY > headerH) {
+            int idx = (int) ((mouseY - headerH) / ROW_HEIGHT);
+            if (idx >= 0 && idx < providers.size()) hoveredRow = idx;
+        }
+
+        for (int i = 0; i < providers.size(); i++) {
+            ProviderEntry p = providers.get(i);
             int statusColor;
             if (!p.configured) {
-                statusColor = 0xFF8800; // orange for NO KEY
+                statusColor = 0xFF8800;
             } else if (p.status.startsWith("OK")) {
                 statusColor = 0x55FF55;
             } else if (p.status.equals("untested")) {
                 statusColor = 0xFFFF55;
             } else {
                 statusColor = 0xFF5555;
+            }
+
+            // Highlight hovered row
+            if (i == hoveredRow) {
+                graphics.fill(getX() + 2, y - 1, getX() + width - 2, y + ROW_HEIGHT - 1, 0x30FFFFFF);
             }
 
             int nameColor = p.configured ? 0xFFFFFF : 0x888888;
@@ -99,40 +122,47 @@ public class ProviderListPanel extends AbstractWidget {
             graphics.drawString(font, p.model, getX() + 250, y, 0xCCCCCC, false);
             graphics.drawString(font, p.status, getX() + 380, y, statusColor, false);
 
-            // Hint for unconfigured: clickable
-            if (!p.configured) {
-                graphics.drawString(font, "[click to setup]", getX() + 450, y, 0x5555FF, false);
+            // Action hint on hover
+            if (i == hoveredRow) {
+                String hint = p.configured ? "[click to edit]" : "[click to setup key]";
+                int hintColor = p.configured ? 0x5599FF : 0x5555FF;
+                graphics.drawString(font, hint, getX() + 470, y, hintColor, false);
             }
+
             y += ROW_HEIGHT;
         }
 
         // Footer
-        y += 8;
-        graphics.drawString(font, "Click to refresh | Unconfigured providers need API key via Setup tab or /llm setkey", getX() + 4, getY() + height - 14, 0x666666, false);
+        graphics.drawString(font, "Click provider to edit | Right-click to refresh list",
+                getX() + 4, getY() + height - 14, 0x666666, false);
     }
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (!visible || !isMouseOver(mouseX, mouseY)) return false;
 
-        // Check if clicking on a specific provider row
+        // Right-click: refresh
+        if (button == 1) {
+            LLMNetwork.CHANNEL.sendToServer(new C2SStatusRequestPacket());
+            return true;
+        }
+
+        // Left-click: check if clicking on a provider row
         int headerH = getY() + 4 + ROW_HEIGHT;
         if (mouseY > headerH) {
             int rowIndex = (int) ((mouseY - headerH) / ROW_HEIGHT);
             if (rowIndex >= 0 && rowIndex < providers.size()) {
                 ProviderEntry p = providers.get(rowIndex);
-                if (!p.configured) {
-                    // Jump to Setup tab with pre-filled info
-                    var screen = Minecraft.getInstance().screen;
-                    if (screen instanceof LLMConsoleScreen console) {
-                        console.openSetupFor(p.name, p.format, "", p.model);
-                        return true;
-                    }
+                var screen = Minecraft.getInstance().screen;
+                if (screen instanceof LLMConsoleScreen console) {
+                    // Jump to Setup with pre-filled data; key is masked
+                    console.openSetupFor(p.name, p.format, "", p.model, p.maskedKey);
+                    return true;
                 }
             }
         }
 
-        // Default: refresh
+        // Click on empty area: refresh
         LLMNetwork.CHANNEL.sendToServer(new C2SStatusRequestPacket());
         return true;
     }
