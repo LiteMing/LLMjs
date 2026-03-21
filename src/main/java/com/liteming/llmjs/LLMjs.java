@@ -4,7 +4,9 @@ import com.liteming.llmjs.command.LLMCommand;
 import com.liteming.llmjs.config.LLMConfig;
 import com.liteming.llmjs.log.LLMLogger;
 import com.liteming.llmjs.network.LLMNetwork;
+import com.liteming.llmjs.network.packet.S2CLogPacket;
 import com.liteming.llmjs.provider.ProviderManager;
+import net.minecraftforge.network.PacketDistributor;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
@@ -31,6 +33,16 @@ public class LLMjs {
         var configDir = server.getServerDirectory().toPath().resolve("serverconfig");
         ProviderManager.INSTANCE.init(configDir);
         LLMLogger.INSTANCE.resize(LLMConfig.LOG_BUFFER_SIZE.get());
+        // Wire logger to push log entries to connected clients
+        LLMLogger.INSTANCE.addListener(entry -> {
+            String json = entry.toJson().toString();
+            S2CLogPacket packet = new S2CLogPacket(json);
+            server.getPlayerList().getPlayers().forEach(player -> {
+                if (com.liteming.llmjs.network.PermissionCheck.canUse(player)) {
+                    LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
+                }
+            });
+        });
         LOGGER.info("LLMjs providers loaded: {}", ProviderManager.INSTANCE.getProviderNames());
     }
 

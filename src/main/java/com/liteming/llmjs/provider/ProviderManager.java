@@ -137,11 +137,12 @@ public class ProviderManager {
         int limit = LLMConfig.RATE_LIMIT.get();
         if (limit <= 0) return true;
         long now = System.currentTimeMillis();
+        // Reset window if expired (CAS to avoid race)
         long start = windowStart.get();
         if (now - start > 60000) {
-            windowStart.set(now);
-            requestCount.set(1);
-            return true;
+            if (windowStart.compareAndSet(start, now)) {
+                requestCount.set(0);
+            }
         }
         return requestCount.incrementAndGet() <= limit;
     }

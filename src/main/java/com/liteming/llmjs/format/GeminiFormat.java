@@ -79,7 +79,8 @@ public class GeminiFormat implements ApiFormat {
                 promptTokens = usage.has("promptTokenCount") ? usage.get("promptTokenCount").getAsInt() : 0;
                 completionTokens = usage.has("candidatesTokenCount") ? usage.get("candidatesTokenCount").getAsInt() : 0;
             }
-            return LLMResponse.success(text, "gemini", providerName, promptTokens, completionTokens, latencyMs);
+            String modelName = json.has("modelVersion") ? json.get("modelVersion").getAsString() : "gemini";
+            return LLMResponse.success(text, modelName, providerName, promptTokens, completionTokens, latencyMs);
         } catch (Exception e) {
             return LLMResponse.error("Failed to parse Gemini response: " + e.getMessage());
         }

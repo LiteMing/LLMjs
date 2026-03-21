@@ -47,7 +47,7 @@ public class LLMLogger {
     private int head = 0;
     private int size = 0;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
-    private final List<Consumer<LogEntry>> listeners = new ArrayList<>();
+    private final List<Consumer<LogEntry>> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     private LLMLogger() {
         this.buffer = new LogEntry[200];
