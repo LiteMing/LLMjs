@@ -115,6 +115,12 @@ public class RawProvider implements Provider {
     }
 
     @Override
+    public boolean isConfigured() {
+        // Raw providers may not need a key (key is optional in template)
+        return isValid();
+    }
+
+    @Override
     public String getMaskedKey() {
         if (key == null || key.length() < 4) return "***";
         return key.substring(0, 4) + "***";

@@ -37,14 +37,17 @@ public class ProviderManager {
         }
     }
 
-    public void init(Path serverConfigDir) {
+    private Path gameRoot;
+
+    public void init(Path serverConfigDir, Path gameRoot) {
         this.configDir = serverConfigDir.resolve("llmjs");
+        this.gameRoot = gameRoot;
         reload();
     }
 
     public void reload() {
-        if (configDir == null) return;
-        Map<String, Provider> newProviders = ProviderLoader.loadAll(configDir);
+        if (configDir == null || gameRoot == null) return;
+        Map<String, Provider> newProviders = ProviderLoader.loadAll(configDir, gameRoot);
         this.providers = new ConcurrentHashMap<>(newProviders);
         LLMjs.LOGGER.info("Loaded {} providers", providers.size());
     }
@@ -80,6 +83,10 @@ public class ProviderManager {
         Provider provider = providers.get(providerName);
         if (provider == null) {
             attempts.add(new LLMResponse.AttemptRecord(providerName, false, "Provider not found", 0));
+            return sendWithFallbackRecursive(messages, chain, index + 1, temperature, maxTokens, timeoutSeconds, attempts);
+        }
+        if (!provider.isConfigured()) {
+            attempts.add(new LLMResponse.AttemptRecord(providerName, false, "Provider not configured (missing API key)", 0));
             return sendWithFallbackRecursive(messages, chain, index + 1, temperature, maxTokens, timeoutSeconds, attempts);
         }
         String promptSummary = messages.isEmpty() ? "" : messages.get(messages.size() - 1).content();
@@ -123,6 +130,7 @@ public class ProviderManager {
             if (format != null) pJson.addProperty("format", format);
             pJson.addProperty("model", entry.getValue().getModel());
             pJson.addProperty("maskedKey", entry.getValue().getMaskedKey());
+            pJson.addProperty("configured", entry.getValue().isConfigured());
             ConnectionStatus cached = statusCache.get(entry.getKey());
             if (cached != null) pJson.add("status", cached.toJson());
             else pJson.addProperty("status", "untested");

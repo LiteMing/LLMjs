@@ -48,5 +48,11 @@ public class LLMNetwork {
                 .decoder(S2CLogPacket::decode)
                 .consumerMainThread(S2CLogPacket::handle)
                 .add();
+
+        CHANNEL.messageBuilder(C2SSetupProviderPacket.class, packetId++, NetworkDirection.PLAY_TO_SERVER)
+                .encoder(C2SSetupProviderPacket::encode)
+                .decoder(C2SSetupProviderPacket::decode)
+                .consumerMainThread(C2SSetupProviderPacket::handle)
+                .add();
     }
 }

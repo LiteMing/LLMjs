@@ -31,7 +31,8 @@ public class LLMjs {
     public void onServerStarting(ServerStartingEvent event) {
         var server = event.getServer();
         var configDir = server.getServerDirectory().toPath().resolve("serverconfig");
-        ProviderManager.INSTANCE.init(configDir);
+        var gameRoot = server.getServerDirectory().toPath();
+        ProviderManager.INSTANCE.init(configDir, gameRoot);
         LLMLogger.INSTANCE.resize(LLMConfig.LOG_BUFFER_SIZE.get());
         // Wire logger to push log entries to connected clients
         LLMLogger.INSTANCE.addListener(entry -> {

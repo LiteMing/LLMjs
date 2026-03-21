@@ -1,5 +1,6 @@
 package com.liteming.llmjs.command;
 
+import com.liteming.llmjs.config.ProviderLoader;
 import com.liteming.llmjs.network.LLMNetwork;
 import com.liteming.llmjs.network.PermissionCheck;
 import com.liteming.llmjs.network.packet.S2CStatusResponsePacket;
@@ -27,6 +28,13 @@ public class LLMCommand {
                 .then(Commands.literal("reload")
                         .requires(src -> src.hasPermission(2))
                         .executes(ctx -> reloadConfig(ctx.getSource())))
+                .then(Commands.literal("setkey")
+                        .requires(src -> src.hasPermission(2))
+                        .then(Commands.argument("provider", StringArgumentType.string())
+                                .then(Commands.argument("key", StringArgumentType.greedyString())
+                                        .executes(ctx -> setKey(ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "provider"),
+                                                StringArgumentType.getString(ctx, "key"))))))
         );
     }
 
@@ -86,5 +94,16 @@ public class LLMCommand {
         ProviderManager.INSTANCE.reload();
         source.sendSuccess(() -> Component.literal("[LLMjs] Configuration reloaded"), false);
         return 1;
+    }
+
+    private static int setKey(CommandSourceStack source, String providerName, String apiKey) {
+        if (ProviderLoader.setKey(providerName, apiKey)) {
+            ProviderManager.INSTANCE.reload();
+            source.sendSuccess(() -> Component.literal("[LLMjs] Key set for '" + providerName + "', config reloaded"), false);
+            return 1;
+        } else {
+            source.sendFailure(Component.literal("[LLMjs] Failed to write key. Check server logs."));
+            return 0;
+        }
     }
 }

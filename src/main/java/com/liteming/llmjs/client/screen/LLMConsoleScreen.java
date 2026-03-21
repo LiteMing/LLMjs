@@ -3,6 +3,7 @@ package com.liteming.llmjs.client.screen;
 import com.liteming.llmjs.client.ClientEventHandler;
 import com.liteming.llmjs.client.widget.LogPanel;
 import com.liteming.llmjs.client.widget.ProviderListPanel;
+import com.liteming.llmjs.client.widget.SetupPanel;
 import com.liteming.llmjs.client.widget.TestPanel;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
@@ -16,12 +17,13 @@ import java.util.UUID;
 
 @OnlyIn(Dist.CLIENT)
 public class LLMConsoleScreen extends Screen {
-    private enum Tab { LOG, PROVIDERS, TEST }
+    private enum Tab { LOG, PROVIDERS, TEST, SETUP }
 
     private Tab activeTab = Tab.LOG;
     private LogPanel logPanel;
     private ProviderListPanel providerPanel;
     private TestPanel testPanel;
+    private SetupPanel setupPanel;
     private final String initialStatusJson;
 
     public LLMConsoleScreen(String statusJson) {
@@ -32,14 +34,17 @@ public class LLMConsoleScreen extends Screen {
     @Override
     protected void init() {
         int tabY = 10;
-        int tabW = 80;
+        int tabW = 70;
+        int startX = width / 2 - (tabW * 4 + 15) / 2;
 
         addRenderableWidget(Button.builder(Component.literal("Log"), b -> switchTab(Tab.LOG))
-                .pos(width / 2 - 125, tabY).size(tabW, 20).build());
+                .pos(startX, tabY).size(tabW, 20).build());
         addRenderableWidget(Button.builder(Component.literal("Providers"), b -> switchTab(Tab.PROVIDERS))
-                .pos(width / 2 - 40, tabY).size(tabW, 20).build());
+                .pos(startX + tabW + 5, tabY).size(tabW, 20).build());
         addRenderableWidget(Button.builder(Component.literal("Test"), b -> switchTab(Tab.TEST))
-                .pos(width / 2 + 45, tabY).size(tabW, 20).build());
+                .pos(startX + (tabW + 5) * 2, tabY).size(tabW, 20).build());
+        addRenderableWidget(Button.builder(Component.literal("Setup"), b -> switchTab(Tab.SETUP))
+                .pos(startX + (tabW + 5) * 3, tabY).size(tabW, 20).build());
 
         int panelY = 35;
         int panelH = height - 45;
@@ -49,10 +54,12 @@ public class LLMConsoleScreen extends Screen {
         logPanel = new LogPanel(panelX, panelY, panelW, panelH);
         providerPanel = new ProviderListPanel(panelX, panelY, panelW, panelH, initialStatusJson);
         testPanel = new TestPanel(panelX, panelY, panelW, panelH, font);
+        setupPanel = new SetupPanel(panelX, panelY, panelW, panelH, font);
 
         addRenderableWidget(logPanel);
         addRenderableWidget(providerPanel);
         addRenderableWidget(testPanel);
+        addRenderableWidget(setupPanel);
 
         switchTab(Tab.LOG);
     }
@@ -62,6 +69,7 @@ public class LLMConsoleScreen extends Screen {
         logPanel.visible = (tab == Tab.LOG);
         providerPanel.visible = (tab == Tab.PROVIDERS);
         testPanel.visible = (tab == Tab.TEST);
+        setupPanel.visible = (tab == Tab.SETUP);
     }
 
     @Override
@@ -92,5 +100,13 @@ public class LLMConsoleScreen extends Screen {
 
     public void onLogEntry(String logEntryJson) {
         if (logPanel != null) logPanel.addEntry(logEntryJson);
+    }
+
+    /**
+     * Switch to Setup tab and pre-fill for an existing provider.
+     */
+    public void openSetupFor(String name, String format, String url, String model) {
+        switchTab(Tab.SETUP);
+        if (setupPanel != null) setupPanel.prefill(name, format, url, model);
     }
 }

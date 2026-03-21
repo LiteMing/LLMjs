@@ -65,7 +65,12 @@ public class SimpleProvider implements Provider {
 
     @Override
     public boolean isValid() {
-        return url != null && !url.isEmpty() && key != null && !key.isEmpty() && model != null && !model.isEmpty();
+        return url != null && !url.isEmpty() && model != null && !model.isEmpty();
+    }
+
+    @Override
+    public boolean isConfigured() {
+        return isValid() && key != null && !key.isEmpty();
     }
 
     @Override
