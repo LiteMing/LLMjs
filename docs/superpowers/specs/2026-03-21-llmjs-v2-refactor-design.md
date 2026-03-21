@@ -11,7 +11,7 @@ LLMjs is a KubeJS addon mod for Minecraft 1.20.1 Forge that enables KubeJS scrip
 - **Architecture:** Dual-track Provider model (Simple + RAW)
 - **API format support:** OpenAI Compatible (base), Claude (Anthropic native), Gemini (Google native)
 - **Threading:** All-async, no synchronous blocking API
-- **Client-Server model:** Server holds all config/keys and executes requests; client proxies via network packets
+- **Client-Server model:** Server holds all config/keys and executes requests; client proxies via network packets; server-side scripts call ProviderManager directly (no network hop)
 - **Configuration:** Forge Config for globals + JSON files for providers (hot-reloadable)
 - **KubeJS API:** Both functional style and session-based style
 - **Builder pattern:** `LLMRequest` chainable builder with post-processing pipeline
@@ -147,23 +147,43 @@ public interface ApiFormat {
 
 ## 4. KubeJS API
 
-### 4.1 Functional API
+### 4.0 Execution Context
+
+LLM API calls can originate from two contexts:
+
+**Server-side scripts** (`server_scripts/`): The most common case. KubeJS server event handlers (e.g., `PlayerEvents.chat`, `ItemEvents.rightClicked`, `ServerEvents.tick`) run on the server. LLM calls go directly to `ProviderManager.sendAsync()` — no network packets involved. Post-processing pipeline (extract, replace, validate, etc.) also runs server-side in the same script context.
+
+**Client-side UI** (Console Test Panel, `/llm test`): The client has no direct access to providers or API keys. These requests serialize to `C2SChatRequestPacket`, the server executes the LLM call, and returns the raw response via `S2CChatResponsePacket`. Post-processing is not available for client-originated requests (test panel shows raw response only).
+
+### 4.1 API Method Signatures
+
+`LLM.chat()` is overloaded:
+- **With callback** (last arg is a function) → executes immediately, returns void: `LLM.chat(prompt, callback)`, `LLM.chat(prompt, options, callback)`
+- **Without callback** → returns `LLMRequest` builder for chaining: `LLM.chat(prompt)`, `LLM.chat(prompt, options)`
+
+Error handling for callback form: the callback receives an `LLMResult` object with `.content` (string or null), `.success` (boolean), `.error` (string or null). On failure, `.success` is false and `.error` contains the error message.
 
 ```js
-// Simplest call — callback style, fully async
+// Callback form — fires immediately, returns void
 LLM.chat("hello", result => {
-    player.tell(result)
+    if (result.success) player.tell(result.content)
+    else player.tell("Error: " + result.error)
 })
 
-// With options
+// Callback form with options
 LLM.chat("hello", {
     provider: "my-claude",
     temperature: 0.5,
     maxTokens: 500,
     system: "You are an NPC blacksmith"
 }, result => {
-    player.tell(result)
+    player.tell(result.content)
 })
+
+// Builder form — returns LLMRequest for chaining
+LLM.chat("hello")
+    .fallback(["openai", "claude"])
+    .tell(player)
 
 // Detailed response (includes token usage metadata)
 LLM.chatDetailed("hello", { provider: "openai" }, response => {
@@ -179,10 +199,12 @@ let session = LLM.session("openai")
     .system("You are a blacksmith NPC, gruff but kind")
     .temperature(0.8)
 
-session.chat("hello", reply => { player.tell(reply) })
-session.chat("what do you sell?", reply => { player.tell(reply) })  // auto carries history
+session.chat("hello", reply => { player.tell(reply.content) })
+session.chat("what do you sell?", reply => { player.tell(reply.content) })  // auto carries history
 session.clear()  // clear history, start fresh
 ```
+
+Session lifecycle: sessions are held in memory with a configurable max history length (default 20 messages). Sessions do not survive script reloads or server restarts. Sessions are identified by the variable reference — each `LLM.session()` call creates a new independent session.
 
 ### 4.3 JSON Workflow
 
@@ -228,9 +250,17 @@ LLM.fill({
 
 Implementation: Sends optimized prompt instructing AI to return only values separated by `|` in key order. AI responds with e.g. `Dragon's Bane|285|fire|The eternal flame...`. Mod splits by delimiter and reassembles into original template structure. Saves tokens by not repeating the JSON structure.
 
+Known limitation: if a value itself contains `|`, parsing may break. For v2.0 this is accepted as a known limitation. Workarounds: use a different delimiter via options, or use Schema mode for values likely to contain pipe characters.
+
+### 4.3.1 JSON Methods and Builder Relationship
+
+`LLM.chatJson()` and `LLM.fill()` are standalone convenience methods (callback-only, not builder-chainable). For combining JSON processing with the builder pipeline, use `.pipe("clean_json")` or `.validate()` on a regular `LLM.chat()` builder.
+
 ### 4.4 Request Builder Pipeline
 
-The core of the v2 API. `LLM.chat()` returns an `LLMRequest` builder. Terminal operations (`.tell()`, `.actionbar()`, `.callback()`) trigger the actual async request.
+The core of the v2 API. `LLM.chat()` without a callback returns an `LLMRequest` builder (single-use, not reusable). Terminal operations (`.tell()`, `.actionbar()`, `.callback()`) trigger the actual async request and consume the builder.
+
+Fallback can be specified either in the options object or via the builder method. Builder method takes precedence if both are set.
 
 ```
 LLM.chat(prompt, options)       → build LLMRequest
@@ -274,7 +304,8 @@ LLM.chat("generate weapon as JSON")
     .replace(/\n?```$/, "")
     .tell(player)
 
-// Register reusable regex presets
+// Register reusable regex presets (call in startup_scripts for global availability)
+// If two scripts register the same preset name, the last one wins
 LLM.regex("clean_json", [
     { type: "extract", pattern: /\{[\s\S]*\}/ },
     { type: "replace", pattern: /```json\n?/, replacement: "" },
@@ -341,13 +372,14 @@ LLM.reload()                 // hot-reload config (requires OP)
 
 ### 5.1 Forge Config — Global Settings
 
-File: `serverconfig/llmjs-server.toml`
+File: `serverconfig/llmjs-server.toml` (registered as `ModConfig.Type.SERVER`, changed from v1.x COMMON type to prevent key syncing to clients)
 
 ```toml
 [general]
 default_provider = "openai"
 timeout = 30              # 1-300 seconds, per-request timeout
 rate_limit = 30           # max requests per minute globally, 0 = unlimited
+max_prompt_length = 10000 # max characters per prompt (prevents abuse via network packets)
 log_buffer_size = 200     # ring buffer capacity
 
 [permission]
@@ -426,7 +458,7 @@ File: `serverconfig/llmjs/providers_raw.json`
 
 Variables available in templates: `${key}`, `${model}`, `${messages}` (JSON array), `${temperature}`, `${max_tokens}`, `${system}` (system prompt text).
 
-`response_path` uses dot notation to extract content from response JSON.
+`response_path` uses a simple dot-bracket notation to extract content from response JSON: dot for object access (`result.text`), brackets for array indexing (`choices[0].message.content`). This is a custom mini-parser, not full JSONPath.
 
 ### 5.4 Hot Reload
 
@@ -435,6 +467,8 @@ Variables available in templates: `${key}`, `${model}`, `${messages}` (JSON arra
 2. Build new provider map
 3. Atomic swap via volatile reference (no clear+rebuild race)
 4. Log reload event
+
+Note: `WatchService` on Windows may have latency (2-10s). `/llm reload` command serves as the reliable immediate alternative.
 
 Also triggered by `/llm reload` command or `LLM.reload()` script call.
 
@@ -456,6 +490,7 @@ All packets use a request ID for async correlation.
 
 ```
 Client sends request → C2SChatRequestPacket → Server
+  → Validate prompt length (≤ max_prompt_length, reject oversized)
   → PermissionCheck:
      1. allow_all_players == true → allow
      2. player.hasPermission(require_op_level) → allow
@@ -540,36 +575,36 @@ Remove:
 
 ## 11. Request Processing Pipeline
 
-The complete lifecycle of a request:
+### 11.1 Server-side script path (primary use case)
 
 ```
-1. KubeJS script calls LLM.chat(...) or builder method
-2. LLMRequest builder accumulates options:
-   - provider / fallback chain
-   - post-processors (extract, replace, pipe)
-   - validators
-   - truncation rules
-   - output target
+1. KubeJS server script calls LLM.chat(...) or builder method
+2. LLMRequest builder accumulates options
 3. Terminal operation called (.tell(), .callback(), etc.)
-4. [Client] Serialize to C2SChatRequestPacket → send to server
-5. [Server] PermissionCheck → rate limit check
-6. [Server] ProviderManager resolves provider (or fallback chain)
-7. [Server] Provider.sendAsync() → HttpService
-8. [Server] For SimpleProvider: ApiFormat.buildHttpRequest() → HTTP call → ApiFormat.parseHttpResponse()
-   For RawProvider: template substitution → HTTP call → response_path extraction
-9. [Server] On failure + fallback: retry with next provider in chain
-10. [Server] S2CChatResponsePacket → client
-11. [Client] Post-processing pipeline:
-    a. extract(regex) — extract matching content
-    b. replace(regex, str) — regex replacements
-    c. pipe("preset") — apply named regex preset
-    d. validate(fn) — check output validity
-       - if invalid + retries remaining → go to step 4 with retry flag
-       - if invalid + no retries → call onInvalid()
-    e. maxLength(n) + truncateAt(regex) — truncate
-12. [Client] Output to target (tell/actionbar/broadcast/callback)
-13. [Server] Log entry written to LLMLogger ring buffer
-14. [Server] If client has console open → push S2CLogPacket
+4. ProviderManager resolves provider (or fallback chain) — direct call, no network
+5. Provider.sendAsync() → HttpService → HTTP call
+6. For SimpleProvider: ApiFormat.buildHttpRequest() → HTTP → ApiFormat.parseHttpResponse()
+   For RawProvider: template substitution → HTTP → response_path extraction
+7. On failure + fallback: retry with next provider in chain
+8. Post-processing pipeline (runs in same server script context):
+   a. extract(regex), replace(regex, str), pipe("preset")
+   b. validate(fn) → if invalid + retries → go to step 4
+   c. maxLength(n) + truncateAt(regex)
+9. Output to target (tell/actionbar/broadcast/callback)
+10. Log entry written to LLMLogger ring buffer
+11. If any client has console open → push S2CLogPacket
 ```
 
-Note: Post-processing (step 11) runs client-side since it may involve JS functions (validate callbacks) that only exist in the KubeJS script context. The server sends raw LLM response; client handles pipeline.
+### 11.2 Client-side path (Console UI test panel only)
+
+```
+1. User types prompt in Test Panel, clicks Send
+2. Serialize to C2SChatRequestPacket → send to server
+3. Server: validate prompt length → PermissionCheck → rate limit
+4. Server: ProviderManager → Provider.sendAsync() → HTTP
+5. Server: S2CChatResponsePacket (raw response) → client
+6. Client: display raw response in Test Panel (no post-processing pipeline)
+7. Server: log entry → push to console if open
+```
+
+Note: The builder pipeline (fallback, extract, replace, validate, etc.) is only available in server-side scripts, not from the client test panel. The test panel is for quick configuration validation only.
