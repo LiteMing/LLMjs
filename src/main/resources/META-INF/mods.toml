@@ -4,11 +4,11 @@ license="MIT"
 
 [[mods]]
 modId="llmjs"
-version="1.1.0"
+version="2.0.0"
 displayName="LLMjs"
 description='''
-A KubeJS addon that provides LLM (Large Language Model) integration with OpenAI-compatible APIs.
-Allows KubeJS scripts to interact with various LLM services.
+LLMjs v2.0 - A KubeJS addon for Minecraft 1.20.1 Forge that integrates Large Language Models.
+Features: multi-provider support, async API calls, format adapters, and console UI.
 '''
 logoFile="logo.png"
 credits="Created for KubeJS community"
