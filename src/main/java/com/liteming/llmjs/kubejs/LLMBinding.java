@@ -12,11 +12,14 @@ import com.liteming.llmjs.pipeline.*;
 import com.liteming.llmjs.provider.Provider;
 import com.liteming.llmjs.provider.ProviderManager;
 import com.liteming.llmjs.session.ChatSession;
+import com.liteming.llmjs.vision.VisionRequestManager;
+import net.minecraft.server.level.ServerPlayer;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.Consumer;
 
 public class LLMBinding {
@@ -186,6 +189,43 @@ public class LLMBinding {
         ProviderManager.INSTANCE.reload();
     }
 
+    // === Client screenshot vision ===
+
+    public String visionActionbar(ServerPlayer player, String prompt) {
+        return visionActionbar(player, prompt, Map.of());
+    }
+
+    public String visionActionbar(ServerPlayer player, String prompt, Map<String, Object> options) {
+        if (player == null) return "";
+
+        int maxWidth = getInt(options, "maxWidth") != null ? getInt(options, "maxWidth") : LLMConfig.MAX_IMAGE_WIDTH.get();
+        int maxBytes = getInt(options, "maxBytes") != null ? getInt(options, "maxBytes") : LLMConfig.MAX_IMAGE_BYTES.get();
+        Double qualityOpt = getDbl(options, "quality");
+        float quality = qualityOpt != null ? qualityOpt.floatValue() : 0.78f;
+
+        VisionRequestManager.CaptureOptions capture = new VisionRequestManager.CaptureOptions(
+                maxWidth,
+                maxBytes,
+                quality,
+                getStrOr(options, "compression", "auto"),
+                getStrOr(options, "mimeType", "image/jpeg"),
+                getStrOr(options, "detail", "low")
+        );
+        VisionRequestManager.RequestOptions requestOptions = new VisionRequestManager.RequestOptions(
+                getStr(options, "provider"),
+                getStr(options, "system"),
+                getDbl(options, "temperature"),
+                getInt(options, "maxTokens"),
+                capture,
+                getStr(options, "expected"),
+                getStr(options, "harnessPrompt"),
+                getStr(options, "harnessProvider"),
+                getBool(options, "showHarnessFailures", false)
+        );
+        UUID requestId = VisionRequestManager.requestActionbar(player, prompt, requestOptions);
+        return requestId.toString();
+    }
+
     // === Helpers ===
 
     private void executeDirect(String prompt, @Nullable String system, @Nullable String provider,
@@ -217,6 +257,11 @@ public class LLMBinding {
         return val != null ? val.toString() : null;
     }
 
+    private static String getStrOr(Map<String, Object> map, String key, String fallback) {
+        String val = getStr(map, key);
+        return val != null && !val.isBlank() ? val : fallback;
+    }
+
     private static @Nullable Double getDbl(Map<String, Object> map, String key) {
         Object val = map.get(key);
         return val instanceof Number ? ((Number) val).doubleValue() : null;
@@ -225,6 +270,13 @@ public class LLMBinding {
     private static @Nullable Integer getInt(Map<String, Object> map, String key) {
         Object val = map.get(key);
         return val instanceof Number ? ((Number) val).intValue() : null;
+    }
+
+    private static boolean getBool(Map<String, Object> map, String key, boolean fallback) {
+        Object val = map.get(key);
+        if (val instanceof Boolean b) return b;
+        if (val instanceof String s) return Boolean.parseBoolean(s);
+        return fallback;
     }
 
     @SuppressWarnings("unchecked")

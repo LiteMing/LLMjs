@@ -12,6 +12,8 @@ public class LLMConfig {
     public static final ForgeConfigSpec.IntValue TIMEOUT;
     public static final ForgeConfigSpec.IntValue RATE_LIMIT;
     public static final ForgeConfigSpec.IntValue MAX_PROMPT_LENGTH;
+    public static final ForgeConfigSpec.IntValue MAX_IMAGE_BYTES;
+    public static final ForgeConfigSpec.IntValue MAX_IMAGE_WIDTH;
     public static final ForgeConfigSpec.IntValue LOG_BUFFER_SIZE;
     public static final ForgeConfigSpec.IntValue REQUIRE_OP_LEVEL;
     public static final ForgeConfigSpec.BooleanValue ALLOW_ALL_PLAYERS;
@@ -22,6 +24,8 @@ public class LLMConfig {
         TIMEOUT = BUILDER.comment("Per-request timeout in seconds").defineInRange("timeout", 30, 1, 300);
         RATE_LIMIT = BUILDER.comment("Max requests per minute globally. 0 = unlimited").defineInRange("rate_limit", 30, 0, 1000);
         MAX_PROMPT_LENGTH = BUILDER.comment("Max characters per prompt (prevents abuse via network packets)").defineInRange("max_prompt_length", 10000, 100, 100000);
+        MAX_IMAGE_BYTES = BUILDER.comment("Max compressed screenshot upload size in bytes").defineInRange("max_image_bytes", 786432, 32768, 2097152);
+        MAX_IMAGE_WIDTH = BUILDER.comment("Max compressed screenshot width/height sent to LLM").defineInRange("max_image_width", 1024, 128, 2048);
         LOG_BUFFER_SIZE = BUILDER.comment("Number of log entries to keep in ring buffer").defineInRange("log_buffer_size", 200, 10, 10000);
         BUILDER.pop();
 
