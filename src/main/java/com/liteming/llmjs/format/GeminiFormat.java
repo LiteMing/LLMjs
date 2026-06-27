@@ -33,9 +33,20 @@ public class GeminiFormat implements ApiFormat {
             JsonObject content = new JsonObject();
             content.addProperty("role", "assistant".equals(msg.role()) ? "model" : msg.role());
             JsonArray parts = new JsonArray();
-            JsonObject textPart = new JsonObject();
-            textPart.addProperty("text", msg.content());
-            parts.add(textPart);
+            for (MessagePart part : msg.parts()) {
+                if (part instanceof MessagePart.TextPart textPart) {
+                    JsonObject text = new JsonObject();
+                    text.addProperty("text", textPart.text());
+                    parts.add(text);
+                } else if (part instanceof MessagePart.ImagePart imagePart) {
+                    JsonObject inline = new JsonObject();
+                    JsonObject data = new JsonObject();
+                    data.addProperty("mimeType", imagePart.mimeType());
+                    data.addProperty("data", imagePart.base64Data());
+                    inline.add("inlineData", data);
+                    parts.add(inline);
+                }
+            }
             content.add("parts", parts);
             contents.add(content);
         }

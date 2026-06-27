@@ -34,7 +34,29 @@ public class ClaudeFormat implements ApiFormat {
             } else {
                 JsonObject m = new JsonObject();
                 m.addProperty("role", msg.role());
-                m.addProperty("content", msg.content());
+                if (msg.hasImage()) {
+                    JsonArray content = new JsonArray();
+                    for (MessagePart part : msg.parts()) {
+                        if (part instanceof MessagePart.TextPart textPart) {
+                            JsonObject text = new JsonObject();
+                            text.addProperty("type", "text");
+                            text.addProperty("text", textPart.text());
+                            content.add(text);
+                        } else if (part instanceof MessagePart.ImagePart imagePart) {
+                            JsonObject image = new JsonObject();
+                            image.addProperty("type", "image");
+                            JsonObject source = new JsonObject();
+                            source.addProperty("type", "base64");
+                            source.addProperty("media_type", imagePart.mimeType());
+                            source.addProperty("data", imagePart.base64Data());
+                            image.add("source", source);
+                            content.add(image);
+                        }
+                    }
+                    m.add("content", content);
+                } else {
+                    m.addProperty("content", msg.content());
+                }
                 msgArray.add(m);
             }
         }

@@ -2,6 +2,7 @@ package com.liteming.llmjs.provider;
 
 import com.google.gson.*;
 import com.liteming.llmjs.format.ApiFormat;
+import com.liteming.llmjs.format.MessagePart;
 import com.liteming.llmjs.http.HttpService;
 import com.liteming.llmjs.pipeline.LLMResponse;
 import org.jetbrains.annotations.Nullable;
@@ -53,15 +54,34 @@ public class RawProvider implements Provider {
         vars.put("max_tokens", maxTokens != null ? maxTokens.toString() : "1000");
 
         JsonArray msgArray = new JsonArray();
+        JsonArray allImages = new JsonArray();
         String systemPrompt = "";
         for (ApiFormat.Message msg : messages) {
             if ("system".equals(msg.role())) systemPrompt = msg.content();
             JsonObject m = new JsonObject();
             m.addProperty("role", msg.role());
             m.addProperty("content", msg.content());
+            JsonArray images = new JsonArray();
+            for (MessagePart part : msg.parts()) {
+                if (part instanceof MessagePart.ImagePart imagePart) {
+                    JsonObject image = new JsonObject();
+                    image.addProperty("mime_type", imagePart.mimeType());
+                    image.addProperty("data", imagePart.base64Data());
+                    image.addProperty("detail", imagePart.detail());
+                    image.addProperty("width", imagePart.width());
+                    image.addProperty("height", imagePart.height());
+                    image.addProperty("byte_size", imagePart.byteSize());
+                    images.add(image);
+                    allImages.add(image.deepCopy());
+                }
+            }
+            if (!images.isEmpty()) {
+                m.add("images", images);
+            }
             msgArray.add(m);
         }
         vars.put("messages", msgArray.toString());
+        vars.put("images", allImages.toString());
         vars.put("system", systemPrompt);
 
         Map<String, String> headers = new LinkedHashMap<>();
