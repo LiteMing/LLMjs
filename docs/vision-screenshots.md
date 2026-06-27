@@ -37,3 +37,20 @@ If `expected` is omitted, the first multimodal answer is shown directly. If `exp
 - Screenshots are not logged or written to disk by LLMjs.
 
 See `examples/kubejs/server_scripts/llmjs_vision_actionbar.js` for chat-triggered examples.
+
+## Exposure Photographs
+
+`LLM.visionExposureActionbar(player, prompt, options)` reads an Exposure photograph held in the player's main hand or off hand and sends it through the same multimodal provider path.
+
+```js
+LLM.visionExposureActionbar(player, 'Describe this photograph in one short sentence.', {
+  provider: 'openai',
+  detail: 'low',
+  maxBytes: 420000,
+  maxTokens: 80,
+  expected: 'The answer identifies a concrete visible subject.',
+  harnessPrompt: 'Reply only PASS or FAIL.'
+})
+```
+
+This is server-side soft compatibility. LLMjs does not depend on Exposure classes. It checks for `exposure:photograph` or `exposure:aged_photograph`, extracts the exposure id from item NBT, then reads `data/exposures/<id>.dat` or the server's in-memory saved-data cache. The photo is encoded as PNG and is not written to logs or disk by LLMjs.

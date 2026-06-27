@@ -94,24 +94,30 @@ public final class VisionRequestManager {
         String base64 = Base64.getEncoder().encodeToString(imageBytes);
         MessagePart.ImagePart image = MessagePart.image(mimeType, base64, pending.options().capture().detail(),
                 width, height, imageBytes.length);
+        sendImageActionbar(player, pending.prompt(), pending.options(), image);
+    }
 
+    public static void sendImageActionbar(ServerPlayer player, String prompt, RequestOptions options,
+                                          MessagePart.ImagePart image) {
         List<ApiFormat.Message> messages = new ArrayList<>();
-        if (pending.options().systemPrompt() != null && !pending.options().systemPrompt().isBlank()) {
-            messages.add(new ApiFormat.Message("system", pending.options().systemPrompt()));
+        if (options.systemPrompt() != null && !options.systemPrompt().isBlank()) {
+            messages.add(new ApiFormat.Message("system", options.systemPrompt()));
         }
-        messages.add(ApiFormat.Message.userWithImage(pending.prompt(), image));
+        messages.add(ApiFormat.Message.userWithImage(prompt == null || prompt.isBlank() ? DEFAULT_PROMPT : prompt, image));
 
-        List<String> chain = resolveProviderChain(pending.options().provider());
+        PendingVisionRequest synthetic = new PendingVisionRequest(player.getUUID(),
+                prompt == null || prompt.isBlank() ? DEFAULT_PROMPT : prompt, options, System.currentTimeMillis());
+        List<String> chain = resolveProviderChain(options.provider());
         int timeout = LLMConfig.TIMEOUT.get();
-        ProviderManager.INSTANCE.sendWithFallback(messages, chain, pending.options().temperature(),
-                        pending.options().maxTokens(), timeout)
+        ProviderManager.INSTANCE.sendWithFallback(messages, chain, options.temperature(),
+                        options.maxTokens(), timeout)
                 .thenAccept(response -> {
                     if (!response.isSuccess()) {
                         runOnServer(player, () -> player.displayClientMessage(
                                 Component.literal("Vision failed: " + response.getError()), true));
                         return;
                     }
-                    maybeHarnessThenDisplay(player, pending, response);
+                    maybeHarnessThenDisplay(player, synthetic, response);
                 });
     }
 

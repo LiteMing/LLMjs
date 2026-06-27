@@ -5,6 +5,8 @@
 //   !ui        automatic screenshot compression, show answer in actionbar
 //   !uimanual  manual compression settings
 //   !uiharness only show the answer when a harness says it matches expectation
+//   !photo     read a held Exposure photograph and show the answer in actionbar
+//   !photoharness read a held Exposure photograph and hide weak answers
 //
 // The screenshot is captured on the client after the server sends a request.
 // It includes the current rendered client frame, including HUD and open screens.
@@ -65,6 +67,37 @@ PlayerEvents.chat(event => {
       expected: 'The answer identifies a concrete problem, warning, danger, blocked UI state, or missing requirement. It should not be just OK.',
       harnessProvider: 'openai',
       harnessPrompt: 'Reply only PASS or FAIL. PASS if the candidate answer should be shown to the player as an actionable UI warning.',
+      showHarnessFailures: false
+    })
+  }
+
+  if (msg === '!photo') {
+    event.cancel()
+    LLM.visionExposureActionbar(player, [
+      'Inspect this Exposure photograph from the Minecraft world.',
+      'Describe the most important visible subject or clue in under 60 characters.'
+    ].join('\n'), {
+      provider: 'openai',
+      detail: 'low',
+      maxBytes: 420000,
+      maxTokens: 80,
+      system: 'You are analyzing an in-world Minecraft photograph. Be concrete and concise.'
+    })
+  }
+
+  if (msg === '!photoharness') {
+    event.cancel()
+    LLM.visionExposureActionbar(player, [
+      'Inspect this Exposure photograph.',
+      'If it clearly shows a useful destination, structure, mob, item, or danger, name it.',
+      'If the photo is too unclear, answer "UNCLEAR".'
+    ].join('\n'), {
+      provider: 'openai',
+      detail: 'low',
+      maxBytes: 420000,
+      maxTokens: 80,
+      expected: 'The answer should identify a concrete visible subject, not merely say UNCLEAR or give a vague description.',
+      harnessPrompt: 'Reply only PASS or FAIL. PASS only when the candidate identifies a concrete useful subject from the photo.',
       showHarnessFailures: false
     })
   }

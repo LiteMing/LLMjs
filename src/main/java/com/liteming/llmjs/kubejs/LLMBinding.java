@@ -3,6 +3,7 @@ package com.liteming.llmjs.kubejs;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.liteming.llmjs.config.LLMConfig;
+import com.liteming.llmjs.compat.ExposurePhotoReader;
 import com.liteming.llmjs.format.ApiFormat;
 import com.liteming.llmjs.json.FillMode;
 import com.liteming.llmjs.json.JsonMode;
@@ -13,6 +14,7 @@ import com.liteming.llmjs.provider.Provider;
 import com.liteming.llmjs.provider.ProviderManager;
 import com.liteming.llmjs.session.ChatSession;
 import com.liteming.llmjs.vision.VisionRequestManager;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import org.jetbrains.annotations.Nullable;
 
@@ -197,7 +199,29 @@ public class LLMBinding {
 
     public String visionActionbar(ServerPlayer player, String prompt, Map<String, Object> options) {
         if (player == null) return "";
+        VisionRequestManager.RequestOptions requestOptions = buildVisionRequestOptions(options);
+        UUID requestId = VisionRequestManager.requestActionbar(player, prompt, requestOptions);
+        return requestId.toString();
+    }
 
+    public String visionExposureActionbar(ServerPlayer player, String prompt) {
+        return visionExposureActionbar(player, prompt, Map.of());
+    }
+
+    public String visionExposureActionbar(ServerPlayer player, String prompt, Map<String, Object> options) {
+        if (player == null) return "";
+        VisionRequestManager.RequestOptions requestOptions = buildVisionRequestOptions(options);
+        var exposure = ExposurePhotoReader.readHeldPhoto(player,
+                requestOptions.capture().detail(), requestOptions.capture().maxBytes());
+        if (exposure.isEmpty()) {
+            player.displayClientMessage(Component.literal("Hold an Exposure photograph first"), true);
+            return "";
+        }
+        VisionRequestManager.sendImageActionbar(player, prompt, requestOptions, exposure.get().image());
+        return exposure.get().exposureId();
+    }
+
+    private VisionRequestManager.RequestOptions buildVisionRequestOptions(Map<String, Object> options) {
         int maxWidth = getInt(options, "maxWidth") != null ? getInt(options, "maxWidth") : LLMConfig.MAX_IMAGE_WIDTH.get();
         int maxBytes = getInt(options, "maxBytes") != null ? getInt(options, "maxBytes") : LLMConfig.MAX_IMAGE_BYTES.get();
         Double qualityOpt = getDbl(options, "quality");
@@ -211,7 +235,7 @@ public class LLMBinding {
                 getStrOr(options, "mimeType", "image/jpeg"),
                 getStrOr(options, "detail", "low")
         );
-        VisionRequestManager.RequestOptions requestOptions = new VisionRequestManager.RequestOptions(
+        return new VisionRequestManager.RequestOptions(
                 getStr(options, "provider"),
                 getStr(options, "system"),
                 getDbl(options, "temperature"),
@@ -222,8 +246,6 @@ public class LLMBinding {
                 getStr(options, "harnessProvider"),
                 getBool(options, "showHarnessFailures", false)
         );
-        UUID requestId = VisionRequestManager.requestActionbar(player, prompt, requestOptions);
-        return requestId.toString();
     }
 
     // === Helpers ===
