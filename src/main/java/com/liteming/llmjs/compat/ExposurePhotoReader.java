@@ -1,7 +1,7 @@
 package com.liteming.llmjs.compat;
 
 import com.liteming.llmjs.LLMjs;
-import com.liteming.llmjs.format.MessagePart;
+import com.liteming.llmjs.vision.VisionImage;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtIo;
 import net.minecraft.resources.ResourceLocation;
@@ -31,7 +31,7 @@ public final class ExposurePhotoReader {
     private ExposurePhotoReader() {
     }
 
-    public record ExposureImage(MessagePart.ImagePart image, String exposureId, InteractionHand hand) {
+    public record ExposureImage(VisionImage image, String exposureId, InteractionHand hand) {
     }
 
     public static Optional<ExposureImage> readHeldPhoto(ServerPlayer player, String detail, int maxBytes) {
@@ -81,7 +81,8 @@ public final class ExposurePhotoReader {
         }
         String base64 = Base64.getEncoder().encodeToString(pngBytes);
         PhotoSize size = readPhotoSize(player.server, exposureId).orElse(new PhotoSize(0, 0));
-        MessagePart.ImagePart image = MessagePart.image("image/png", base64, detail, size.width(), size.height(), pngBytes.length);
+        VisionImage image = new VisionImage("image/png", base64, detail,
+                size.width(), size.height(), pngBytes.length, "exposure", exposureId);
         return Optional.of(new ExposureImage(image, exposureId, hand));
     }
 

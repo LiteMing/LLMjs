@@ -14,6 +14,7 @@ import com.liteming.llmjs.provider.Provider;
 import com.liteming.llmjs.provider.ProviderManager;
 import com.liteming.llmjs.session.ChatSession;
 import com.liteming.llmjs.vision.VisionRequestManager;
+import com.liteming.llmjs.vision.VisionImage;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import org.jetbrains.annotations.Nullable;
@@ -191,60 +192,89 @@ public class LLMBinding {
         ProviderManager.INSTANCE.reload();
     }
 
-    // === Client screenshot vision ===
+    // === Composable vision primitives ===
 
-    public String visionActionbar(ServerPlayer player, String prompt) {
-        return visionActionbar(player, prompt, Map.of());
+    public String captureScreenshot(ServerPlayer player, Consumer<VisionImage> callback) {
+        return captureScreenshot(player, Map.of(), callback, null);
     }
 
-    public String visionActionbar(ServerPlayer player, String prompt, Map<String, Object> options) {
-        if (player == null) return "";
-        VisionRequestManager.RequestOptions requestOptions = buildVisionRequestOptions(options);
-        UUID requestId = VisionRequestManager.requestActionbar(player, prompt, requestOptions);
+    public String captureScreenshot(ServerPlayer player, Map<String, Object> options, Consumer<VisionImage> callback) {
+        return captureScreenshot(player, options, callback, null);
+    }
+
+    public String captureScreenshot(ServerPlayer player, Map<String, Object> options,
+                                    Consumer<VisionImage> callback, @Nullable Consumer<String> onError) {
+        if (player == null || callback == null) return "";
+        UUID requestId = VisionRequestManager.requestScreenshot(player, buildCaptureOptions(options), callback, onError);
         return requestId.toString();
     }
 
-    public String visionExposureActionbar(ServerPlayer player, String prompt) {
-        return visionExposureActionbar(player, prompt, Map.of());
+    public @Nullable VisionImage getExposurePhoto(ServerPlayer player) {
+        return getExposurePhoto(player, Map.of());
     }
 
-    public String visionExposureActionbar(ServerPlayer player, String prompt, Map<String, Object> options) {
-        if (player == null) return "";
-        VisionRequestManager.RequestOptions requestOptions = buildVisionRequestOptions(options);
-        var exposure = ExposurePhotoReader.readHeldPhoto(player,
-                requestOptions.capture().detail(), requestOptions.capture().maxBytes());
-        if (exposure.isEmpty()) {
-            player.displayClientMessage(Component.literal("Hold an Exposure photograph first"), true);
-            return "";
+    public @Nullable VisionImage getExposurePhoto(ServerPlayer player, Map<String, Object> options) {
+        if (player == null) return null;
+        VisionRequestManager.CaptureOptions capture = buildCaptureOptions(options);
+        return ExposurePhotoReader.readHeldPhoto(player, capture.detail(), capture.maxBytes())
+                .map(ExposurePhotoReader.ExposureImage::image)
+                .orElse(null);
+    }
+
+    public void chatImage(String prompt, VisionImage image, Consumer<LLMResponse> callback) {
+        chatImage(prompt, image, Map.of(), callback);
+    }
+
+    public void chatImage(String prompt, VisionImage image, Map<String, Object> options, Consumer<LLMResponse> callback) {
+        if (image == null) {
+            callback.accept(LLMResponse.error("No image provided"));
+            return;
         }
-        VisionRequestManager.sendImageActionbar(player, prompt, requestOptions, exposure.get().image());
-        return exposure.get().exposureId();
+
+        List<ApiFormat.Message> messages = new ArrayList<>();
+        String system = getStr(options, "system");
+        if (system != null && !system.isBlank()) {
+            messages.add(new ApiFormat.Message("system", system));
+        }
+        messages.add(ApiFormat.Message.userWithImage(prompt, image.toMessagePart()));
+
+        List<String> chain;
+        List<String> fallback = getStrList(options, "fallback");
+        String provider = getStr(options, "provider");
+        if (fallback != null && !fallback.isEmpty()) {
+            chain = fallback;
+        } else if (provider != null && !provider.isBlank()) {
+            chain = List.of(provider);
+        } else {
+            Provider defaultP = ProviderManager.INSTANCE.getDefaultProvider();
+            chain = defaultP != null ? List.of(defaultP.getName()) : List.of();
+        }
+
+        ProviderManager.INSTANCE.sendWithFallback(messages, chain,
+                getDbl(options, "temperature"),
+                getInt(options, "maxTokens"),
+                LLMConfig.TIMEOUT.get()).thenAccept(callback);
     }
 
-    private VisionRequestManager.RequestOptions buildVisionRequestOptions(Map<String, Object> options) {
+    public void actionbar(ServerPlayer player, String message) {
+        if (player != null && message != null) {
+            player.displayClientMessage(Component.literal(message), true);
+        }
+    }
+
+    private VisionRequestManager.CaptureOptions buildCaptureOptions(Map<String, Object> options) {
         int maxWidth = getInt(options, "maxWidth") != null ? getInt(options, "maxWidth") : LLMConfig.MAX_IMAGE_WIDTH.get();
         int maxBytes = getInt(options, "maxBytes") != null ? getInt(options, "maxBytes") : LLMConfig.MAX_IMAGE_BYTES.get();
         Double qualityOpt = getDbl(options, "quality");
         float quality = qualityOpt != null ? qualityOpt.floatValue() : 0.78f;
 
-        VisionRequestManager.CaptureOptions capture = new VisionRequestManager.CaptureOptions(
+        return new VisionRequestManager.CaptureOptions(
                 maxWidth,
                 maxBytes,
                 quality,
                 getStrOr(options, "compression", "auto"),
                 getStrOr(options, "mimeType", "image/jpeg"),
                 getStrOr(options, "detail", "low")
-        );
-        return new VisionRequestManager.RequestOptions(
-                getStr(options, "provider"),
-                getStr(options, "system"),
-                getDbl(options, "temperature"),
-                getInt(options, "maxTokens"),
-                capture,
-                getStr(options, "expected"),
-                getStr(options, "harnessPrompt"),
-                getStr(options, "harnessProvider"),
-                getBool(options, "showHarnessFailures", false)
         );
     }
 
