@@ -115,7 +115,7 @@ Remove OkHttp dependency, MixinGradle plugin + config, and mixin annotation proc
 //   implementation 'com.squareup.okhttp3:okhttp:4.12.0'
 
 // FIX group ID:
-group = 'com.liteming.llmjs'  // was 'com.example.llmjs'
+group = 'vibe.liteming.llmjs'  // was 'com.example.llmjs'
 ```
 
 - [ ] **Step 2: Update `gradle.properties`**
@@ -123,7 +123,7 @@ group = 'com.liteming.llmjs'  // was 'com.example.llmjs'
 ```properties
 mod_id=llmjs
 mod_version=2.0.0
-mod_group_id=com.liteming.llmjs
+mod_group_id=vibe.liteming.llmjs
 mod_license=MIT
 ```
 
@@ -148,7 +148,7 @@ rmdir src/main/java/com/liteming/llmjs/util
 Temporarily simplify `LLMjs.java` to just the `@Mod` annotation and logger (remove `LLMConfig.register()` call since LLMConfig will be rewritten).
 
 ```java
-package com.liteming.llmjs;
+package vibe.liteming.llmjs;
 
 import net.minecraftforge.fml.common.Mod;
 import org.apache.logging.log4j.LogManager;
@@ -168,7 +168,7 @@ public class LLMjs {
 Also stub `LLMjsPlugin.java` to empty:
 
 ```java
-package com.liteming.llmjs.kubejs;
+package vibe.liteming.llmjs.kubejs;
 
 import dev.latvian.mods.kubejs.KubeJSPlugin;
 
@@ -199,7 +199,7 @@ git commit -m "chore: clean up v1.x code and build config for v2.0 refactor"
 - [ ] **Step 1: Create `LLMResponse.java`**
 
 ```java
-package com.liteming.llmjs.pipeline;
+package vibe.liteming.llmjs.pipeline;
 
 import com.google.gson.JsonObject;
 import org.jetbrains.annotations.Nullable;
@@ -282,7 +282,7 @@ public class LLMResponse {
 - [ ] **Step 2: Create `LLMLogger.java`**
 
 ```java
-package com.liteming.llmjs.log;
+package vibe.liteming.llmjs.log;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
@@ -462,9 +462,9 @@ git commit -m "feat: add LLMResponse data type and ring-buffer LLMLogger"
 Fully async HTTP wrapper around `java.net.http.HttpClient`. Supports custom headers, timeouts, and returns `CompletableFuture`.
 
 ```java
-package com.liteming.llmjs.http;
+package vibe.liteming.llmjs.http;
 
-import com.liteming.llmjs.LLMjs;
+import vibe.liteming.llmjs.LLMjs;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -544,9 +544,9 @@ git commit -m "feat: add async HttpService wrapper"
 - [ ] **Step 1: Create `ApiFormat.java` interface**
 
 ```java
-package com.liteming.llmjs.format;
+package vibe.liteming.llmjs.format;
 
-import com.liteming.llmjs.pipeline.LLMResponse;
+import vibe.liteming.llmjs.pipeline.LLMResponse;
 
 import java.util.Map;
 
@@ -591,10 +591,10 @@ public interface ApiFormat {
 - [ ] **Step 2: Create `OpenAiFormat.java`**
 
 ```java
-package com.liteming.llmjs.format;
+package vibe.liteming.llmjs.format;
 
 import com.google.gson.*;
-import com.liteming.llmjs.pipeline.LLMResponse;
+import vibe.liteming.llmjs.pipeline.LLMResponse;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -674,10 +674,10 @@ public class OpenAiFormat implements ApiFormat {
 - [ ] **Step 3: Create `ClaudeFormat.java`**
 
 ```java
-package com.liteming.llmjs.format;
+package vibe.liteming.llmjs.format;
 
 import com.google.gson.*;
-import com.liteming.llmjs.pipeline.LLMResponse;
+import vibe.liteming.llmjs.pipeline.LLMResponse;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -768,10 +768,10 @@ public class ClaudeFormat implements ApiFormat {
 - [ ] **Step 4: Create `GeminiFormat.java`**
 
 ```java
-package com.liteming.llmjs.format;
+package vibe.liteming.llmjs.format;
 
 import com.google.gson.*;
-import com.liteming.llmjs.pipeline.LLMResponse;
+import vibe.liteming.llmjs.pipeline.LLMResponse;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -899,10 +899,10 @@ git commit -m "feat: add ApiFormat interface with OpenAI, Claude, and Gemini ada
 - [ ] **Step 1: Create `Provider.java` interface**
 
 ```java
-package com.liteming.llmjs.provider;
+package vibe.liteming.llmjs.provider;
 
-import com.liteming.llmjs.format.ApiFormat;
-import com.liteming.llmjs.pipeline.LLMResponse;
+import vibe.liteming.llmjs.format.ApiFormat;
+import vibe.liteming.llmjs.pipeline.LLMResponse;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
@@ -931,11 +931,11 @@ public interface Provider {
 - [ ] **Step 2: Create `SimpleProvider.java`**
 
 ```java
-package com.liteming.llmjs.provider;
+package vibe.liteming.llmjs.provider;
 
-import com.liteming.llmjs.format.ApiFormat;
-import com.liteming.llmjs.http.HttpService;
-import com.liteming.llmjs.pipeline.LLMResponse;
+import vibe.liteming.llmjs.format.ApiFormat;
+import vibe.liteming.llmjs.http.HttpService;
+import vibe.liteming.llmjs.pipeline.LLMResponse;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
@@ -1016,12 +1016,12 @@ public class SimpleProvider implements Provider {
 - [ ] **Step 3: Create `RawProvider.java`**
 
 ```java
-package com.liteming.llmjs.provider;
+package vibe.liteming.llmjs.provider;
 
 import com.google.gson.*;
-import com.liteming.llmjs.format.ApiFormat;
-import com.liteming.llmjs.http.HttpService;
-import com.liteming.llmjs.pipeline.LLMResponse;
+import vibe.liteming.llmjs.format.ApiFormat;
+import vibe.liteming.llmjs.http.HttpService;
+import vibe.liteming.llmjs.pipeline.LLMResponse;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.LinkedHashMap;
@@ -1226,7 +1226,7 @@ git commit -m "feat: add Provider interface with SimpleProvider and RawProvider"
 Change to `ModConfig.Type.SERVER`. New fields: default_provider, timeout, rate_limit, max_prompt_length, log_buffer_size, require_op_level, allow_all_players.
 
 ```java
-package com.liteming.llmjs.config;
+package vibe.liteming.llmjs.config;
 
 import net.minecraftforge.common.ForgeConfigSpec;
 import net.minecraftforge.fml.ModLoadingContext;
@@ -1297,13 +1297,13 @@ public class LLMConfig {
 Loads providers from `serverconfig/llmjs/providers.json` and `providers_raw.json`. Generates default files if not present.
 
 ```java
-package com.liteming.llmjs.config;
+package vibe.liteming.llmjs.config;
 
 import com.google.gson.*;
-import com.liteming.llmjs.LLMjs;
-import com.liteming.llmjs.provider.Provider;
-import com.liteming.llmjs.provider.RawProvider;
-import com.liteming.llmjs.provider.SimpleProvider;
+import vibe.liteming.llmjs.LLMjs;
+import vibe.liteming.llmjs.provider.Provider;
+import vibe.liteming.llmjs.provider.RawProvider;
+import vibe.liteming.llmjs.provider.SimpleProvider;
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -1442,16 +1442,16 @@ public class ProviderLoader {
 - [ ] **Step 3: Create `ProviderManager.java`**
 
 ```java
-package com.liteming.llmjs.provider;
+package vibe.liteming.llmjs.provider;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import com.liteming.llmjs.LLMjs;
-import com.liteming.llmjs.config.LLMConfig;
-import com.liteming.llmjs.config.ProviderLoader;
-import com.liteming.llmjs.format.ApiFormat;
-import com.liteming.llmjs.log.LLMLogger;
-import com.liteming.llmjs.pipeline.LLMResponse;
+import vibe.liteming.llmjs.LLMjs;
+import vibe.liteming.llmjs.config.LLMConfig;
+import vibe.liteming.llmjs.config.ProviderLoader;
+import vibe.liteming.llmjs.format.ApiFormat;
+import vibe.liteming.llmjs.log.LLMLogger;
+import vibe.liteming.llmjs.pipeline.LLMResponse;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
@@ -1675,7 +1675,7 @@ git commit -m "feat: add LLMConfig (SERVER), ProviderLoader, and ProviderManager
 - [ ] **Step 1: Create `PostProcessor.java`**
 
 ```java
-package com.liteming.llmjs.pipeline;
+package vibe.liteming.llmjs.pipeline;
 
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -1702,7 +1702,7 @@ public interface PostProcessor {
 - [ ] **Step 2: Create `RegexPreset.java`**
 
 ```java
-package com.liteming.llmjs.pipeline;
+package vibe.liteming.llmjs.pipeline;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -1745,7 +1745,7 @@ public class RegexPreset {
 - [ ] **Step 3: Create `OutputTarget.java`**
 
 ```java
-package com.liteming.llmjs.pipeline;
+package vibe.liteming.llmjs.pipeline;
 
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
@@ -1791,12 +1791,12 @@ public class OutputTarget {
 This is the chainable builder. Single-use, consumed on terminal operation.
 
 ```java
-package com.liteming.llmjs.pipeline;
+package vibe.liteming.llmjs.pipeline;
 
-import com.liteming.llmjs.config.LLMConfig;
-import com.liteming.llmjs.format.ApiFormat;
-import com.liteming.llmjs.provider.Provider;
-import com.liteming.llmjs.provider.ProviderManager;
+import vibe.liteming.llmjs.config.LLMConfig;
+import vibe.liteming.llmjs.format.ApiFormat;
+import vibe.liteming.llmjs.provider.Provider;
+import vibe.liteming.llmjs.provider.ProviderManager;
 import net.minecraft.server.level.ServerPlayer;
 import org.jetbrains.annotations.Nullable;
 
@@ -2032,12 +2032,12 @@ git commit -m "feat: add pipeline system - LLMRequest builder, PostProcessor, Re
 - [ ] **Step 1: Create `ChatSession.java`**
 
 ```java
-package com.liteming.llmjs.session;
+package vibe.liteming.llmjs.session;
 
-import com.liteming.llmjs.config.LLMConfig;
-import com.liteming.llmjs.format.ApiFormat;
-import com.liteming.llmjs.pipeline.LLMResponse;
-import com.liteming.llmjs.provider.ProviderManager;
+import vibe.liteming.llmjs.config.LLMConfig;
+import vibe.liteming.llmjs.format.ApiFormat;
+import vibe.liteming.llmjs.pipeline.LLMResponse;
+import vibe.liteming.llmjs.provider.ProviderManager;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -2117,14 +2117,14 @@ public class ChatSession {
 - [ ] **Step 2: Create `JsonMode.java`**
 
 ```java
-package com.liteming.llmjs.json;
+package vibe.liteming.llmjs.json;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.liteming.llmjs.config.LLMConfig;
-import com.liteming.llmjs.format.ApiFormat;
-import com.liteming.llmjs.pipeline.LLMResponse;
-import com.liteming.llmjs.provider.ProviderManager;
+import vibe.liteming.llmjs.config.LLMConfig;
+import vibe.liteming.llmjs.format.ApiFormat;
+import vibe.liteming.llmjs.pipeline.LLMResponse;
+import vibe.liteming.llmjs.provider.ProviderManager;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -2204,12 +2204,12 @@ public class JsonMode {
 - [ ] **Step 3: Create `SchemaMode.java`**
 
 ```java
-package com.liteming.llmjs.json;
+package vibe.liteming.llmjs.json;
 
 import com.google.gson.*;
-import com.liteming.llmjs.config.LLMConfig;
-import com.liteming.llmjs.format.ApiFormat;
-import com.liteming.llmjs.provider.ProviderManager;
+import vibe.liteming.llmjs.config.LLMConfig;
+import vibe.liteming.llmjs.format.ApiFormat;
+import vibe.liteming.llmjs.provider.ProviderManager;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -2288,12 +2288,12 @@ public class SchemaMode {
 - [ ] **Step 4: Create `FillMode.java`**
 
 ```java
-package com.liteming.llmjs.json;
+package vibe.liteming.llmjs.json;
 
 import com.google.gson.*;
-import com.liteming.llmjs.config.LLMConfig;
-import com.liteming.llmjs.format.ApiFormat;
-import com.liteming.llmjs.provider.ProviderManager;
+import vibe.liteming.llmjs.config.LLMConfig;
+import vibe.liteming.llmjs.format.ApiFormat;
+import vibe.liteming.llmjs.provider.ProviderManager;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
@@ -2378,19 +2378,19 @@ git commit -m "feat: add ChatSession, JsonMode, SchemaMode, and FillMode"
 This is the main API facade exposed as `LLM` to KubeJS scripts. Implements the overloaded `chat()` method (callback vs builder), session API, JSON workflow, and management methods.
 
 ```java
-package com.liteming.llmjs.kubejs;
+package vibe.liteming.llmjs.kubejs;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
-import com.liteming.llmjs.config.LLMConfig;
-import com.liteming.llmjs.format.ApiFormat;
-import com.liteming.llmjs.json.FillMode;
-import com.liteming.llmjs.json.JsonMode;
-import com.liteming.llmjs.json.SchemaMode;
-import com.liteming.llmjs.log.LLMLogger;
-import com.liteming.llmjs.pipeline.*;
-import com.liteming.llmjs.provider.ProviderManager;
-import com.liteming.llmjs.session.ChatSession;
+import vibe.liteming.llmjs.config.LLMConfig;
+import vibe.liteming.llmjs.format.ApiFormat;
+import vibe.liteming.llmjs.json.FillMode;
+import vibe.liteming.llmjs.json.JsonMode;
+import vibe.liteming.llmjs.json.SchemaMode;
+import vibe.liteming.llmjs.log.LLMLogger;
+import vibe.liteming.llmjs.pipeline.*;
+import vibe.liteming.llmjs.provider.ProviderManager;
+import vibe.liteming.llmjs.session.ChatSession;
 import dev.latvian.mods.rhino.BaseFunction;
 import dev.latvian.mods.rhino.Context;
 import dev.latvian.mods.rhino.NativeObject;
@@ -2643,7 +2643,7 @@ public class LLMBinding {
                 // Pass response as a NativeObject the script can access
                 fn.call(cx, scope, scope, new Object[]{ responseToScriptable(response, cx, scope) });
             } catch (Exception e) {
-                com.liteming.llmjs.LLMjs.LOGGER.error("Callback error", e);
+                vibe.liteming.llmjs.LLMjs.LOGGER.error("Callback error", e);
             } finally {
                 Context.exit();
             }
@@ -2657,7 +2657,7 @@ public class LLMBinding {
                 Scriptable scope = fn.getParentScope();
                 fn.call(cx, scope, scope, new Object[]{ result });
             } catch (Exception e) {
-                com.liteming.llmjs.LLMjs.LOGGER.error("Callback error", e);
+                vibe.liteming.llmjs.LLMjs.LOGGER.error("Callback error", e);
             } finally {
                 Context.exit();
             }
@@ -2736,7 +2736,7 @@ public class LLMBinding {
 - [ ] **Step 2: Update `LLMjsPlugin.java`**
 
 ```java
-package com.liteming.llmjs.kubejs;
+package vibe.liteming.llmjs.kubejs;
 
 import dev.latvian.mods.kubejs.KubeJSPlugin;
 import dev.latvian.mods.kubejs.script.BindingsEvent;
@@ -2777,9 +2777,9 @@ git commit -m "feat: add LLMBinding KubeJS API facade with chat/session/json/man
 - [ ] **Step 1: Create `PermissionCheck.java`**
 
 ```java
-package com.liteming.llmjs.network;
+package vibe.liteming.llmjs.network;
 
-import com.liteming.llmjs.config.LLMConfig;
+import vibe.liteming.llmjs.config.LLMConfig;
 import net.minecraft.server.level.ServerPlayer;
 
 public class PermissionCheck {
@@ -2799,13 +2799,13 @@ public class PermissionCheck {
 
 ```java
 // === C2SChatRequestPacket.java ===
-package com.liteming.llmjs.network.packet;
+package vibe.liteming.llmjs.network.packet;
 
-import com.liteming.llmjs.config.LLMConfig;
-import com.liteming.llmjs.format.ApiFormat;
-import com.liteming.llmjs.network.LLMNetwork;
-import com.liteming.llmjs.network.PermissionCheck;
-import com.liteming.llmjs.provider.ProviderManager;
+import vibe.liteming.llmjs.config.LLMConfig;
+import vibe.liteming.llmjs.format.ApiFormat;
+import vibe.liteming.llmjs.network.LLMNetwork;
+import vibe.liteming.llmjs.network.PermissionCheck;
+import vibe.liteming.llmjs.provider.ProviderManager;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.network.NetworkEvent;
@@ -2866,11 +2866,11 @@ public class C2SChatRequestPacket {
 }
 
 // === C2SStatusRequestPacket.java ===
-package com.liteming.llmjs.network.packet;
+package vibe.liteming.llmjs.network.packet;
 
-import com.liteming.llmjs.network.LLMNetwork;
-import com.liteming.llmjs.network.PermissionCheck;
-import com.liteming.llmjs.provider.ProviderManager;
+import vibe.liteming.llmjs.network.LLMNetwork;
+import vibe.liteming.llmjs.network.PermissionCheck;
+import vibe.liteming.llmjs.provider.ProviderManager;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.network.NetworkEvent;
@@ -2900,7 +2900,7 @@ public class C2SStatusRequestPacket {
 }
 
 // === S2CChatResponsePacket.java ===
-package com.liteming.llmjs.network.packet;
+package vibe.liteming.llmjs.network.packet;
 
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraftforge.network.NetworkEvent;
@@ -2943,7 +2943,7 @@ public class S2CChatResponsePacket {
     public static void handle(S2CChatResponsePacket msg, Supplier<NetworkEvent.Context> ctx) {
         ctx.get().enqueueWork(() -> {
             // Client-side: forward to console screen if open
-            com.liteming.llmjs.client.ClientEventHandler.handleChatResponse(msg.requestId, msg.success, msg.content, msg.error);
+            vibe.liteming.llmjs.client.ClientEventHandler.handleChatResponse(msg.requestId, msg.success, msg.content, msg.error);
         });
         ctx.get().setPacketHandled(true);
     }
@@ -2956,7 +2956,7 @@ public class S2CChatResponsePacket {
 }
 
 // === S2CStatusResponsePacket.java ===
-package com.liteming.llmjs.network.packet;
+package vibe.liteming.llmjs.network.packet;
 
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraftforge.network.NetworkEvent;
@@ -2984,9 +2984,9 @@ public class S2CStatusResponsePacket {
     public static void handle(S2CStatusResponsePacket msg, Supplier<NetworkEvent.Context> ctx) {
         ctx.get().enqueueWork(() -> {
             if (msg.openConsole) {
-                com.liteming.llmjs.client.ClientEventHandler.openConsole(msg.statusJson);
+                vibe.liteming.llmjs.client.ClientEventHandler.openConsole(msg.statusJson);
             } else {
-                com.liteming.llmjs.client.ClientEventHandler.updateStatus(msg.statusJson);
+                vibe.liteming.llmjs.client.ClientEventHandler.updateStatus(msg.statusJson);
             }
         });
         ctx.get().setPacketHandled(true);
@@ -2994,7 +2994,7 @@ public class S2CStatusResponsePacket {
 }
 
 // === S2CLogPacket.java ===
-package com.liteming.llmjs.network.packet;
+package vibe.liteming.llmjs.network.packet;
 
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraftforge.network.NetworkEvent;
@@ -3018,7 +3018,7 @@ public class S2CLogPacket {
 
     public static void handle(S2CLogPacket msg, Supplier<NetworkEvent.Context> ctx) {
         ctx.get().enqueueWork(() -> {
-            com.liteming.llmjs.client.ClientEventHandler.handleLogEntry(msg.logEntryJson);
+            vibe.liteming.llmjs.client.ClientEventHandler.handleLogEntry(msg.logEntryJson);
         });
         ctx.get().setPacketHandled(true);
     }
@@ -3030,10 +3030,10 @@ Note: Each packet class goes in its own file under `network/packet/`. They are s
 - [ ] **Step 3: Create `LLMNetwork.java`**
 
 ```java
-package com.liteming.llmjs.network;
+package vibe.liteming.llmjs.network;
 
-import com.liteming.llmjs.LLMjs;
-import com.liteming.llmjs.network.packet.*;
+import vibe.liteming.llmjs.LLMjs;
+import vibe.liteming.llmjs.network.packet.*;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraftforge.network.NetworkDirection;
 import net.minecraftforge.network.NetworkRegistry;
@@ -3108,12 +3108,12 @@ git commit -m "feat: add network layer with 5 packet types, permission check, an
 Registers `/llm` command tree with subcommands: `console`, `status`, `test`, `reload`.
 
 ```java
-package com.liteming.llmjs.command;
+package vibe.liteming.llmjs.command;
 
-import com.liteming.llmjs.network.LLMNetwork;
-import com.liteming.llmjs.network.PermissionCheck;
-import com.liteming.llmjs.network.packet.S2CStatusResponsePacket;
-import com.liteming.llmjs.provider.ProviderManager;
+import vibe.liteming.llmjs.network.LLMNetwork;
+import vibe.liteming.llmjs.network.PermissionCheck;
+import vibe.liteming.llmjs.network.packet.S2CStatusResponsePacket;
+import vibe.liteming.llmjs.provider.ProviderManager;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import net.minecraft.commands.CommandSourceStack;
@@ -3225,10 +3225,10 @@ git commit -m "feat: add /llm command tree (console, status, test, reload)"
 - [ ] **Step 1: Create `ClientEventHandler.java`**
 
 ```java
-package com.liteming.llmjs.client;
+package vibe.liteming.llmjs.client;
 
-import com.liteming.llmjs.LLMjs;
-import com.liteming.llmjs.client.screen.LLMConsoleScreen;
+import vibe.liteming.llmjs.LLMjs;
+import vibe.liteming.llmjs.client.screen.LLMConsoleScreen;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.client.event.RegisterClientCommandsEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -3269,11 +3269,11 @@ public class ClientEventHandler {
 - [ ] **Step 2: Create `LLMConsoleScreen.java`**
 
 ```java
-package com.liteming.llmjs.client.screen;
+package vibe.liteming.llmjs.client.screen;
 
-import com.liteming.llmjs.client.widget.LogPanel;
-import com.liteming.llmjs.client.widget.ProviderListPanel;
-import com.liteming.llmjs.client.widget.TestPanel;
+import vibe.liteming.llmjs.client.widget.LogPanel;
+import vibe.liteming.llmjs.client.widget.ProviderListPanel;
+import vibe.liteming.llmjs.client.widget.TestPanel;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
@@ -3361,7 +3361,7 @@ public class LLMConsoleScreen extends Screen {
 - [ ] **Step 3: Create `LogPanel.java`**
 
 ```java
-package com.liteming.llmjs.client.widget;
+package vibe.liteming.llmjs.client.widget;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -3442,13 +3442,13 @@ public class LogPanel extends AbstractWidget {
 - [ ] **Step 4: Create `ProviderListPanel.java`**
 
 ```java
-package com.liteming.llmjs.client.widget;
+package vibe.liteming.llmjs.client.widget;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import com.liteming.llmjs.network.LLMNetwork;
-import com.liteming.llmjs.network.packet.C2SStatusRequestPacket;
+import vibe.liteming.llmjs.network.LLMNetwork;
+import vibe.liteming.llmjs.network.packet.C2SStatusRequestPacket;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
@@ -3539,10 +3539,10 @@ public class ProviderListPanel extends AbstractWidget {
 - [ ] **Step 5: Create `TestPanel.java`**
 
 ```java
-package com.liteming.llmjs.client.widget;
+package vibe.liteming.llmjs.client.widget;
 
-import com.liteming.llmjs.network.LLMNetwork;
-import com.liteming.llmjs.network.packet.C2SChatRequestPacket;
+import vibe.liteming.llmjs.network.LLMNetwork;
+import vibe.liteming.llmjs.network.packet.C2SChatRequestPacket;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
@@ -3670,13 +3670,13 @@ git commit -m "feat: add client UI console with Log, Provider, and Test panels"
 - [ ] **Step 1: Rewrite `LLMjs.java` to wire everything together**
 
 ```java
-package com.liteming.llmjs;
+package vibe.liteming.llmjs;
 
-import com.liteming.llmjs.command.LLMCommand;
-import com.liteming.llmjs.config.LLMConfig;
-import com.liteming.llmjs.log.LLMLogger;
-import com.liteming.llmjs.network.LLMNetwork;
-import com.liteming.llmjs.provider.ProviderManager;
+import vibe.liteming.llmjs.command.LLMCommand;
+import vibe.liteming.llmjs.config.LLMConfig;
+import vibe.liteming.llmjs.log.LLMLogger;
+import vibe.liteming.llmjs.network.LLMNetwork;
+import vibe.liteming.llmjs.provider.ProviderManager;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
@@ -3745,7 +3745,7 @@ Expected: `llmjs-2.0.0.jar` exists
 
 - [ ] **Step 3: Check for any remaining old files**
 
-Verify no files from `com.liteming.llmjs.util` package remain. Verify `run/config/llmjs/llm_config.json` is deleted.
+Verify no files from `vibe.liteming.llmjs.util` package remain. Verify `run/config/llmjs/llm_config.json` is deleted.
 
 - [ ] **Step 4: Review mods.toml**
 

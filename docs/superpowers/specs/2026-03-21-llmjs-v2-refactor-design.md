@@ -19,7 +19,7 @@ LLMjs is a KubeJS addon mod for Minecraft 1.20.1 Forge that enables KubeJS scrip
 ## 1. Package Structure
 
 ```
-com.liteming.llmjs/
+vibe.liteming.llmjs/
 ├── LLMjs.java                         // @Mod entry point
 ├── provider/
 │   ├── Provider.java                  // Interface: sendAsync(messages, options) → CompletableFuture<LLMResponse>

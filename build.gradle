@@ -17,7 +17,7 @@ plugins {
 }
 
 version = "${mod_version}"
-group = 'com.liteming.llmjs'
+group = 'vibe.liteming.llmjs'
 archivesBaseName = 'llmjs'
 
 java.toolchain.languageVersion = JavaLanguageVersion.of(17)
