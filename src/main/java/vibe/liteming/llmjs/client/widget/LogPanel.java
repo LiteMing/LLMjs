@@ -276,12 +276,6 @@ public class LogPanel extends AbstractWidget {
         }
         if (System.currentTimeMillis() < copyFlashUntilMs) {
             graphics.drawString(font, "Copied to clipboard", getX() + width - 120, dTop + 2, 0x55FF55, false);
-        } else if (low < 0) {
-            graphics.drawString(font, "Hold left mouse to select rows, right-click to copy JSON.",
-                    getX() + 4, dContentY, 0x666666, false);
-        } else if (!detailSelectActive) {
-            graphics.drawString(font, "Drag in this area to select text; RMB or Ctrl+C to copy.",
-                    getX() + 4, dContentY, 0x666666, false);
         }
     }
 
