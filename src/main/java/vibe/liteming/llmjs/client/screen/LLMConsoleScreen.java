@@ -5,6 +5,7 @@ import vibe.liteming.llmjs.client.widget.LogPanel;
 import vibe.liteming.llmjs.client.widget.ProviderListPanel;
 import vibe.liteming.llmjs.client.widget.SetupPanel;
 import vibe.liteming.llmjs.client.widget.TestPanel;
+import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
@@ -141,6 +142,11 @@ public class LLMConsoleScreen extends Screen {
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (keyCode == 258 && activeTab == Tab.TEST && testPanel != null) {
             if (testPanel.handleTabComplete(keyCode)) return true;
+        }
+        // Ctrl+C / Cmd+C copies current selection in Log tab (priority: detail area, then list).
+        if ((keyCode == 67) && (Screen.hasControlDown() || (Minecraft.ON_OSX && Screen.hasAltDown()))
+                && activeTab == Tab.LOG && logPanel != null) {
+            if (logPanel.handleCopyShortcut()) return true;
         }
         return super.keyPressed(keyCode, scanCode, modifiers);
     }

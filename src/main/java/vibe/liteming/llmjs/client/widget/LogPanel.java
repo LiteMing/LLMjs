@@ -6,6 +6,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
@@ -24,6 +25,16 @@ public class LogPanel extends AbstractWidget {
     private long copyFlashUntilMs = 0L;
     private static final int LINE_HEIGHT = 12;
     private static final int MAX_ENTRIES = 300;
+
+    // Detail (raw JSON) area line-level selection.
+    private List<String> cachedDetailLines = List.of();
+    private List<String> unwrappedDetailLines = List.of();
+    private int detailSelectionAnchor = -1;
+    private int detailSelectionEnd = -1;
+    private boolean draggingDetailSelect = false;
+    private boolean detailSelectActive = false;
+    private int lastDetailListLow = -2;
+    private int lastDetailListHigh = -2;
 
     private record LogDisplayEntry(
             String text,
@@ -44,6 +55,11 @@ public class LogPanel extends AbstractWidget {
         scrollOffset = 0;
         detailScroll = 0;
         draggingSelect = false;
+        detailSelectionAnchor = -1;
+        detailSelectionEnd = -1;
+        draggingDetailSelect = false;
+        detailSelectActive = false;
+        cachedDetailLines = List.of();
     }
 
     public void setHistory(List<String> history) {
@@ -57,6 +73,11 @@ public class LogPanel extends AbstractWidget {
 
     public void addEntry(String logEntryJson) {
         addEntry(logEntryJson, true);
+        // New entry: detail line cache invalid; clear detail selection.
+        detailSelectionAnchor = -1;
+        detailSelectionEnd = -1;
+        detailSelectActive = false;
+        cachedDetailLines = List.of();
     }
 
     private void addEntry(String logEntryJson, boolean autoScroll) {
@@ -124,6 +145,30 @@ public class LogPanel extends AbstractWidget {
         return low >= 0 && index >= low && index <= high;
     }
 
+    private int detailSelectionLow() {
+        if (detailSelectionAnchor < 0 || detailSelectionEnd < 0) return -1;
+        return Math.min(detailSelectionAnchor, detailSelectionEnd);
+    }
+
+    private int detailSelectionHigh() {
+        if (detailSelectionAnchor < 0 || detailSelectionEnd < 0) return -1;
+        return Math.max(detailSelectionAnchor, detailSelectionEnd);
+    }
+
+    private boolean isDetailLineSelected(int lineIndex) {
+        int low = detailSelectionLow();
+        int high = detailSelectionHigh();
+        return low >= 0 && lineIndex >= low && lineIndex <= high;
+    }
+
+    private void invalidateDetailCache() {
+        cachedDetailLines = List.of();
+        unwrappedDetailLines = List.of();
+        detailSelectionAnchor = -1;
+        detailSelectionEnd = -1;
+        detailSelectActive = false;
+    }
+
     private int rowIndexAt(double mouseY) {
         int listH = listHeight();
         int contentY = getY() + 14;
@@ -133,6 +178,29 @@ public class LogPanel extends AbstractWidget {
         if (row < 0 || row >= maxVisible) return -1;
         int idx = scrollOffset + row;
         return (idx >= 0 && idx < entries.size()) ? idx : -1;
+    }
+
+    private int detailLineAt(double mouseY) {
+        int dTop = detailTop();
+        int dContentY = dTop + 14;
+        if (mouseY < dContentY || mouseY >= getY() + height) return -1;
+        int row = (int) ((mouseY - dContentY) / LINE_HEIGHT);
+        int total = cachedDetailLines.size();
+        if (total == 0) return -1;
+        int idx = detailScroll + row;
+        return (idx >= 0 && idx < total) ? idx : -1;
+    }
+
+    private int detailLineAtClamped(double mouseY) {
+        int dTop = detailTop();
+        int dContentY = dTop + 14;
+        int total = cachedDetailLines.size();
+        if (total == 0) return -1;
+        if (mouseY < dContentY) return 0;
+        if (mouseY >= getY() + height) return total - 1;
+        int row = (int) ((mouseY - dContentY) / LINE_HEIGHT);
+        int idx = detailScroll + row;
+        return Math.max(0, Math.min(total - 1, idx));
     }
 
     @Override
@@ -174,60 +242,100 @@ public class LogPanel extends AbstractWidget {
                 : "Selection " + (low + 1) + "-" + (high + 1) + " (" + (high - low + 1) + " rows)");
         graphics.drawString(font, title, getX() + 4, dTop + 2, 0x88CCFF, false);
 
-        List<String> detailLines = buildDetailLines();
+        DetailBuild build = buildDetailLinesBoth();
+        List<String> detailLines = build.display();
+        // If the underlying list selection changed, the cached detail lines are stale;
+        // any detail selection indices no longer map correctly, so drop it.
+        int curListLow = selectionLow();
+        int curListHigh = selectionHigh();
+        if (curListLow != lastDetailListLow || curListHigh != lastDetailListHigh) {
+            lastDetailListLow = curListLow;
+            lastDetailListHigh = curListHigh;
+            if (!draggingDetailSelect) {
+                detailSelectionAnchor = -1;
+                detailSelectionEnd = -1;
+                detailSelectActive = false;
+            }
+        }
+        cachedDetailLines = detailLines;
+        unwrappedDetailLines = build.unwrapped();
         int dContentY = dTop + 14;
         int dContentH = getY() + height - dContentY - 2;
         int maxDetail = Math.max(1, dContentH / LINE_HEIGHT);
-        detailScroll = Math.max(0, Math.min(detailScroll, Math.max(0, detailLines.size() - maxDetail)));
+        if (!draggingDetailSelect) {
+            detailScroll = Math.max(0, Math.min(detailScroll, Math.max(0, detailLines.size() - maxDetail)));
+        }
         int end = Math.min(detailLines.size(), detailScroll + maxDetail);
         for (int i = detailScroll; i < end; i++) {
+            int drawY = dContentY + (i - detailScroll) * LINE_HEIGHT;
+            if (isDetailLineSelected(i)) {
+                graphics.fill(getX() + 1, drawY - 1, getX() + width - 1, drawY + LINE_HEIGHT - 1, 0x5533AA33);
+            }
             String line = font.plainSubstrByWidth(detailLines.get(i), width - 10);
-            graphics.drawString(font, line, getX() + 4, dContentY + (i - detailScroll) * LINE_HEIGHT, 0xDDDDDD, false);
+            graphics.drawString(font, line, getX() + 4, drawY, 0xDDDDDD, false);
         }
-        if (low < 0) {
+        if (System.currentTimeMillis() < copyFlashUntilMs) {
+            graphics.drawString(font, "Copied to clipboard", getX() + width - 120, dTop + 2, 0x55FF55, false);
+        } else if (low < 0) {
             graphics.drawString(font, "Hold left mouse to select rows, right-click to copy JSON.",
                     getX() + 4, dContentY, 0x666666, false);
-        } else if (System.currentTimeMillis() < copyFlashUntilMs) {
-            graphics.drawString(font, "Copied to clipboard", getX() + width - 120, dTop + 2, 0x55FF55, false);
+        } else if (!detailSelectActive) {
+            graphics.drawString(font, "Drag in this area to select text; RMB or Ctrl+C to copy.",
+                    getX() + 4, dContentY, 0x666666, false);
         }
     }
 
-    private List<String> buildDetailLines() {
-        List<String> lines = new ArrayList<>();
+    private record DetailBuild(List<String> display, List<String> unwrapped) {}
+
+    private DetailBuild buildDetailLinesBoth() {
+        List<String> display = new ArrayList<>();
+        List<String> unwrapped = new ArrayList<>();
         int low = selectionLow();
         int high = selectionHigh();
-        if (low < 0 || high >= entries.size()) return lines;
+        if (low < 0 || high >= entries.size()) return new DetailBuild(display, unwrapped);
         if (low == high) {
-            appendEntryDetail(lines, entries.get(low), low);
+            appendEntryDetailBoth(display, unwrapped, entries.get(low), low);
         } else {
             for (int i = low; i <= high; i++) {
-                lines.add("===== ENTRY " + (i + 1) + " =====");
-                appendEntryDetail(lines, entries.get(i), i);
+                display.add("===== ENTRY " + (i + 1) + " =====");
+                unwrapped.add("===== ENTRY " + (i + 1) + " =====");
+                appendEntryDetailBoth(display, unwrapped, entries.get(i), i);
             }
         }
-        return lines;
+        return new DetailBuild(display, unwrapped);
     }
 
-    private void appendEntryDetail(List<String> lines, LogDisplayEntry e, int index) {
-        lines.add(e.text);
-        if (e.purpose != null && !e.purpose.isBlank()) lines.add("purpose: " + e.purpose);
-        if (e.error != null && !e.error.isBlank()) lines.add("error: " + e.error);
-        lines.add("--- REQUEST ---");
-        wrapInto(lines, e.requestBody == null || e.requestBody.isBlank() ? "(empty)" : e.requestBody);
-        lines.add("--- RESPONSE ---");
-        wrapInto(lines, e.responseBody == null || e.responseBody.isBlank() ? "(empty)" : e.responseBody);
+    private void appendEntryDetailBoth(List<String> display, List<String> unwrapped,
+                                       LogDisplayEntry e, int index) {
+        display.add(e.text);
+        unwrapped.add(e.text);
+        if (e.purpose != null && !e.purpose.isBlank()) {
+            display.add("purpose: " + e.purpose);
+            unwrapped.add("purpose: " + e.purpose);
+        }
+        if (e.error != null && !e.error.isBlank()) {
+            display.add("error: " + e.error);
+            unwrapped.add("error: " + e.error);
+        }
+        display.add("--- REQUEST ---");
+        unwrapped.add("--- REQUEST ---");
+        wrapIntoBoth(display, unwrapped, e.requestBody == null || e.requestBody.isBlank() ? "(empty)" : e.requestBody);
+        display.add("--- RESPONSE ---");
+        unwrapped.add("--- RESPONSE ---");
+        wrapIntoBoth(display, unwrapped, e.responseBody == null || e.responseBody.isBlank() ? "(empty)" : e.responseBody);
     }
 
-    private void wrapInto(List<String> lines, String text) {
+    private void wrapIntoBoth(List<String> display, List<String> unwrapped, String text) {
         String[] raw = text.replace("\r", "").split("\n", -1);
         for (String row : raw) {
             if (row.length() <= 180) {
-                lines.add(row);
+                display.add(row);
             } else {
                 for (int i = 0; i < row.length(); i += 180) {
-                    lines.add(row.substring(i, Math.min(row.length(), i + 180)));
+                    display.add(row.substring(i, Math.min(row.length(), i + 180)));
                 }
             }
+            unwrapped.add(row);
         }
     }
 
@@ -235,20 +343,50 @@ public class LogPanel extends AbstractWidget {
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (!visible || !isMouseOver(mouseX, mouseY)) return false;
 
-        // Right-click: copy current selection (or row under cursor)
+        int listH = listHeight();
+        boolean inDetailArea = mouseY >= detailTop() + 14 && mouseY < getY() + height;
+
+        // Right-click: copy whichever region the cursor is in.
         if (button == 1) {
-            int under = rowIndexAt(mouseY);
-            if (under >= 0 && !isSelected(under)) {
-                selectionAnchor = under;
-                selectionEnd = under;
-                detailScroll = 0;
+            if (inDetailArea) {
+                int under = detailLineAt(mouseY);
+                if (under >= 0 && !isDetailLineSelected(under)) {
+                    detailSelectionAnchor = under;
+                    detailSelectionEnd = under;
+                    detailSelectActive = true;
+                }
+                copyDetailSelectionToClipboard();
+            } else {
+                int under = rowIndexAt(mouseY);
+                if (under >= 0 && !isSelected(under)) {
+                    selectionAnchor = under;
+                    selectionEnd = under;
+                    detailScroll = 0;
+                    invalidateDetailCache();
+                }
+                copySelectionToClipboard();
             }
-            copySelectionToClipboard();
             return true;
         }
 
         if (button != 0) return false;
-        int listH = listHeight();
+
+        // Left-click: detail area starts a detail selection drag; list area starts row drag.
+        if (inDetailArea) {
+            int idx = detailLineAt(mouseY);
+            if (idx >= 0) {
+                detailSelectionAnchor = idx;
+                detailSelectionEnd = idx;
+                detailSelectActive = true;
+                draggingDetailSelect = true;
+            } else {
+                detailSelectionAnchor = -1;
+                detailSelectionEnd = -1;
+                detailSelectActive = false;
+            }
+            return true;
+        }
+
         if (mouseY >= getY() + 14 && mouseY < getY() + listH) {
             int idx = rowIndexAt(mouseY);
             if (idx >= 0) {
@@ -256,6 +394,7 @@ public class LogPanel extends AbstractWidget {
                 selectionEnd = idx;
                 detailScroll = 0;
                 draggingSelect = true;
+                invalidateDetailCache();
                 return true;
             }
         }
@@ -264,7 +403,28 @@ public class LogPanel extends AbstractWidget {
 
     @Override
     public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
-        if (!visible || !draggingSelect || button != 0) return false;
+        if (!visible || button != 0) return false;
+
+        if (draggingDetailSelect) {
+            int idx = detailLineAtClamped(mouseY);
+            if (idx >= 0) {
+                detailSelectionEnd = idx;
+                // auto-scroll detail area near edges
+                int dTop = detailTop();
+                int dContentY = dTop + 14;
+                int dContentH = getY() + height - dContentY - 2;
+                int maxDetail = Math.max(1, dContentH / LINE_HEIGHT);
+                if (mouseY < dContentY + 6 && detailScroll > 0) {
+                    detailScroll--;
+                } else if (mouseY > getY() + height - 6
+                        && detailScroll + maxDetail < cachedDetailLines.size()) {
+                    detailScroll++;
+                }
+            }
+            return true;
+        }
+
+        if (!draggingSelect) return false;
         int idx = rowIndexAt(mouseY);
         if (idx < 0) {
             // clamp to visible list edges while dragging outside
@@ -278,6 +438,7 @@ public class LogPanel extends AbstractWidget {
         }
         if (idx >= 0 && idx < entries.size()) {
             selectionEnd = idx;
+            invalidateDetailCache();
             // auto-scroll while dragging near edges
             int listH = listHeight();
             int maxVisible = Math.max(1, (listH - 16) / LINE_HEIGHT);
@@ -293,7 +454,10 @@ public class LogPanel extends AbstractWidget {
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
-        if (button == 0) draggingSelect = false;
+        if (button == 0) {
+            draggingSelect = false;
+            draggingDetailSelect = false;
+        }
         return super.mouseReleased(mouseX, mouseY, button);
     }
 
@@ -318,6 +482,41 @@ public class LogPanel extends AbstractWidget {
             Minecraft.getInstance().keyboardHandler.setClipboard(sb.toString());
             copyFlashUntilMs = System.currentTimeMillis() + 1500L;
         } catch (Exception ignored) {}
+    }
+
+    private void copyDetailSelectionToClipboard() {
+        if (unwrappedDetailLines.isEmpty()) return;
+        int low = detailSelectionLow();
+        int high = detailSelectionHigh();
+        if (low < 0 || high >= unwrappedDetailLines.size()) return;
+        StringBuilder sb = new StringBuilder();
+        for (int i = low; i <= high; i++) {
+            if (i > low) sb.append('\n');
+            sb.append(unwrappedDetailLines.get(i));
+        }
+        try {
+            Minecraft.getInstance().keyboardHandler.setClipboard(sb.toString());
+            copyFlashUntilMs = System.currentTimeMillis() + 1500L;
+        } catch (Exception ignored) {}
+    }
+
+    /**
+     * Handle Ctrl+C (and Cmd+C on mac via GLFW). Returns true if a copy happened.
+     * Detailed selection takes priority when active; otherwise falls back to list selection.
+     */
+    public boolean handleCopyShortcut() {
+        if (!visible) return false;
+        boolean ctrl = Screen.hasControlDown() || (Minecraft.ON_OSX && Screen.hasAltDown());
+        if (!ctrl) return false;
+        if (detailSelectActive && detailSelectionLow() >= 0) {
+            copyDetailSelectionToClipboard();
+            return true;
+        }
+        if (selectionLow() >= 0) {
+            copySelectionToClipboard();
+            return true;
+        }
+        return false;
     }
 
     @Override
