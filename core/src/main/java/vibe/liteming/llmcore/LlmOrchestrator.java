@@ -285,20 +285,27 @@ public final class LlmOrchestrator {
                 }
             }
             StringBuilder accumulated = new StringBuilder();
-            StringBuilder rawStream = new StringBuilder();
+            StringBuilder reasoning = new StringBuilder();
+            int chunkCount = 0;
             boolean emitted = false;
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(response.body(), StandardCharsets.UTF_8))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
-                    rawStream.append(line).append('\n');
                     if (!line.startsWith("data:")) continue;
                     String data = line.substring(5).trim();
                     if (data.isEmpty() || "[DONE]".equals(data)) continue;
+                    chunkCount++;
                     JsonObject chunk = JsonParser.parseString(data).getAsJsonObject();
                     JsonArray choices = chunk.getAsJsonArray("choices");
                     if (choices == null || choices.isEmpty()) continue;
                     JsonObject delta = choices.get(0).getAsJsonObject().getAsJsonObject("delta");
-                    if (delta != null && delta.has("content") && !delta.get("content").isJsonNull()) {
+                    if (delta == null) continue;
+                    // Some providers (e.g. LongCat) stream chain-of-thought separately.
+                    if (delta.has("reasoning_content") && !delta.get("reasoning_content").isJsonNull()) {
+                        String thought = delta.get("reasoning_content").getAsString();
+                        if (!thought.isEmpty()) reasoning.append(thought);
+                    }
+                    if (delta.has("content") && !delta.get("content").isJsonNull()) {
                         String text = delta.get("content").getAsString();
                         if (!text.isEmpty()) {
                             accumulated.append(text);
@@ -308,15 +315,41 @@ public final class LlmOrchestrator {
                     }
                 }
                 latency = System.currentTimeMillis() - startedAt;
-                String responseBody = rawStream.toString();
+                // Log a reconstructed chat-completion style body, not raw SSE chunks.
+                String responseBody = buildStreamLogBody(provider.model(), accumulated.toString(),
+                        reasoning.toString(), chunkCount);
                 return accumulated.isEmpty()
                         ? StreamResult.failure("LLM stream produced no content", 0, latency, emitted, requestBody, responseBody)
                         : StreamResult.success(accumulated.toString(), latency, requestBody, responseBody);
             } catch (Exception e) {
+                String responseBody = buildStreamLogBody(provider.model(), accumulated.toString(),
+                        reasoning.toString(), chunkCount);
                 return StreamResult.failure(rootMessage(e), 0, System.currentTimeMillis() - startedAt, emitted,
-                        requestBody, rawStream.toString());
+                        requestBody, responseBody);
             }
         });
+    }
+
+    /** Human-readable body for console logs (avoids dumping every SSE line). */
+    private static String buildStreamLogBody(String model, String content, String reasoning, int chunkCount) {
+        JsonObject body = new JsonObject();
+        body.addProperty("object", "chat.completion");
+        body.addProperty("stream", true);
+        body.addProperty("model", model == null ? "" : model);
+        body.addProperty("chunk_count", chunkCount);
+        JsonArray choices = new JsonArray();
+        JsonObject choice = new JsonObject();
+        JsonObject message = new JsonObject();
+        message.addProperty("role", "assistant");
+        message.addProperty("content", content == null ? "" : content);
+        if (reasoning != null && !reasoning.isBlank()) {
+            message.addProperty("reasoning_content", reasoning);
+        }
+        choice.add("message", message);
+        choice.addProperty("finish_reason", "stop");
+        choices.add(choice);
+        body.add("choices", choices);
+        return GSON.toJson(body);
     }
 
     private static JsonObject buildBody(String format, ProviderSpec provider, LlmRequest request) {
