@@ -107,4 +107,11 @@ public class ClientEventHandler {
     public static void clearActiveConsole() {
         activeConsole = null;
     }
+
+    /** Forwarded from S2CVisionProbeResultPacket on the client thread. */
+    public static void onVisionProbeResult(String providerName, boolean supported, String error, long latencyMs) {
+        if (activeConsole != null) {
+            activeConsole.onVisionProbeResult(providerName, supported, error, latencyMs);
+        }
+    }
 }

@@ -1,0 +1,51 @@
+plugins {
+    id 'eclipse'
+    id 'maven-publish'
+    id 'net.minecraftforge.gradle' version '6.+'
+}
+
+// llmcore-mod is a thin Forge packaging wrapper around the plain-Java `core`
+// subproject. It exists so llm-core classes can be shipped as a standalone
+// Forge mod jar (llmcore-x.y.z.jar) that both llmjs and CreatureChat depend
+// on, keeping exactly one copy of vibe.liteming.llmcore.* on the runtime
+// classpath (no shadow-relocate, no split-package).
+
+version = rootProject.hasProperty('llmcore_version') ? rootProject.llmcore_version : '1.0.0'
+group = 'vibe.liteming'
+archivesBaseName = 'llmcore'
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(17)
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+minecraft {
+    mappings channel: 'official', version: '1.20.1'
+    runs {
+        client { workingDirectory project.file('run') }
+        server { workingDirectory project.file('run') }
+    }
+}
+
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.2.0'
+    // Compile against the plain-Java core subproject; its classes are baked into
+    // this jar via the `from(...)` below — no runtime dependency on the core jar.
+    implementation project(':core')
+}
+
+// Pull core's compiled classes (and only classes — gson stays as a runtime
+// dep provided by Forge/Minecraft) into the llmcore-mod jar so the published
+// llmcore-x.y.z.jar is self-contained for the vibe.liteming.llmcore.* types.
+jar {
+    dependsOn project(':core').tasks.named('classes')
+    from(project(':core').sourceSets.main.output)
+    finalizedBy 'reobfJar'
+}
+
+tasks.named('build').configure {
+    dependsOn 'reobfJar'
+}

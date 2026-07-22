@@ -70,9 +70,15 @@ evaluationDependsOn(':core')
 
 // Production jars must be reobfuscated for Forge runtime (SRG names).
 // Without reobfJar, Commands.literal/etc resolve as NoSuchMethodError in packs.
+//
+// llm-core is NO LONGER embedded into the llmjs jar: it ships as its own Forge
+// mod (the :llmcore-mod sibling project -> llmcore-x.y.z.jar) that llmjs
+// declares as an optional dependency. This keeps exactly one copy of
+// vibe.liteming.llmcore.* on the runtime classpath when llmjs and CreatureChat
+// are both installed, eliminating the split-package collisions that previously
+// forced CreatureChat to shadow-relocate. Compile-time visibility of the core
+// API is still provided by `implementation project(':core')` above.
 jar {
-    dependsOn project(':core').tasks.named('classes')
-    from project(':core').sourceSets.main.output
     finalizedBy 'reobfJar'
 }
 

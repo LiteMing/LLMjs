@@ -201,4 +201,8 @@ public class LLMConsoleScreen extends Screen {
         switchTab(Tab.SETUP);
         if (setupPanel != null) setupPanel.prefill(name, format, url, model, maskedKey);
     }
+
+    public void onVisionProbeResult(String providerName, boolean supported, String error, long latencyMs) {
+        if (testPanel != null) testPanel.onVisionProbeResult(providerName, supported, error, latencyMs);
+    }
 }

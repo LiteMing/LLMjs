@@ -3,6 +3,7 @@ package vibe.liteming.llmjs.client.widget;
 import vibe.liteming.llmjs.config.GlobalConfig;
 import vibe.liteming.llmjs.network.LLMNetwork;
 import vibe.liteming.llmjs.network.packet.C2SChatRequestPacket;
+import vibe.liteming.llmjs.network.packet.C2SVisionProbePacket;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -23,12 +24,15 @@ public class TestPanel {
     private final EditBox providerInput;
     private final EditBox promptInput;
     private final Button sendButton;
+    private final Button visionProbeButton;
     private final Button prevTemplateBtn;
     private final Button nextTemplateBtn;
     private final Button saveTemplateBtn;
     private @Nullable String responseText;
     private boolean waiting = false;
     private boolean visible = true;
+    private @Nullable String visionResultText = null;
+    private int visionResultColor = 0xAAAAAA;
 
     // Provider tab-complete
     private List<String> providerNames = new ArrayList<>();
@@ -58,6 +62,11 @@ public class TestPanel {
         sendButton = Button.builder(Component.literal("Send"), b -> sendTest())
                 .pos(x + width - 80, y + 28).size(70, 18).build();
 
+        // Vision probe button: next to Send, fires a 1x1 PNG to the current provider
+        // and reports whether that model accepts image input.
+        visionProbeButton = Button.builder(Component.literal("Vision"), b -> sendVisionProbe())
+                .pos(x + width - 80, y + 4).size(70, 18).build();
+
         // Template navigation buttons
         int templateY = y + 52;
         prevTemplateBtn = Button.builder(Component.literal("<"), b -> cycleTemplate(-1))
@@ -85,7 +94,8 @@ public class TestPanel {
     }
 
     public List<net.minecraft.client.gui.components.AbstractWidget> getWidgets() {
-        return List.of(providerInput, promptInput, sendButton, prevTemplateBtn, nextTemplateBtn, saveTemplateBtn);
+        return List.of(providerInput, promptInput, sendButton, visionProbeButton,
+                prevTemplateBtn, nextTemplateBtn, saveTemplateBtn);
     }
 
     public void setVisible(boolean v) {
@@ -93,6 +103,7 @@ public class TestPanel {
         providerInput.visible = v;
         promptInput.visible = v;
         sendButton.visible = v;
+        visionProbeButton.visible = v;
         prevTemplateBtn.visible = v;
         nextTemplateBtn.visible = v;
         saveTemplateBtn.visible = v;
@@ -190,6 +201,31 @@ public class TestPanel {
                 new C2SChatRequestPacket(requestId, promptInput.getValue(), providerInput.getValue()));
     }
 
+    private void sendVisionProbe() {
+        String name = providerInput.getValue().trim();
+        if (name.isEmpty()) {
+            visionResultText = "Enter a provider name first";
+            visionResultColor = 0xFF5555;
+            return;
+        }
+        visionResultText = "Probing " + name + "...";
+        visionResultColor = 0xAAAAFF;
+        LLMNetwork.CHANNEL.sendToServer(new C2SVisionProbePacket(name));
+    }
+
+    /** Called on the client thread when the server reports the probe result. */
+    public void onVisionProbeResult(String providerName, boolean supported, String error, long latencyMs) {
+        String target = providerInput.getValue().trim();
+        if (!target.equalsIgnoreCase(providerName)) return; // stale result for another row
+        if (supported) {
+            visionResultText = "Vision: OK (" + latencyMs + "ms)";
+            visionResultColor = 0x55FF55;
+        } else {
+            visionResultText = "Vision: NO - " + (error == null || error.isEmpty() ? "not supported" : error);
+            visionResultColor = 0xFF5555;
+        }
+    }
+
     public void onResponse(boolean success, @Nullable String content, @Nullable String error) {
         waiting = false;
         responseText = success ? content : ("ERROR: " + error);
@@ -217,6 +253,11 @@ public class TestPanel {
         // Tab hint for provider
         if (providerInput.isFocused()) {
             graphics.drawString(font, "[Tab to cycle]", x + 236, y + 9, 0x556688, false);
+        }
+
+        // Vision probe result (just below provider row)
+        if (visionResultText != null) {
+            graphics.drawString(font, visionResultText, x + 80, y + 74, visionResultColor, false);
         }
 
         int respY = y + 74;

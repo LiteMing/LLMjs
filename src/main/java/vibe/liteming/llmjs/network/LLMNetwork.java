@@ -84,5 +84,17 @@ public class LLMNetwork {
                 .decoder(C2SUpdateRoutingPacket::decode)
                 .consumerMainThread(C2SUpdateRoutingPacket::handle)
                 .add();
+
+        CHANNEL.messageBuilder(C2SVisionProbePacket.class, packetId++, NetworkDirection.PLAY_TO_SERVER)
+                .encoder(C2SVisionProbePacket::encode)
+                .decoder(C2SVisionProbePacket::decode)
+                .consumerMainThread(C2SVisionProbePacket::handle)
+                .add();
+
+        CHANNEL.messageBuilder(S2CVisionProbeResultPacket.class, packetId++, NetworkDirection.PLAY_TO_CLIENT)
+                .encoder(S2CVisionProbeResultPacket::encode)
+                .decoder(S2CVisionProbeResultPacket::decode)
+                .consumerMainThread(S2CVisionProbeResultPacket::handle)
+                .add();
     }
 }

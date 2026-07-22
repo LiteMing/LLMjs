@@ -18,6 +18,9 @@ import net.minecraftforge.fml.common.Mod;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
+import java.util.ArrayList;
+import java.util.List;
+
 @Mod(LLMjs.MODID)
 public class LLMjs {
     public static final String MODID = "llmjs";
@@ -35,6 +38,8 @@ public class LLMjs {
      * Register purposes that llm-core / llmjs define intrinsically. These cannot
      * be overwritten by mod-level registers, ensuring the routing UI always shows
      * the generic "CHAT" and "DEBUG_TEST" rows even with no consumer mods present.
+     * Consumer mods register their own purposes at runtime via
+     * {@link vibe.liteming.llmjs.api.LlmjsApi#registerPurpose}.
      */
     private static void registerBuiltInPurposes() {
         PurposeRegistry.registerBuiltIn(new PurposeMeta("CHAT", "Chat",

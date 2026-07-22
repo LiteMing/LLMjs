@@ -217,6 +217,41 @@ public class ProviderManager {
 
     public @Nullable ConnectionStatus getCachedStatus(String name) { return statusCache.get(name); }
 
+    /**
+     * Probe whether a provider's model accepts image input. Sends a tiny 1x1 PNG
+     * and "describe this image" via the provider's normal chat path (single-element
+     * chain so fallbacks are NOT used — we are testing this specific provider).
+     * The future completes with {@code true} on any 2xx + parseable content, and
+     * {@code false} with an error message otherwise (e.g. "image not supported").
+     */
+    public CompletableFuture<VisionProbeResult> testVision(String name) {
+        Provider provider = providers.get(name);
+        if (provider == null) return CompletableFuture.completedFuture(
+                new VisionProbeResult(false, "Provider not found", 0));
+        int timeout = LLMConfig.TIMEOUT.get();
+        // Inline 1x1 transparent PNG (67 bytes) — avoids any file IO at probe time.
+        byte[] png = java.util.Base64.getDecoder().decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC");
+        String base64 = java.util.Base64.getEncoder().encodeToString(png);
+        vibe.liteming.llmjs.format.MessagePart.ImagePart image =
+                new vibe.liteming.llmjs.format.MessagePart.ImagePart("image/png", base64, "low", 1, 1, png.length);
+        List<ApiFormat.Message> messages = List.of(ApiFormat.Message.userWithImage(
+                "Reply with the single word OK.", image));
+        long start = System.currentTimeMillis();
+        return provider.sendAsync(messages, 0.0, 8, timeout).thenApply(response -> {
+            long latency = System.currentTimeMillis() - start;
+            if (response.isSuccess()) return new VisionProbeResult(true, null, latency);
+            String err = response.getError();
+            // Common phrasing from OpenAI-compatible backends when the model lacks vision.
+            String canonical = err == null ? "model rejected image"
+                    : (err.contains("image") || err.contains("vision") || err.contains("multimodal"))
+                            ? err : "model does not support image input";
+            return new VisionProbeResult(false, canonical, latency);
+        });
+    }
+
+    public record VisionProbeResult(boolean supported, @Nullable String error, long latencyMs) {}
+
     private boolean checkRateLimit() {
         int limit = LLMConfig.RATE_LIMIT.get();
         if (limit <= 0) return true;

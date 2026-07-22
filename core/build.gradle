@@ -4,7 +4,9 @@ plugins {
 }
 
 group = 'vibe.liteming'
-version = rootProject.version
+// llm-core ships as its own artifact (and Forge mod jar via the llmcore-mod
+// sibling project); its version is independent of the llmjs mod version.
+version = rootProject.hasProperty('llmcore_version') ? rootProject.llmcore_version : '1.0.0'
 
 base {
     archivesName = 'llm-core'

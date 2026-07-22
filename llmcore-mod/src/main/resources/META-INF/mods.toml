@@ -1,0 +1,27 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+
+[[mods]]
+modId="llmcore"
+version="1.0.0"
+displayName="LLM Core"
+description='''
+Shared LLM orchestration library (LlmOrchestrator, PurposeRegistry, PriorityRoutingConfig).
+Loaded as a standalone Forge mod so that llmjs and CreatureChat share exactly one
+copy of the vibe.liteming.llmcore classes at runtime — no shadow-relocated duplicates.
+'''
+
+[[dependencies.llmcore]]
+modId="forge"
+mandatory=true
+versionRange="[47,)"
+ordering="NONE"
+side="BOTH"
+
+[[dependencies.llmcore]]
+modId="minecraft"
+mandatory=true
+versionRange="[1.20.1,1.20.2)"
+ordering="NONE"
+side="BOTH"

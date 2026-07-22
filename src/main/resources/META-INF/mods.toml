@@ -21,6 +21,15 @@ versionRange="[47.2.0,)"
 ordering="NONE"
 side="BOTH"
 
+# llm-core ships as a standalone Forge mod (llmcore-x.y.z.jar) so that llmjs
+# and CreatureChat share exactly one copy of the vibe.liteming.llmcore.* classes.
+[[dependencies.llmjs]]
+modId="llmcore"
+mandatory=true
+versionRange="[1.0.0,)"
+ordering="AFTER"
+side="BOTH"
+
 [[dependencies.llmjs]]
 modId="kubejs"
 mandatory=true
