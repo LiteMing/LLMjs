@@ -3,6 +3,7 @@ package vibe.liteming.llmjs.client.widget;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.narration.NarrationElementOutput;
@@ -26,15 +27,20 @@ public class LogPanel extends AbstractWidget {
     private static final int LINE_HEIGHT = 12;
     private static final int MAX_ENTRIES = 300;
 
-    // Detail (raw JSON) area line-level selection.
-    private List<String> cachedDetailLines = List.of();
+    // Detail (raw JSON) area character-level selection.
+    // Each point is (logicalLine, charOffset) into unwrappedDetailLines.
+    private List<DetailSeg> cachedDetailSegs = List.of();
     private List<String> unwrappedDetailLines = List.of();
-    private int detailSelectionAnchor = -1;
-    private int detailSelectionEnd = -1;
+    private int detailAnchorLine = -1;
+    private int detailAnchorChar = -1;
+    private int detailEndLine = -1;
+    private int detailEndChar = -1;
     private boolean draggingDetailSelect = false;
     private boolean detailSelectActive = false;
     private int lastDetailListLow = -2;
     private int lastDetailListHigh = -2;
+
+    private record DetailSeg(String text, int logicalLine, int startChar, int endChar) {}
 
     private record LogDisplayEntry(
             String text,
@@ -55,11 +61,14 @@ public class LogPanel extends AbstractWidget {
         scrollOffset = 0;
         detailScroll = 0;
         draggingSelect = false;
-        detailSelectionAnchor = -1;
-        detailSelectionEnd = -1;
+        detailAnchorLine = -1;
+        detailAnchorChar = -1;
+        detailEndLine = -1;
+        detailEndChar = -1;
         draggingDetailSelect = false;
         detailSelectActive = false;
-        cachedDetailLines = List.of();
+        cachedDetailSegs = List.of();
+        unwrappedDetailLines = List.of();
     }
 
     public void setHistory(List<String> history) {
@@ -73,11 +82,14 @@ public class LogPanel extends AbstractWidget {
 
     public void addEntry(String logEntryJson) {
         addEntry(logEntryJson, true);
-        // New entry: detail line cache invalid; clear detail selection.
-        detailSelectionAnchor = -1;
-        detailSelectionEnd = -1;
+        // New entry: detail cache invalid; clear detail selection.
+        detailAnchorLine = -1;
+        detailAnchorChar = -1;
+        detailEndLine = -1;
+        detailEndChar = -1;
         detailSelectActive = false;
-        cachedDetailLines = List.of();
+        cachedDetailSegs = List.of();
+        unwrappedDetailLines = List.of();
     }
 
     private void addEntry(String logEntryJson, boolean autoScroll) {
@@ -145,27 +157,37 @@ public class LogPanel extends AbstractWidget {
         return low >= 0 && index >= low && index <= high;
     }
 
-    private int detailSelectionLow() {
-        if (detailSelectionAnchor < 0 || detailSelectionEnd < 0) return -1;
-        return Math.min(detailSelectionAnchor, detailSelectionEnd);
+    private boolean detailSelectionEmpty() {
+        return detailAnchorLine < 0 || detailEndLine < 0
+                || (detailAnchorLine == detailEndLine && detailAnchorChar == detailEndChar);
     }
 
-    private int detailSelectionHigh() {
-        if (detailSelectionAnchor < 0 || detailSelectionEnd < 0) return -1;
-        return Math.max(detailSelectionAnchor, detailSelectionEnd);
+    // Normalized start point (smaller).
+    private int[] detailSelStart() {
+        if (detailSelectionEmpty()) return null;
+        if (detailAnchorLine < detailEndLine
+                || (detailAnchorLine == detailEndLine && detailAnchorChar < detailEndChar)) {
+            return new int[]{detailAnchorLine, detailAnchorChar};
+        }
+        return new int[]{detailEndLine, detailEndChar};
     }
 
-    private boolean isDetailLineSelected(int lineIndex) {
-        int low = detailSelectionLow();
-        int high = detailSelectionHigh();
-        return low >= 0 && lineIndex >= low && lineIndex <= high;
+    private int[] detailSelEnd() {
+        if (detailSelectionEmpty()) return null;
+        if (detailAnchorLine < detailEndLine
+                || (detailAnchorLine == detailEndLine && detailAnchorChar < detailEndChar)) {
+            return new int[]{detailEndLine, detailEndChar};
+        }
+        return new int[]{detailAnchorLine, detailAnchorChar};
     }
 
     private void invalidateDetailCache() {
-        cachedDetailLines = List.of();
+        cachedDetailSegs = List.of();
         unwrappedDetailLines = List.of();
-        detailSelectionAnchor = -1;
-        detailSelectionEnd = -1;
+        detailAnchorLine = -1;
+        detailAnchorChar = -1;
+        detailEndLine = -1;
+        detailEndChar = -1;
         detailSelectActive = false;
     }
 
@@ -180,27 +202,50 @@ public class LogPanel extends AbstractWidget {
         return (idx >= 0 && idx < entries.size()) ? idx : -1;
     }
 
-    private int detailLineAt(double mouseY) {
+    private int detailSegAt(double mouseY) {
         int dTop = detailTop();
         int dContentY = dTop + 14;
         if (mouseY < dContentY || mouseY >= getY() + height) return -1;
-        int row = (int) ((mouseY - dContentY) / LINE_HEIGHT);
-        int total = cachedDetailLines.size();
+        int total = cachedDetailSegs.size();
         if (total == 0) return -1;
+        int row = (int) ((mouseY - dContentY) / LINE_HEIGHT);
         int idx = detailScroll + row;
         return (idx >= 0 && idx < total) ? idx : -1;
     }
 
-    private int detailLineAtClamped(double mouseY) {
+    private int detailSegAtClamped(double mouseY) {
+        int total = cachedDetailSegs.size();
+        if (total == 0) return -1;
         int dTop = detailTop();
         int dContentY = dTop + 14;
-        int total = cachedDetailLines.size();
-        if (total == 0) return -1;
-        if (mouseY < dContentY) return 0;
+        if (mouseY < dContentY) return Math.max(0, detailScroll);
         if (mouseY >= getY() + height) return total - 1;
         int row = (int) ((mouseY - dContentY) / LINE_HEIGHT);
         int idx = detailScroll + row;
         return Math.max(0, Math.min(total - 1, idx));
+    }
+
+    // Find char offset within a display text closest to dx (pixels from text start).
+    private int charOffsetAtX(String text, double dx) {
+        var font = Minecraft.getInstance().font;
+        if (dx <= 0) return 0;
+        if (font.width(text) <= dx) return text.length();
+        int best = 0;
+        for (int i = 1; i <= text.length(); i++) {
+            if (font.width(text.substring(0, i)) <= dx) best = i; else break;
+        }
+        return best;
+    }
+
+    // Returns {logicalLine, charOffset} for a mouse position (clamped to detail edges),
+    // or null if the detail area is empty.
+    private int[] detailPointAt(double mouseX, double mouseY) {
+        int si = detailSegAtClamped(mouseY);
+        if (si < 0) return null;
+        DetailSeg seg = cachedDetailSegs.get(si);
+        int textX = getX() + 4;
+        int local = charOffsetAtX(seg.text(), mouseX - textX);
+        return new int[]{seg.logicalLine(), seg.startChar() + local};
     }
 
     @Override
@@ -243,8 +288,8 @@ public class LogPanel extends AbstractWidget {
         graphics.drawString(font, title, getX() + 4, dTop + 2, 0x88CCFF, false);
 
         DetailBuild build = buildDetailLinesBoth();
-        List<String> detailLines = build.display();
-        // If the underlying list selection changed, the cached detail lines are stale;
+        List<DetailSeg> segs = build.segs();
+        // If the underlying list selection changed, the cached detail is stale;
         // any detail selection indices no longer map correctly, so drop it.
         int curListLow = selectionLow();
         int curListHigh = selectionHigh();
@@ -252,84 +297,122 @@ public class LogPanel extends AbstractWidget {
             lastDetailListLow = curListLow;
             lastDetailListHigh = curListHigh;
             if (!draggingDetailSelect) {
-                detailSelectionAnchor = -1;
-                detailSelectionEnd = -1;
+                detailAnchorLine = -1;
+                detailAnchorChar = -1;
+                detailEndLine = -1;
+                detailEndChar = -1;
                 detailSelectActive = false;
             }
         }
-        cachedDetailLines = detailLines;
+        cachedDetailSegs = segs;
         unwrappedDetailLines = build.unwrapped();
         int dContentY = dTop + 14;
         int dContentH = getY() + height - dContentY - 2;
         int maxDetail = Math.max(1, dContentH / LINE_HEIGHT);
         if (!draggingDetailSelect) {
-            detailScroll = Math.max(0, Math.min(detailScroll, Math.max(0, detailLines.size() - maxDetail)));
+            detailScroll = Math.max(0, Math.min(detailScroll, Math.max(0, segs.size() - maxDetail)));
         }
-        int end = Math.min(detailLines.size(), detailScroll + maxDetail);
+        int end = Math.min(segs.size(), detailScroll + maxDetail);
+        int textX = getX() + 4;
         for (int i = detailScroll; i < end; i++) {
+            DetailSeg seg = segs.get(i);
             int drawY = dContentY + (i - detailScroll) * LINE_HEIGHT;
-            if (isDetailLineSelected(i)) {
-                graphics.fill(getX() + 1, drawY - 1, getX() + width - 1, drawY + LINE_HEIGHT - 1, 0x5533AA33);
-            }
-            String line = font.plainSubstrByWidth(detailLines.get(i), width - 10);
-            graphics.drawString(font, line, getX() + 4, drawY, 0xDDDDDD, false);
+            // Visible (pixel-clipped) text actually drawn.
+            String visible = font.plainSubstrByWidth(seg.text(), width - 10);
+            renderSegHighlight(graphics, font, seg, visible, textX, drawY);
+            graphics.drawString(font, visible, textX, drawY, 0xDDDDDD, false);
         }
         if (System.currentTimeMillis() < copyFlashUntilMs) {
             graphics.drawString(font, "Copied to clipboard", getX() + width - 120, dTop + 2, 0x55FF55, false);
         }
     }
 
-    private record DetailBuild(List<String> display, List<String> unwrapped) {}
+    // Draw the highlight for this display segment based on the current char selection.
+    private void renderSegHighlight(GuiGraphics graphics, Font font, DetailSeg seg, String visible,
+                                    int textX, int drawY) {
+        if (detailSelectionEmpty()) return;
+        int[] start = detailSelStart();
+        int[] end = detailSelEnd();
+        int sLine = start[0], sChar = start[1];
+        int eLine = end[0], eChar = end[1];
+        int li = seg.logicalLine();
+        // No overlap with selection range.
+        if (li < sLine || li > eLine) return;
+        int segLo = seg.startChar();
+        int segHi = seg.endChar();
+        // Compute overlap [lo, hi) within this logical line in char offsets.
+        int lo, hi;
+        if (li == sLine && li == eLine) {
+            lo = Math.max(segLo, sChar);
+            hi = Math.min(segHi, eChar);
+        } else if (li == sLine) {
+            lo = Math.max(segLo, sChar);
+            hi = segHi;
+        } else if (li == eLine) {
+            lo = segLo;
+            hi = Math.min(segHi, eChar);
+        } else {
+            lo = segLo;
+            hi = segHi;
+        }
+        if (hi <= lo) return;
+        // Map to local offsets within the seg's text, clamped to visible length.
+        int localLo = lo - segLo;
+        int localHi = Math.min(hi - segLo, visible.length());
+        if (localHi <= localLo) return;
+        int x1 = textX + font.width(seg.text().substring(0, localLo));
+        int x2 = textX + font.width(seg.text().substring(0, localHi));
+        graphics.fill(x1, drawY - 1, x2, drawY + LINE_HEIGHT - 1, 0x5533AA33);
+    }
+
+    private record DetailBuild(List<DetailSeg> segs, List<String> unwrapped) {}
 
     private DetailBuild buildDetailLinesBoth() {
-        List<String> display = new ArrayList<>();
+        List<DetailSeg> segs = new ArrayList<>();
         List<String> unwrapped = new ArrayList<>();
         int low = selectionLow();
         int high = selectionHigh();
-        if (low < 0 || high >= entries.size()) return new DetailBuild(display, unwrapped);
+        if (low < 0 || high >= entries.size()) return new DetailBuild(segs, unwrapped);
         if (low == high) {
-            appendEntryDetailBoth(display, unwrapped, entries.get(low), low);
+            appendEntryDetailSegs(segs, unwrapped, entries.get(low));
         } else {
             for (int i = low; i <= high; i++) {
-                display.add("===== ENTRY " + (i + 1) + " =====");
-                unwrapped.add("===== ENTRY " + (i + 1) + " =====");
-                appendEntryDetailBoth(display, unwrapped, entries.get(i), i);
+                addLineSeg(segs, unwrapped, "===== ENTRY " + (i + 1) + " =====");
+                appendEntryDetailSegs(segs, unwrapped, entries.get(i));
             }
         }
-        return new DetailBuild(display, unwrapped);
+        return new DetailBuild(segs, unwrapped);
     }
 
-    private void appendEntryDetailBoth(List<String> display, List<String> unwrapped,
-                                       LogDisplayEntry e, int index) {
-        display.add(e.text);
-        unwrapped.add(e.text);
-        if (e.purpose != null && !e.purpose.isBlank()) {
-            display.add("purpose: " + e.purpose);
-            unwrapped.add("purpose: " + e.purpose);
-        }
-        if (e.error != null && !e.error.isBlank()) {
-            display.add("error: " + e.error);
-            unwrapped.add("error: " + e.error);
-        }
-        display.add("--- REQUEST ---");
-        unwrapped.add("--- REQUEST ---");
-        wrapIntoBoth(display, unwrapped, e.requestBody == null || e.requestBody.isBlank() ? "(empty)" : e.requestBody);
-        display.add("--- RESPONSE ---");
-        unwrapped.add("--- RESPONSE ---");
-        wrapIntoBoth(display, unwrapped, e.responseBody == null || e.responseBody.isBlank() ? "(empty)" : e.responseBody);
+    private void appendEntryDetailSegs(List<DetailSeg> segs, List<String> unwrapped, LogDisplayEntry e) {
+        addLineSeg(segs, unwrapped, e.text);
+        if (e.purpose != null && !e.purpose.isBlank()) addLineSeg(segs, unwrapped, "purpose: " + e.purpose);
+        if (e.error != null && !e.error.isBlank()) addLineSeg(segs, unwrapped, "error: " + e.error);
+        addLineSeg(segs, unwrapped, "--- REQUEST ---");
+        addBodySegs(segs, unwrapped, e.requestBody == null || e.requestBody.isBlank() ? "(empty)" : e.requestBody);
+        addLineSeg(segs, unwrapped, "--- RESPONSE ---");
+        addBodySegs(segs, unwrapped, e.responseBody == null || e.responseBody.isBlank() ? "(empty)" : e.responseBody);
     }
 
-    private void wrapIntoBoth(List<String> display, List<String> unwrapped, String text) {
-        String[] raw = text.replace("\r", "").split("\n", -1);
-        for (String row : raw) {
+    private void addLineSeg(List<DetailSeg> segs, List<String> unwrapped, String line) {
+        int li = unwrapped.size();
+        unwrapped.add(line);
+        segs.add(new DetailSeg(line, li, 0, line.length()));
+    }
+
+    private void addBodySegs(List<DetailSeg> segs, List<String> unwrapped, String text) {
+        String[] rows = text.replace("\r", "").split("\n", -1);
+        for (String row : rows) {
+            int li = unwrapped.size();
+            unwrapped.add(row);
             if (row.length() <= 180) {
-                display.add(row);
+                segs.add(new DetailSeg(row, li, 0, row.length()));
             } else {
-                for (int i = 0; i < row.length(); i += 180) {
-                    display.add(row.substring(i, Math.min(row.length(), i + 180)));
+                for (int s = 0; s < row.length(); s += 180) {
+                    int e = Math.min(row.length(), s + 180);
+                    segs.add(new DetailSeg(row.substring(s, e), li, s, e));
                 }
             }
-            unwrapped.add(row);
         }
     }
 
@@ -343,10 +426,15 @@ public class LogPanel extends AbstractWidget {
         // Right-click: copy whichever region the cursor is in.
         if (button == 1) {
             if (inDetailArea) {
-                int under = detailLineAt(mouseY);
-                if (under >= 0 && !isDetailLineSelected(under)) {
-                    detailSelectionAnchor = under;
-                    detailSelectionEnd = under;
+                // If there is no active char selection, place caret under cursor (no range).
+                if (!detailSelectActive || detailSelectionEmpty()) {
+                    int[] p = detailPointAt(mouseX, mouseY);
+                    if (p != null) {
+                        detailAnchorLine = p[0];
+                        detailAnchorChar = p[1];
+                        detailEndLine = p[0];
+                        detailEndChar = p[1];
+                    }
                     detailSelectActive = true;
                 }
                 copyDetailSelectionToClipboard();
@@ -365,23 +453,31 @@ public class LogPanel extends AbstractWidget {
 
         if (button != 0) return false;
 
-        // Left-click: detail area starts a detail selection drag; list area starts row drag.
+        // Left-click: detail area starts a char selection drag; list area starts row drag.
         if (inDetailArea) {
-            int idx = detailLineAt(mouseY);
-            if (idx >= 0) {
-                detailSelectionAnchor = idx;
-                detailSelectionEnd = idx;
+            int[] p = detailPointAt(mouseX, mouseY);
+            if (p != null) {
+                detailAnchorLine = p[0];
+                detailAnchorChar = p[1];
+                detailEndLine = p[0];
+                detailEndChar = p[1];
                 detailSelectActive = true;
                 draggingDetailSelect = true;
             } else {
-                detailSelectionAnchor = -1;
-                detailSelectionEnd = -1;
+                detailAnchorLine = -1;
+                detailAnchorChar = -1;
+                detailEndLine = -1;
+                detailEndChar = -1;
                 detailSelectActive = false;
             }
             return true;
         }
 
         if (mouseY >= getY() + 14 && mouseY < getY() + listH) {
+            // Clicking the list clears detail selection.
+            detailSelectActive = false;
+            detailAnchorLine = -1;
+            detailEndLine = -1;
             int idx = rowIndexAt(mouseY);
             if (idx >= 0) {
                 selectionAnchor = idx;
@@ -400,9 +496,10 @@ public class LogPanel extends AbstractWidget {
         if (!visible || button != 0) return false;
 
         if (draggingDetailSelect) {
-            int idx = detailLineAtClamped(mouseY);
-            if (idx >= 0) {
-                detailSelectionEnd = idx;
+            int[] p = detailPointAt(mouseX, mouseY);
+            if (p != null) {
+                detailEndLine = p[0];
+                detailEndChar = p[1];
                 // auto-scroll detail area near edges
                 int dTop = detailTop();
                 int dContentY = dTop + 14;
@@ -411,7 +508,7 @@ public class LogPanel extends AbstractWidget {
                 if (mouseY < dContentY + 6 && detailScroll > 0) {
                     detailScroll--;
                 } else if (mouseY > getY() + height - 6
-                        && detailScroll + maxDetail < cachedDetailLines.size()) {
+                        && detailScroll + maxDetail < cachedDetailSegs.size()) {
                     detailScroll++;
                 }
             }
@@ -479,14 +576,19 @@ public class LogPanel extends AbstractWidget {
     }
 
     private void copyDetailSelectionToClipboard() {
-        if (unwrappedDetailLines.isEmpty()) return;
-        int low = detailSelectionLow();
-        int high = detailSelectionHigh();
-        if (low < 0 || high >= unwrappedDetailLines.size()) return;
+        if (detailSelectionEmpty() || unwrappedDetailLines.isEmpty()) return;
+        int[] start = detailSelStart();
+        int[] end = detailSelEnd();
+        int sLine = start[0], sChar = start[1];
+        int eLine = end[0], eChar = end[1];
         StringBuilder sb = new StringBuilder();
-        for (int i = low; i <= high; i++) {
-            if (i > low) sb.append('\n');
-            sb.append(unwrappedDetailLines.get(i));
+        for (int li = sLine; li <= eLine; li++) {
+            String line = unwrappedDetailLines.get(li);
+            int lo = (li == sLine) ? sChar : 0;
+            int hi = (li == eLine) ? Math.min(eChar, line.length()) : line.length();
+            if (hi < lo) hi = lo;
+            sb.append(line, lo, hi);
+            if (li < eLine) sb.append('\n');
         }
         try {
             Minecraft.getInstance().keyboardHandler.setClipboard(sb.toString());
@@ -502,7 +604,8 @@ public class LogPanel extends AbstractWidget {
         if (!visible) return false;
         boolean ctrl = Screen.hasControlDown() || (Minecraft.ON_OSX && Screen.hasAltDown());
         if (!ctrl) return false;
-        if (detailSelectActive && detailSelectionLow() >= 0) {
+        // Detail char-selection takes priority; only copy detail when a non-empty range exists.
+        if (detailSelectActive && !detailSelectionEmpty()) {
             copyDetailSelectionToClipboard();
             return true;
         }
