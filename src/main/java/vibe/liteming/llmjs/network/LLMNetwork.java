@@ -78,5 +78,11 @@ public class LLMNetwork {
                 .decoder(C2SVisionImagePacket::decode)
                 .consumerMainThread(C2SVisionImagePacket::handle)
                 .add();
+
+        CHANNEL.messageBuilder(C2SUpdateRoutingPacket.class, packetId++, NetworkDirection.PLAY_TO_SERVER)
+                .encoder(C2SUpdateRoutingPacket::encode)
+                .decoder(C2SUpdateRoutingPacket::decode)
+                .consumerMainThread(C2SUpdateRoutingPacket::handle)
+                .add();
     }
 }

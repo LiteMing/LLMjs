@@ -32,6 +32,7 @@ public final class LlmOrchestrator {
 
     private final HttpClient httpClient;
     private final Map<String, ProviderRuntime> providers = new ConcurrentHashMap<>();
+    private volatile PriorityRoutingConfig routingConfig = PriorityRoutingConfig.empty();
 
     public LlmOrchestrator(Map<String, ProviderSpec> providerSpecs) {
         this.httpClient = HttpClient.newBuilder()
@@ -49,6 +50,33 @@ public final class LlmOrchestrator {
         providers.putAll(replacement);
     }
 
+    /**
+     * Install the global priority-routing table. May be {@code null} to clear.
+     * Callers (typically the /llm console persistence layer) update this at runtime;
+     * {@link #send(LlmRequest)} and {@link #sendStreaming(LlmRequest, Consumer)}
+     * consult it when the request carries no explicit providerChain.
+     */
+    public void setRoutingConfig(PriorityRoutingConfig config) {
+        this.routingConfig = config == null ? PriorityRoutingConfig.empty() : config;
+    }
+
+    public PriorityRoutingConfig getRoutingConfig() {
+        return routingConfig;
+    }
+
+    /**
+     * Resolve the effective provider chain for a request: explicit caller-supplied
+     * chain wins; otherwise the global {@link PriorityRoutingConfig} for the request's
+     * purpose (with fallback to its default chain); otherwise every known provider.
+     */
+    private List<String> resolveChain(LlmRequest request) {
+        List<String> requested = request.providerChain();
+        if (requested != null && !requested.isEmpty()) return new ArrayList<>(requested);
+        List<String> all = new ArrayList<>(providers.keySet());
+        return new ArrayList<>(routingConfig.resolveChain(
+                request.context() == null ? null : request.context().purpose(), all));
+    }
+
     public Set<String> getProviderNames() {
         return Collections.unmodifiableSet(providers.keySet());
     }
@@ -59,9 +87,7 @@ public final class LlmOrchestrator {
     }
 
     public CompletableFuture<LlmResponse> send(LlmRequest request) {
-        List<String> chain = request.providerChain().isEmpty()
-                ? new ArrayList<>(providers.keySet())
-                : request.providerChain();
+        List<String> chain = resolveChain(request);
         return attemptProvider(request, chain, 0, new ArrayList<>())
                 .thenApply(response -> {
                     LlmRequestLogger.publish("llm-core", request, response);
@@ -70,8 +96,7 @@ public final class LlmOrchestrator {
     }
 
     public CompletableFuture<LlmResponse> sendStreaming(LlmRequest request, Consumer<String> onDelta) {
-        List<String> chain = request.providerChain().isEmpty()
-                ? new ArrayList<>(providers.keySet()) : request.providerChain();
+        List<String> chain = resolveChain(request);
         return attemptStreaming(request, chain, 0, new ArrayList<>(), onDelta == null ? delta -> { } : onDelta)
                 .thenApply(response -> {
                     LlmRequestLogger.publish("llm-core", request, response);

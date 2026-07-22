@@ -4,11 +4,11 @@ license="MIT"
 
 [[mods]]
 modId="llmjs"
-version="2.0.0"
+version="2.2.0"
 displayName="LLMjs"
 description='''
-LLMjs v2.0 - A KubeJS addon for Minecraft 1.20.1 Forge that integrates Large Language Models.
-Features: multi-provider support, async API calls, format adapters, and console UI.
+LLMjs v2.2 - A KubeJS addon for Minecraft 1.20.1 Forge that integrates Large Language Models.
+Features: multi-provider support, async API calls, format adapters, console UI, and shared priority routing.
 '''
 logoFile="logo.png"
 credits="Created for KubeJS community"

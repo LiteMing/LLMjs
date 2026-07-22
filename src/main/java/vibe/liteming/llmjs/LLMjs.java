@@ -7,6 +7,8 @@ import vibe.liteming.llmjs.log.LLMLogger;
 import vibe.liteming.llmjs.network.LLMNetwork;
 import vibe.liteming.llmjs.network.packet.S2CLogPacket;
 import vibe.liteming.llmjs.provider.ProviderManager;
+import vibe.liteming.llmcore.PurposeMeta;
+import vibe.liteming.llmcore.PurposeRegistry;
 import net.minecraftforge.network.PacketDistributor;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.RegisterCommandsEvent;
@@ -25,7 +27,20 @@ public class LLMjs {
         LLMConfig.register();
         LLMNetwork.register();
         MinecraftForge.EVENT_BUS.register(this);
+        registerBuiltInPurposes();
         LOGGER.info("LLMjs v2.0 initialized");
+    }
+
+    /**
+     * Register purposes that llm-core / llmjs define intrinsically. These cannot
+     * be overwritten by mod-level registers, ensuring the routing UI always shows
+     * the generic "CHAT" and "DEBUG_TEST" rows even with no consumer mods present.
+     */
+    private static void registerBuiltInPurposes() {
+        PurposeRegistry.registerBuiltIn(new PurposeMeta("CHAT", "Chat",
+                "Default conversational request", MODID, true));
+        PurposeRegistry.registerBuiltIn(new PurposeMeta("DEBUG_TEST",
+                "Debug / Test", "Connection / smoke-test requests", MODID, true));
     }
 
     @SubscribeEvent

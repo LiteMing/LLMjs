@@ -6,8 +6,12 @@ import vibe.liteming.llmcore.LlmMessage;
 import vibe.liteming.llmcore.LlmOrchestrator;
 import vibe.liteming.llmcore.LlmRequest;
 import vibe.liteming.llmcore.LlmRequestContext;
+import vibe.liteming.llmcore.PriorityRoutingConfig;
 import vibe.liteming.llmcore.ProviderConfigLoader;
 import vibe.liteming.llmcore.ProviderSpec;
+import vibe.liteming.llmcore.PurposeMeta;
+import vibe.liteming.llmcore.PurposeRegistry;
+import vibe.liteming.llmcore.RoutingConfigStore;
 import vibe.liteming.llmjs.LLMjs;
 import vibe.liteming.llmjs.config.GlobalConfig;
 import vibe.liteming.llmjs.config.LLMConfig;
@@ -29,6 +33,7 @@ public class ProviderManager {
 
     private volatile Map<String, Provider> providers = new ConcurrentHashMap<>();
     private volatile LlmOrchestrator orchestrator = new LlmOrchestrator(Map.of());
+    private volatile PriorityRoutingConfig routingConfig = PriorityRoutingConfig.empty();
     private final Map<String, ConnectionStatus> statusCache = new ConcurrentHashMap<>();
     private Path configDir;
 
@@ -67,6 +72,74 @@ public class ProviderManager {
         });
         this.providers = new ConcurrentHashMap<>(newProviders);
         LLMjs.LOGGER.info("Loaded {} providers", providers.size());
+        // Load/reload the shared priority-routing table and push it into the orchestrator.
+        this.routingConfig = RoutingConfigStore.load(getRoutingFile());
+        this.orchestrator.setRoutingConfig(routingConfig);
+    }
+
+    /** Path used for {@code routing.json} (lives next to global providers.json). */
+    public Path getRoutingFile() {
+        if (gameRoot == null) return null;
+        return GlobalConfig.getGlobalProvidersFile().getParent().resolve("routing.json");
+    }
+
+    public PriorityRoutingConfig getRoutingConfig() {
+        return routingConfig;
+    }
+
+    /**
+     * Atomically update + persist the global routing table. Returns false if the
+     * write failed. The in-memory orchestrator is updated even when persistence
+     * fails so the running server still picks up the change for the session.
+     */
+    public synchronized boolean updateRouting(PriorityRoutingConfig next) {
+        this.routingConfig = next == null ? PriorityRoutingConfig.empty() : next;
+        this.orchestrator.setRoutingConfig(this.routingConfig);
+        Path file = getRoutingFile();
+        if (file == null) return false;
+        boolean ok = RoutingConfigStore.save(file, this.routingConfig);
+        if (!ok) {
+            LLMjs.LOGGER.warn("Failed to persist routing.json (in-memory still updated)");
+        }
+        return ok;
+    }
+
+    /** Convenience: full status object including providers + current routing. */
+    public JsonObject getStatusJson() {
+        JsonObject result = new JsonObject();
+        JsonArray providerArray = new JsonArray();
+        for (Map.Entry<String, Provider> entry : providers.entrySet()) {
+            JsonObject pJson = new JsonObject();
+            pJson.addProperty("name", entry.getKey());
+            pJson.addProperty("type", entry.getValue().getType());
+            String format = entry.getValue().getFormat();
+            if (format != null) pJson.addProperty("format", format);
+            pJson.addProperty("model", entry.getValue().getModel());
+            pJson.addProperty("url", entry.getValue().getUrl());
+            pJson.addProperty("maskedKey", entry.getValue().getMaskedKey());
+            pJson.addProperty("configured", entry.getValue().isConfigured());
+            ConnectionStatus cached = statusCache.get(entry.getKey());
+            if (cached != null) pJson.add("status", cached.toJson());
+            else pJson.addProperty("status", "untested");
+            providerArray.add(pJson);
+        }
+        result.add("providers", providerArray);
+        result.addProperty("count", providers.size());
+        // routing payload (default + per-purpose chains) consumed by the Routing tab
+        result.add("routing", com.google.gson.JsonParser.parseString(
+                RoutingConfigStore.toJsonString(routingConfig)).getAsJsonObject());
+        JsonArray purposesArray = new JsonArray();
+        for (PurposeMeta meta : PurposeRegistry.snapshot()) {
+            JsonObject pm = new JsonObject();
+            pm.addProperty("id", meta.id());
+            pm.addProperty("displayName", meta.displayName());
+            pm.addProperty("description", meta.description());
+            pm.addProperty("modId", meta.modId());
+            pm.addProperty("builtIn", meta.builtIn());
+            purposesArray.add(pm);
+        }
+        result.add("purposes", purposesArray);
+        return result;
     }
 
     public @Nullable Provider getProvider(String name) { return providers.get(name); }
@@ -143,29 +216,6 @@ public class ProviderManager {
     }
 
     public @Nullable ConnectionStatus getCachedStatus(String name) { return statusCache.get(name); }
-
-    public JsonObject getStatusJson() {
-        JsonObject result = new JsonObject();
-        JsonArray providerArray = new JsonArray();
-        for (Map.Entry<String, Provider> entry : providers.entrySet()) {
-            JsonObject pJson = new JsonObject();
-            pJson.addProperty("name", entry.getKey());
-            pJson.addProperty("type", entry.getValue().getType());
-            String format = entry.getValue().getFormat();
-            if (format != null) pJson.addProperty("format", format);
-            pJson.addProperty("model", entry.getValue().getModel());
-            pJson.addProperty("url", entry.getValue().getUrl());
-            pJson.addProperty("maskedKey", entry.getValue().getMaskedKey());
-            pJson.addProperty("configured", entry.getValue().isConfigured());
-            ConnectionStatus cached = statusCache.get(entry.getKey());
-            if (cached != null) pJson.add("status", cached.toJson());
-            else pJson.addProperty("status", "untested");
-            providerArray.add(pJson);
-        }
-        result.add("providers", providerArray);
-        result.addProperty("count", providers.size());
-        return result;
-    }
 
     private boolean checkRateLimit() {
         int limit = LLMConfig.RATE_LIMIT.get();
