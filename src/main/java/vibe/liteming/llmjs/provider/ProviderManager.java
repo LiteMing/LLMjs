@@ -2,7 +2,14 @@ package vibe.liteming.llmjs.provider;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import vibe.liteming.llmcore.LlmMessage;
+import vibe.liteming.llmcore.LlmOrchestrator;
+import vibe.liteming.llmcore.LlmRequest;
+import vibe.liteming.llmcore.LlmRequestContext;
+import vibe.liteming.llmcore.ProviderConfigLoader;
+import vibe.liteming.llmcore.ProviderSpec;
 import vibe.liteming.llmjs.LLMjs;
+import vibe.liteming.llmjs.config.GlobalConfig;
 import vibe.liteming.llmjs.config.LLMConfig;
 import vibe.liteming.llmjs.config.ProviderLoader;
 import vibe.liteming.llmjs.format.ApiFormat;
@@ -21,6 +28,7 @@ public class ProviderManager {
     public static final ProviderManager INSTANCE = new ProviderManager();
 
     private volatile Map<String, Provider> providers = new ConcurrentHashMap<>();
+    private volatile LlmOrchestrator orchestrator = new LlmOrchestrator(Map.of());
     private final Map<String, ConnectionStatus> statusCache = new ConcurrentHashMap<>();
     private Path configDir;
 
@@ -47,7 +55,16 @@ public class ProviderManager {
 
     public void reload() {
         if (configDir == null || gameRoot == null) return;
-        Map<String, Provider> newProviders = ProviderLoader.loadAll(configDir, gameRoot);
+        Map<String, ProviderSpec> specs = ProviderConfigLoader.load(
+                GlobalConfig.getGlobalProvidersFile(),
+                configDir.resolve("providers.json"),
+                gameRoot.resolve("llmjs.secret"));
+        this.orchestrator = new LlmOrchestrator(specs);
+        Map<String, Provider> newProviders = new LinkedHashMap<>();
+        specs.forEach((name, spec) -> newProviders.put(name, new CoreProviderAdapter(spec, orchestrator)));
+        ProviderLoader.loadAll(configDir, gameRoot).forEach((name, provider) -> {
+            if ("raw".equals(provider.getType())) newProviders.put(name, provider);
+        });
         this.providers = new ConcurrentHashMap<>(newProviders);
         LLMjs.LOGGER.info("Loaded {} providers", providers.size());
     }
@@ -69,7 +86,8 @@ public class ProviderManager {
             @Nullable Double temperature, @Nullable Integer maxTokens, int timeoutSeconds) {
         if (providerChain.isEmpty()) return CompletableFuture.completedFuture(LLMResponse.error("No providers specified"));
         if (!checkRateLimit()) return CompletableFuture.completedFuture(LLMResponse.error("Rate limit exceeded"));
-        return sendWithFallbackRecursive(messages, providerChain, 0, temperature, maxTokens, timeoutSeconds, new ArrayList<>());
+        return sendWithFallbackRecursive(messages, providerChain, 0, temperature, maxTokens, timeoutSeconds,
+                new ArrayList<>());
     }
 
     private CompletableFuture<LLMResponse> sendWithFallbackRecursive(
@@ -81,27 +99,34 @@ public class ProviderManager {
         }
         String providerName = chain.get(index);
         Provider provider = providers.get(providerName);
-        if (provider == null) {
-            attempts.add(new LLMResponse.AttemptRecord(providerName, false, "Provider not found", 0));
-            return sendWithFallbackRecursive(messages, chain, index + 1, temperature, maxTokens, timeoutSeconds, attempts);
+        if (provider == null || !provider.isConfigured()) {
+            attempts.add(new LLMResponse.AttemptRecord(providerName, false,
+                    provider == null ? "Provider not found" : "Provider not configured", 0));
+            return sendWithFallbackRecursive(messages, chain, index + 1, temperature, maxTokens, timeoutSeconds,
+                    attempts);
         }
-        if (!provider.isConfigured()) {
-            attempts.add(new LLMResponse.AttemptRecord(providerName, false, "Provider not configured (missing API key)", 0));
-            return sendWithFallbackRecursive(messages, chain, index + 1, temperature, maxTokens, timeoutSeconds, attempts);
-        }
+        // CoreProviderAdapter routes through LlmOrchestrator which already emits
+        // LlmRequestLogger events (captured by LLMLogger.installCoreHook).
+        // Only log non-core providers here to avoid duplicate console entries.
+        boolean coreRouted = provider instanceof CoreProviderAdapter;
         String promptSummary = messages.isEmpty() ? "" : messages.get(messages.size() - 1).content();
-        return provider.sendAsync(messages, temperature, maxTokens, timeoutSeconds)
-                .thenCompose(response -> {
-                    if (response.isSuccess()) {
-                        attempts.add(new LLMResponse.AttemptRecord(providerName, true, null, response.getLatencyMs()));
-                        LLMLogger.INSTANCE.logInfo(providerName, promptSummary, response.getLatencyMs(), response.getPromptTokens(), response.getCompletionTokens());
-                        return CompletableFuture.completedFuture(response.withAttempts(attempts));
-                    } else {
-                        attempts.add(new LLMResponse.AttemptRecord(providerName, false, response.getError(), response.getLatencyMs()));
-                        LLMLogger.INSTANCE.logError(providerName, promptSummary, response.getLatencyMs(), response.getError());
-                        return sendWithFallbackRecursive(messages, chain, index + 1, temperature, maxTokens, timeoutSeconds, attempts);
-                    }
-                });
+        return provider.sendAsync(messages, temperature, maxTokens, timeoutSeconds).thenCompose(response -> {
+            attempts.add(new LLMResponse.AttemptRecord(providerName, response.isSuccess(), response.getError(),
+                    response.getLatencyMs()));
+            if (!coreRouted) {
+                if (response.isSuccess()) {
+                    LLMLogger.INSTANCE.logInfo(providerName, promptSummary, response.getLatencyMs(),
+                            response.getPromptTokens(), response.getCompletionTokens());
+                } else {
+                    LLMLogger.INSTANCE.logError(providerName, promptSummary, response.getLatencyMs(), response.getError());
+                }
+            }
+            if (response.isSuccess()) {
+                return CompletableFuture.completedFuture(response.withAttempts(attempts));
+            }
+            return sendWithFallbackRecursive(messages, chain, index + 1, temperature, maxTokens, timeoutSeconds,
+                    attempts);
+        });
     }
 
     public CompletableFuture<ConnectionStatus> testProvider(String name) {
@@ -129,6 +154,7 @@ public class ProviderManager {
             String format = entry.getValue().getFormat();
             if (format != null) pJson.addProperty("format", format);
             pJson.addProperty("model", entry.getValue().getModel());
+            pJson.addProperty("url", entry.getValue().getUrl());
             pJson.addProperty("maskedKey", entry.getValue().getMaskedKey());
             pJson.addProperty("configured", entry.getValue().isConfigured());
             ConnectionStatus cached = statusCache.get(entry.getKey());

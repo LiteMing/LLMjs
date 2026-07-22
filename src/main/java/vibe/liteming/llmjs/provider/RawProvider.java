@@ -41,6 +41,7 @@ public class RawProvider implements Provider {
     @Override public String getType() { return "raw"; }
     @Override public @Nullable String getFormat() { return null; }
     @Override public String getModel() { return model; }
+    @Override public String getUrl() { return url == null ? "" : url; }
 
     @Override
     public CompletableFuture<LLMResponse> sendAsync(List<ApiFormat.Message> messages,

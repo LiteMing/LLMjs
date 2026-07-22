@@ -36,6 +36,7 @@ public class LLMjs {
         GlobalConfig.init(gameRoot);
         ProviderManager.INSTANCE.init(serverConfigDir, gameRoot);
         LLMLogger.INSTANCE.resize(LLMConfig.LOG_BUFFER_SIZE.get());
+        LLMLogger.INSTANCE.installCoreHook();
         // Wire logger to push log entries to connected clients
         LLMLogger.INSTANCE.addListener(entry -> {
             String json = entry.toJson().toString();

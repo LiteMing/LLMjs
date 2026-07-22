@@ -13,6 +13,7 @@ import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
 import org.jetbrains.annotations.Nullable;
 
+import java.util.List;
 import java.util.UUID;
 
 @OnlyIn(Dist.CLIENT)
@@ -25,6 +26,11 @@ public class LLMConsoleScreen extends Screen {
     private TestPanel testPanel;
     private SetupPanel setupPanel;
     private final String initialStatusJson;
+    private boolean takeoverTipShown;
+    private Button logTab;
+    private Button providersTab;
+    private Button testTab;
+    private Button setupTab;
 
     public LLMConsoleScreen(String statusJson) {
         super(Component.literal("LLMjs Console"));
@@ -33,40 +39,69 @@ public class LLMConsoleScreen extends Screen {
 
     @Override
     protected void init() {
-        int tabY = 10;
-        int tabW = 70;
-        int startX = width / 2 - (tabW * 4 + 15) / 2;
+        int tabY = 22;
+        int tabW = 78;
+        int gap = 4;
+        int totalW = tabW * 4 + gap * 3;
+        int startX = Math.max(10, (width - totalW) / 2);
 
-        addRenderableWidget(Button.builder(Component.literal("Log"), b -> switchTab(Tab.LOG))
-                .pos(startX, tabY).size(tabW, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("Providers"), b -> switchTab(Tab.PROVIDERS))
-                .pos(startX + tabW + 5, tabY).size(tabW, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("Test"), b -> switchTab(Tab.TEST))
-                .pos(startX + (tabW + 5) * 2, tabY).size(tabW, 20).build());
-        addRenderableWidget(Button.builder(Component.literal("Setup"), b -> switchTab(Tab.SETUP))
-                .pos(startX + (tabW + 5) * 3, tabY).size(tabW, 20).build());
+        logTab = Button.builder(Component.literal("Log"), b -> switchTab(Tab.LOG))
+                .pos(startX, tabY).size(tabW, 20).build();
+        providersTab = Button.builder(Component.literal("Providers"), b -> switchTab(Tab.PROVIDERS))
+                .pos(startX + (tabW + gap), tabY).size(tabW, 20).build();
+        testTab = Button.builder(Component.literal("Test"), b -> switchTab(Tab.TEST))
+                .pos(startX + (tabW + gap) * 2, tabY).size(tabW, 20).build();
+        setupTab = Button.builder(Component.literal("Setup"), b -> switchTab(Tab.SETUP))
+                .pos(startX + (tabW + gap) * 3, tabY).size(tabW, 20).build();
+        addRenderableWidget(logTab);
+        addRenderableWidget(providersTab);
+        addRenderableWidget(testTab);
+        addRenderableWidget(setupTab);
 
-        int panelY = 35;
-        int panelH = height - 45;
+        int panelY = 48;
+        int panelH = height - 58;
         int panelW = width - 20;
         int panelX = 10;
 
-        // LogPanel and ProviderListPanel are AbstractWidgets (no EditBox, just render+scroll)
         logPanel = new LogPanel(panelX, panelY, panelW, panelH);
         providerPanel = new ProviderListPanel(panelX, panelY, panelW, panelH, initialStatusJson);
         addRenderableWidget(logPanel);
         addRenderableWidget(providerPanel);
 
-        // TestPanel and SetupPanel are plain objects - register their child widgets directly
         testPanel = new TestPanel(panelX, panelY, panelW, panelH, font);
         setupPanel = new SetupPanel(panelX, panelY, panelW, panelH, font);
         for (var w : testPanel.getWidgets()) addRenderableWidget(w);
         for (var w : setupPanel.getWidgets()) addRenderableWidget(w);
 
-        // Sync initial provider names for tab-complete
         testPanel.updateProviderNames(providerPanel.getProviderNames());
-
+        maybeShowTakeoverTip();
         switchTab(Tab.LOG);
+    }
+
+    private void maybeShowTakeoverTip() {
+        if (takeoverTipShown || logPanel == null) return;
+        boolean linked = false;
+        try {
+            linked = net.minecraftforge.fml.ModList.get().isLoaded("creaturechat");
+            if (!linked && providerPanel != null) {
+                for (String name : providerPanel.getProviderNames()) {
+                    if (name != null && (name.startsWith("dialogue_") || name.startsWith("creaturechat_")
+                            || "dialogue_primary".equals(name))) {
+                        linked = true;
+                        break;
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        if (!linked) return;
+        takeoverTipShown = true;
+        String tip = "{\"level\":\"INFO\",\"provider\":\"system\",\"status\":\"info\",\"latencyMs\":0,"
+                + "\"requestSummary\":\"CreatureChat linked: use /llm console for URL/key/model. "
+                + "Legacy /creaturechat key|url|model and config GUI endpoints are superseded. "
+                + "All CreatureChat LLM traffic appears in this Log tab (including while closed).\","
+                + "\"purpose\":\"NOTICE\",\"source\":\"llmjs\","
+                + "\"requestBody\":\"\",\"responseBody\":\"\"}";
+        logPanel.addEntry(tip);
     }
 
     private void switchTab(Tab tab) {
@@ -80,10 +115,19 @@ public class LLMConsoleScreen extends Screen {
     @Override
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         renderBackground(graphics);
-        graphics.drawCenteredString(font, title, width / 2, 2, 0xFFFFFF);
+        graphics.drawCenteredString(font, title, width / 2, 6, 0xFFFFFF);
+        // Active tab underline
+        Button active = switch (activeTab) {
+            case LOG -> logTab;
+            case PROVIDERS -> providersTab;
+            case TEST -> testTab;
+            case SETUP -> setupTab;
+        };
+        if (active != null) {
+            graphics.fill(active.getX(), active.getY() + active.getHeight() + 1,
+                    active.getX() + active.getWidth(), active.getY() + active.getHeight() + 3, 0xFF55AAFF);
+        }
         super.render(graphics, mouseX, mouseY, partialTick);
-
-        // Render panel backgrounds and labels (non-widget parts)
         testPanel.render(graphics, mouseX, mouseY, partialTick);
         setupPanel.render(graphics, mouseX, mouseY, partialTick);
     }
@@ -95,7 +139,6 @@ public class LLMConsoleScreen extends Screen {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        // Forward Tab to TestPanel for provider cycling
         if (keyCode == 258 && activeTab == Tab.TEST && testPanel != null) {
             if (testPanel.handleTabComplete(keyCode)) return true;
         }
@@ -115,15 +158,24 @@ public class LLMConsoleScreen extends Screen {
     public void onStatusUpdate(String statusJson) {
         if (providerPanel != null) {
             providerPanel.updateStatus(statusJson);
-            // Sync provider names to TestPanel for tab-complete
             if (testPanel != null) {
                 testPanel.updateProviderNames(providerPanel.getProviderNames());
             }
+            maybeShowTakeoverTip();
         }
     }
 
     public void onLogEntry(String logEntryJson) {
         if (logPanel != null) logPanel.addEntry(logEntryJson);
+    }
+
+    public void onLogHistory(List<String> entries) {
+        if (logPanel != null) {
+            // History replaces buffer; re-show tip after so it is not wiped by setHistory
+            takeoverTipShown = false;
+            logPanel.setHistory(entries);
+            maybeShowTakeoverTip();
+        }
     }
 
     public void openSetupFor(String name, String format, String url, String model, @Nullable String maskedKey) {

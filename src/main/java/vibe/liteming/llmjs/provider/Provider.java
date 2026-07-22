@@ -21,4 +21,8 @@ public interface Provider {
     /** Whether this provider has a valid API key configured. */
     boolean isConfigured();
     String getMaskedKey();
+
+    default String getUrl() {
+        return "";
+    }
 }

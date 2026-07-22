@@ -3,6 +3,7 @@ package vibe.liteming.llmjs.log;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import org.jetbrains.annotations.Nullable;
+import vibe.liteming.llmcore.LlmRequestLogger;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -12,6 +13,7 @@ import java.util.function.Consumer;
 
 public class LLMLogger {
     public static final LLMLogger INSTANCE = new LLMLogger();
+    private static final int MAX_BODY_CHARS = 12000;
 
     public enum Level { INFO, WARN, ERROR }
 
@@ -24,7 +26,12 @@ public class LLMLogger {
             long latencyMs,
             int promptTokens,
             int completionTokens,
-            @Nullable String errorMessage
+            @Nullable String errorMessage,
+            String purpose,
+            String requestId,
+            String source,
+            String requestBody,
+            String responseBody
     ) {
         public JsonObject toJson() {
             JsonObject obj = new JsonObject();
@@ -36,9 +43,12 @@ public class LLMLogger {
             obj.addProperty("latencyMs", latencyMs);
             obj.addProperty("promptTokens", promptTokens);
             obj.addProperty("completionTokens", completionTokens);
-            if (errorMessage != null) {
-                obj.addProperty("error", errorMessage);
-            }
+            if (errorMessage != null) obj.addProperty("error", errorMessage);
+            if (purpose != null && !purpose.isBlank()) obj.addProperty("purpose", purpose);
+            if (requestId != null && !requestId.isBlank()) obj.addProperty("requestId", requestId);
+            if (source != null && !source.isBlank()) obj.addProperty("source", source);
+            if (requestBody != null && !requestBody.isBlank()) obj.addProperty("requestBody", requestBody);
+            if (responseBody != null && !responseBody.isBlank()) obj.addProperty("responseBody", responseBody);
             return obj;
         }
     }
@@ -48,9 +58,28 @@ public class LLMLogger {
     private int size = 0;
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private final List<Consumer<LogEntry>> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private boolean coreHookInstalled;
 
     private LLMLogger() {
         this.buffer = new LogEntry[200];
+    }
+
+    public void installCoreHook() {
+        if (coreHookInstalled) return;
+        coreHookInstalled = true;
+        LlmRequestLogger.addListener(this::fromCoreEvent);
+    }
+
+    private void fromCoreEvent(LlmRequestLogger.Event event) {
+        Level level = event.success() ? Level.INFO : Level.ERROR;
+        String status = event.success() ? "success" : "error";
+        String summary = event.summary() == null ? "" : event.summary();
+        if (event.purpose() != null && !event.purpose().isBlank()) {
+            summary = "[" + event.purpose() + "] " + summary;
+        }
+        log(level, event.provider(), summary, status, event.latencyMs(), event.promptTokens(),
+                event.completionTokens(), event.error(), event.purpose(), event.requestId(),
+                event.source(), event.requestBody(), event.responseBody());
     }
 
     public void resize(int capacity) {
@@ -71,9 +100,20 @@ public class LLMLogger {
     public void log(Level level, String provider, String prompt, String status,
                     long latencyMs, int promptTokens, int completionTokens,
                     @Nullable String errorMessage) {
-        String summary = prompt.length() > 100 ? prompt.substring(0, 100) + "..." : prompt;
-        LogEntry entry = new LogEntry(Instant.now(), level, provider, summary,
-                status, latencyMs, promptTokens, completionTokens, errorMessage);
+        log(level, provider, prompt, status, latencyMs, promptTokens, completionTokens, errorMessage,
+                "", "", "llmjs", "", "");
+    }
+
+    public void log(Level level, String provider, String prompt, String status,
+                    long latencyMs, int promptTokens, int completionTokens,
+                    @Nullable String errorMessage, String purpose, String requestId, String source,
+                    String requestBody, String responseBody) {
+        String summary = prompt == null ? "" : prompt;
+        if (summary.length() > 100) summary = summary.substring(0, 100) + "...";
+        LogEntry entry = new LogEntry(Instant.now(), level, provider == null ? "" : provider, summary,
+                status == null ? "" : status, latencyMs, promptTokens, completionTokens, errorMessage,
+                purpose == null ? "" : purpose, requestId == null ? "" : requestId,
+                source == null ? "" : source, trimBody(requestBody), trimBody(responseBody));
 
         lock.writeLock().lock();
         try {
@@ -96,6 +136,24 @@ public class LLMLogger {
 
     public void logError(String provider, String prompt, long latencyMs, String error) {
         log(Level.ERROR, provider, prompt, "error", latencyMs, 0, 0, error);
+    }
+
+    /**
+     * Entry point for other mods (CreatureChat) that embed their own llm-core copy
+     * and cannot share LlmRequestLogger listeners.
+     */
+    public void logExternal(String source, String purpose, String requestId, String provider,
+            boolean success, long latencyMs, int promptTokens, int completionTokens,
+            String summary, String requestBody, String responseBody, @Nullable String error) {
+        Level level = success ? Level.INFO : Level.ERROR;
+        String status = success ? "success" : "error";
+        String text = summary == null ? "" : summary;
+        if (purpose != null && !purpose.isBlank()) {
+            text = "[" + purpose + "] " + text;
+        }
+        log(level, provider, text, status, latencyMs, promptTokens, completionTokens, error,
+                purpose, requestId, source == null || source.isBlank() ? "external" : source,
+                requestBody, responseBody);
     }
 
     public LogEntry[] getRecentEntries(int count) {
@@ -143,4 +201,10 @@ public class LLMLogger {
 
     public void addListener(Consumer<LogEntry> listener) { listeners.add(listener); }
     public void removeListener(Consumer<LogEntry> listener) { listeners.remove(listener); }
+
+    private static String trimBody(String body) {
+        if (body == null || body.isBlank()) return "";
+        if (body.length() <= MAX_BODY_CHARS) return body;
+        return body.substring(0, MAX_BODY_CHARS) + "\n...[truncated]";
+    }
 }

@@ -55,6 +55,18 @@ public class LLMNetwork {
                 .consumerMainThread(C2SSetupProviderPacket::handle)
                 .add();
 
+        CHANNEL.messageBuilder(C2SDeleteProviderPacket.class, packetId++, NetworkDirection.PLAY_TO_SERVER)
+                .encoder(C2SDeleteProviderPacket::encode)
+                .decoder(C2SDeleteProviderPacket::decode)
+                .consumerMainThread(C2SDeleteProviderPacket::handle)
+                .add();
+
+        CHANNEL.messageBuilder(S2CLogHistoryPacket.class, packetId++, NetworkDirection.PLAY_TO_CLIENT)
+                .encoder(S2CLogHistoryPacket::encode)
+                .decoder(S2CLogHistoryPacket::decode)
+                .consumerMainThread(S2CLogHistoryPacket::handle)
+                .add();
+
         CHANNEL.messageBuilder(S2CScreenshotRequestPacket.class, packetId++, NetworkDirection.PLAY_TO_CLIENT)
                 .encoder(S2CScreenshotRequestPacket::encode)
                 .decoder(S2CScreenshotRequestPacket::decode)

@@ -1,8 +1,10 @@
 package vibe.liteming.llmjs.command;
 
 import vibe.liteming.llmjs.config.ProviderLoader;
+import vibe.liteming.llmjs.log.LLMLogger;
 import vibe.liteming.llmjs.network.LLMNetwork;
 import vibe.liteming.llmjs.network.PermissionCheck;
+import vibe.liteming.llmjs.network.packet.S2CLogHistoryPacket;
 import vibe.liteming.llmjs.network.packet.S2CStatusResponsePacket;
 import vibe.liteming.llmjs.provider.ProviderManager;
 import com.mojang.brigadier.CommandDispatcher;
@@ -61,6 +63,13 @@ public class LLMCommand {
         String statusJson = ProviderManager.INSTANCE.getStatusJson().toString();
         LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                 new S2CStatusResponsePacket(statusJson, true));
+        // Dump full recent buffer so logs received while console was closed still appear
+        List<String> history = new ArrayList<>();
+        for (LLMLogger.LogEntry entry : LLMLogger.INSTANCE.getRecentEntries(200)) {
+            history.add(entry.toJson().toString());
+        }
+        LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new S2CLogHistoryPacket(history));
         return 1;
     }
 

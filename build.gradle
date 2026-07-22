@@ -56,6 +56,7 @@ repositories {
 }
 
 dependencies {
+    implementation project(':core')
     minecraft 'net.minecraftforge:forge:1.20.1-47.2.0'
     implementation fg.deobf("curse.maven:kubejs-238086:5853326")
     implementation fg.deobf("curse.maven:architectury-api-419699:5137938")
@@ -63,4 +64,18 @@ dependencies {
     implementation fg.deobf("curse.maven:probejs-585406:5227399")
     implementation fg.deobf("curse.maven:configured-457570:5180900")
     implementation 'com.google.code.gson:gson:2.10.1'
+}
+
+evaluationDependsOn(':core')
+
+// Production jars must be reobfuscated for Forge runtime (SRG names).
+// Without reobfJar, Commands.literal/etc resolve as NoSuchMethodError in packs.
+jar {
+    dependsOn project(':core').tasks.named('classes')
+    from project(':core').sourceSets.main.output
+    finalizedBy 'reobfJar'
+}
+
+tasks.named('build').configure {
+    dependsOn 'reobfJar'
 }

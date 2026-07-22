@@ -35,6 +35,7 @@ public class SimpleProvider implements Provider {
     @Override public String getType() { return "simple"; }
     @Override public @Nullable String getFormat() { return formatName; }
     @Override public String getModel() { return model; }
+    @Override public String getUrl() { return url == null ? "" : url; }
 
     @Override
     public CompletableFuture<LLMResponse> sendAsync(List<ApiFormat.Message> messages,

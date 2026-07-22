@@ -5,6 +5,7 @@ import vibe.liteming.llmjs.LLMjs;
 import vibe.liteming.llmjs.provider.Provider;
 import vibe.liteming.llmjs.provider.RawProvider;
 import vibe.liteming.llmjs.provider.SimpleProvider;
+import vibe.liteming.llmcore.ProviderFiles;
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -135,11 +136,7 @@ public class ProviderLoader {
     // === Write operations (all write to llmjs.secret) ===
 
     public static boolean setKey(String providerName, String apiKey) {
-        return updateSecret(providerName, secret -> {
-            if (secret.isJsonObject()) {
-                secret.getAsJsonObject().addProperty("key", apiKey);
-            }
-        }, () -> new JsonPrimitive(apiKey));
+        return gameRootDir != null && ProviderFiles.setKey(gameRootDir.resolve("llmjs.secret"), providerName, apiKey);
     }
 
     public static boolean setup(String name, String url, String model, String key) {
@@ -147,41 +144,31 @@ public class ProviderLoader {
     }
 
     public static boolean setup(String name, String url, String model, String key, String format) {
-        return updateSecret(name, secret -> {
-            JsonObject obj = secret.isJsonObject() ? secret.getAsJsonObject() : new JsonObject();
-            obj.addProperty("url", url);
-            obj.addProperty("model", model);
-            obj.addProperty("key", key);
-            if (format != null && !format.isEmpty()) obj.addProperty("format", format);
-        }, () -> {
-            JsonObject obj = new JsonObject();
-            obj.addProperty("url", url);
-            obj.addProperty("model", model);
-            obj.addProperty("key", key);
-            if (format != null && !format.isEmpty()) obj.addProperty("format", format);
-            return obj;
-        });
+        if (gameRootDir == null) return false;
+        String safeFormat = format == null || format.isBlank() ? "openai" : format;
+        vibe.liteming.llmcore.ProviderSpec spec = new vibe.liteming.llmcore.ProviderSpec(name, safeFormat, url,
+                model, null, null, java.util.List.of(new vibe.liteming.llmcore.ProviderSpec.Credential(name + "#1", key, 1)));
+        return ProviderFiles.setup(gameRootDir.resolve("config/llmjs/providers.json"),
+                gameRootDir.resolve("llmjs.secret"), spec);
     }
 
     public static boolean updateWithoutKey(String name, String url, String model, String format) {
-        return updateSecret(name, secret -> {
-            JsonObject obj;
-            if (secret.isJsonObject()) {
-                obj = secret.getAsJsonObject();
-            } else {
-                obj = new JsonObject();
-                obj.addProperty("key", secret.getAsString());
-            }
-            obj.addProperty("url", url);
-            obj.addProperty("model", model);
-            if (format != null && !format.isEmpty()) obj.addProperty("format", format);
-        }, () -> {
-            JsonObject obj = new JsonObject();
-            obj.addProperty("url", url);
-            obj.addProperty("model", model);
-            if (format != null && !format.isEmpty()) obj.addProperty("format", format);
-            return obj;
-        });
+        return gameRootDir != null && ProviderFiles.updateProvider(
+                gameRootDir.resolve("config/llmjs/providers.json"), name, url, model, format);
+    }
+
+    public static boolean deleteProvider(String name) {
+        if (gameRootDir == null || name == null || name.isBlank()) return false;
+        boolean deleted = ProviderFiles.deleteProvider(
+                gameRootDir.resolve("config/llmjs/providers.json"),
+                gameRootDir.resolve("llmjs.secret"),
+                name);
+        // Also drop from server override if present
+        deleted |= ProviderFiles.deleteProvider(
+                gameRootDir.resolve("serverconfig/llmjs/providers.json"),
+                null,
+                name);
+        return deleted;
     }
 
     private static boolean updateSecret(String name,

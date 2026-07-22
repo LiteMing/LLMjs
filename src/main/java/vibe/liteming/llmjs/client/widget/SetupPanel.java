@@ -23,12 +23,15 @@ public class SetupPanel {
     private final EditBox modelInput;
     private final EditBox keyInput;
     private final Button saveButton;
+    private final Button clearKeyButton;
     private @Nullable String statusMessage;
     private int statusColor = 0xFFFFFF;
     private boolean visible = true;
+    private boolean editMode = false;
+    private @Nullable String currentMaskedKey;
 
-    private static final int LABEL_W = 60;
-    private static final int ROW_H = 24;
+    private static final int LABEL_W = 70;
+    private static final int ROW_H = 26;
 
     public SetupPanel(int x, int y, int width, int height, Font font) {
         this.x = x;
@@ -36,9 +39,9 @@ public class SetupPanel {
         this.width = width;
         this.height = height;
 
-        int inputX = x + LABEL_W + 8;
-        int inputW = Math.min(width - LABEL_W - 20, 300);
-        int row = y + 4;
+        int inputX = x + LABEL_W + 10;
+        int inputW = Math.min(width - LABEL_W - 28, 360);
+        int row = y + 10;
 
         nameInput = new EditBox(font, inputX, row, inputW, 18, Component.literal("Name"));
         nameInput.setMaxLength(64);
@@ -63,15 +66,22 @@ public class SetupPanel {
         keyInput = new EditBox(font, inputX, row, inputW, 18, Component.literal("API Key"));
         keyInput.setMaxLength(256);
         keyInput.setValue("");
-        row += ROW_H + 4;
+        // Hide typed characters for security; leave empty to keep existing key
+        keyInput.setFormatter((value, pos) -> net.minecraft.util.FormattedCharSequence.forward(
+                "*".repeat(Math.max(0, value.length())), net.minecraft.network.chat.Style.EMPTY));
+        row += ROW_H + 6;
 
-        saveButton = Button.builder(Component.literal("Save to llmjs.secret"), b -> save())
-                .pos(inputX, row).size(160, 20).build();
+        saveButton = Button.builder(Component.literal("Save"), b -> save())
+                .pos(inputX, row).size(100, 20).build();
+        clearKeyButton = Button.builder(Component.literal("Clear key field"), b -> {
+            keyInput.setValue("");
+            statusMessage = "Key field cleared (leave empty on Save to keep existing key)";
+            statusColor = 0xAAAAAA;
+        }).pos(inputX + 108, row).size(120, 20).build();
     }
 
-    /** Return all interactive widgets for the Screen to register. */
     public List<net.minecraft.client.gui.components.AbstractWidget> getWidgets() {
-        return List.of(nameInput, formatInput, urlInput, modelInput, keyInput, saveButton);
+        return List.of(nameInput, formatInput, urlInput, modelInput, keyInput, saveButton, clearKeyButton);
     }
 
     public void setVisible(boolean v) {
@@ -82,25 +92,27 @@ public class SetupPanel {
         modelInput.visible = v;
         keyInput.visible = v;
         saveButton.visible = v;
+        clearKeyButton.visible = v;
     }
 
     public boolean isVisible() { return visible; }
 
-    /** Whether we are editing an existing provider (key optional). */
-    private boolean editMode = false;
-
     public void prefill(String name, String format, String url, String model, @Nullable String maskedKey) {
         editMode = true;
-        nameInput.setValue(name);
+        currentMaskedKey = maskedKey;
+        nameInput.setValue(name == null ? "" : name);
         if (format != null && !format.isEmpty() && !"-".equals(format)) formatInput.setValue(format);
-        if (url != null && !url.isEmpty()) urlInput.setValue(url);
-        if (model != null && !model.isEmpty()) modelInput.setValue(model);
+        urlInput.setValue(url == null ? "" : url);
+        modelInput.setValue(model == null ? "" : model);
         keyInput.setValue("");
-        if (maskedKey != null && !maskedKey.equals("***")) {
-            statusMessage = "Current key: " + maskedKey + " | Enter new key to change, or leave empty to keep";
+        if (maskedKey != null && !maskedKey.isBlank() && !maskedKey.equals("***")) {
+            statusMessage = "Editing '" + name + "'. Key on file: " + maskedKey + " (leave blank to keep)";
+            statusColor = 0x55FF55;
+        } else if (maskedKey != null && !maskedKey.isBlank()) {
+            statusMessage = "Editing '" + name + "'. Key is set (hidden). Leave blank to keep.";
             statusColor = 0x55FF55;
         } else {
-            statusMessage = "Fill in your API key for '" + name + "'";
+            statusMessage = "Editing '" + name + "'. No key set yet - enter one to enable.";
             statusColor = 0xFFFF55;
             editMode = false;
         }
@@ -124,53 +136,50 @@ public class SetupPanel {
             return;
         }
         if (key.isEmpty() && !editMode) {
-            statusMessage = "API Key is required";
+            statusMessage = "API Key is required for new providers";
             statusColor = 0xFF5555;
             return;
         }
 
-        // In edit mode with empty key, send special marker to keep existing key
         String sendKey = key.isEmpty() ? "__KEEP__" : key;
-
         LLMNetwork.CHANNEL.sendToServer(new C2SSetupProviderPacket(name, url, model, sendKey, format));
-        statusMessage = "Saved! Provider '" + name + "' sent to server.";
+        statusMessage = "Saved provider '" + name + "'" + (key.isEmpty() ? " (key unchanged)" : "");
         statusColor = 0x55FF55;
         keyInput.setValue("");
-        editMode = false;
+        editMode = true;
+        if (!key.isEmpty()) currentMaskedKey = "****";
     }
 
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         if (!visible) return;
         var font = Minecraft.getInstance().font;
-        graphics.fill(x, y, x + width, y + height, 0x80000000);
+        graphics.fill(x, y, x + width, y + height, 0x90000000);
 
-        int labelX = x + 4;
-        int row = y + 9;
+        int labelX = x + 8;
+        int row = y + 14;
 
-        graphics.drawString(font, "Name:", labelX, row, 0xFFFFFF, false);
+        graphics.drawString(font, "Name", labelX, row, 0xFFFFFF, false);
         row += ROW_H;
-
-        graphics.drawString(font, "Format:", labelX, row, 0xFFFFFF, false);
-        graphics.drawString(font, "(openai/claude/gemini)", x + LABEL_W + 318, row, 0x666666, false);
+        graphics.drawString(font, "Format", labelX, row, 0xFFFFFF, false);
+        graphics.drawString(font, "openai / claude / gemini", x + LABEL_W + 380, row, 0x666666, false);
         row += ROW_H;
-
-        graphics.drawString(font, "URL:", labelX, row, 0xFFFFFF, false);
+        graphics.drawString(font, "URL", labelX, row, 0xFFFFFF, false);
         row += ROW_H;
-
-        graphics.drawString(font, "Model:", labelX, row, 0xFFFFFF, false);
+        graphics.drawString(font, "Model", labelX, row, 0xFFFFFF, false);
         row += ROW_H;
-
-        graphics.drawString(font, "API Key:", labelX, row, 0xFFFFFF, false);
-        row += ROW_H + 4;
-
-        // saveButton renders itself via Screen
+        graphics.drawString(font, "API Key", labelX, row, 0xFFFFFF, false);
+        if (currentMaskedKey != null && !currentMaskedKey.isBlank()) {
+            graphics.drawString(font, "on file: " + currentMaskedKey, x + LABEL_W + 380, row, 0x55AA55, false);
+        }
+        row += ROW_H + 8;
 
         if (statusMessage != null) {
-            graphics.drawString(font, statusMessage, labelX, row + 28, statusColor, false);
+            graphics.drawString(font, statusMessage, labelX, row + 24, statusColor, false);
         }
 
-        int helpY = y + height - 28;
-        graphics.drawString(font, "This creates a provider entry in llmjs.secret (not distributed with modpacks)", labelX, helpY, 0x666666, false);
-        graphics.drawString(font, "Modpack presets from providers.json can be configured with /llm setkey <name> <key>", labelX, helpY + 10, 0x666666, false);
+        int helpY = y + height - 36;
+        graphics.drawString(font, "Keys go to llmjs.secret (not shipped with modpacks).", labelX, helpY, 0x666666, false);
+        graphics.drawString(font, "CreatureChat dialogue_primary / legacy endpoints are managed here when shared providers are active.",
+                labelX, helpY + 12, 0x666666, false);
     }
 }
