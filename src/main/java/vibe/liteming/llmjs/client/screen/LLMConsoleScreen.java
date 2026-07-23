@@ -29,7 +29,6 @@ public class LLMConsoleScreen extends Screen {
     private TestPanel testPanel;
     private SetupPanel setupPanel;
     private final String initialStatusJson;
-    private boolean takeoverTipShown;
     private Button logTab;
     private Button providersTab;
     private Button routingTab;
@@ -83,34 +82,7 @@ public class LLMConsoleScreen extends Screen {
         for (var w : setupPanel.getWidgets()) addRenderableWidget(w);
 
         testPanel.updateProviderNames(providerPanel.getProviderNames());
-        maybeShowTakeoverTip();
         switchTab(Tab.LOG);
-    }
-
-    private void maybeShowTakeoverTip() {
-        if (takeoverTipShown || logPanel == null) return;
-        boolean linked = false;
-        try {
-            linked = net.minecraftforge.fml.ModList.get().isLoaded("creaturechat");
-            if (!linked && providerPanel != null) {
-                for (String name : providerPanel.getProviderNames()) {
-                    if (name != null && (name.startsWith("dialogue_") || name.startsWith("creaturechat_")
-                            || "dialogue_primary".equals(name))) {
-                        linked = true;
-                        break;
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-        if (!linked) return;
-        takeoverTipShown = true;
-        String tip = "{\"level\":\"INFO\",\"provider\":\"system\",\"status\":\"info\",\"latencyMs\":0,"
-                + "\"requestSummary\":\"CreatureChat linked: use /llm console for URL/key/model. "
-                + "Legacy /creaturechat key|url|model and config GUI endpoints are superseded. "
-                + "All CreatureChat LLM traffic appears in this Log tab (including while closed).\","
-                + "\"purpose\":\"NOTICE\",\"source\":\"llmjs\","
-                + "\"requestBody\":\"\",\"responseBody\":\"\"}";
-        logPanel.addEntry(tip);
     }
 
     private void switchTab(Tab tab) {
@@ -190,10 +162,7 @@ public class LLMConsoleScreen extends Screen {
 
     public void onLogHistory(List<String> entries) {
         if (logPanel != null) {
-            // History replaces buffer; re-show tip after so it is not wiped by setHistory
-            takeoverTipShown = false;
             logPanel.setHistory(entries);
-            maybeShowTakeoverTip();
         }
     }
 
