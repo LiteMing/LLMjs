@@ -7,6 +7,8 @@ import vibe.liteming.llmcore.LlmRequestLogger;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
@@ -156,6 +158,12 @@ public class LLMLogger {
                 requestBody, responseBody);
     }
 
+    /**
+     * Returns up to {@code count} most recent entries in chronological order
+     * (oldest first, newest last). Sorted by {@link LogEntry#timestamp()} so
+     * console history stays time-ordered even if concurrent completions race
+     * the ring-buffer write path.
+     */
     public LogEntry[] getRecentEntries(int count) {
         lock.readLock().lock();
         try {
@@ -165,6 +173,7 @@ public class LLMLogger {
                 int idx = (head - n + i + buffer.length) % buffer.length;
                 result[i] = buffer[idx];
             }
+            Arrays.sort(result, TIMESTAMP_ASC);
             return result;
         } finally {
             lock.readLock().unlock();
@@ -182,14 +191,18 @@ public class LLMLogger {
             for (int i = size - 1; i >= 0 && filtered.size() < count; i--) {
                 int idx = (head - 1 - (size - 1 - i) + buffer.length) % buffer.length;
                 if (buffer[idx].level() == level) {
-                    filtered.add(0, buffer[idx]);
+                    filtered.add(buffer[idx]);
                 }
             }
+            filtered.sort(TIMESTAMP_ASC);
             return filtered.toArray(new LogEntry[0]);
         } finally {
             lock.readLock().unlock();
         }
     }
+
+    private static final Comparator<LogEntry> TIMESTAMP_ASC = Comparator
+            .comparing(LogEntry::timestamp, Comparator.nullsLast(Comparator.naturalOrder()));
 
     public JsonArray toJsonArray(int count) {
         JsonArray arr = new JsonArray();
