@@ -48,7 +48,13 @@ public class LogPanel extends AbstractWidget {
             String purpose,
             String requestBody,
             String responseBody,
-            String error) {}
+            String error,
+            String responder,
+            String triggerSource,
+            String audience,
+            String inputKind,
+            String finishReason,
+            int contentLength) {}
 
     public LogPanel(int x, int y, int width, int height) {
         super(x, y, width, height, Component.literal("Log"));
@@ -105,6 +111,14 @@ public class LogPanel extends AbstractWidget {
             String requestBody = obj.has("requestBody") ? obj.get("requestBody").getAsString() : "";
             String responseBody = obj.has("responseBody") ? obj.get("responseBody").getAsString() : "";
             String error = obj.has("error") ? obj.get("error").getAsString() : "";
+            String responderName = obj.has("responderName") ? obj.get("responderName").getAsString() : "";
+            String responderId = obj.has("responderEntityId") ? obj.get("responderEntityId").getAsString() : "";
+            String responder = responderName.isBlank() ? responderId : responderName;
+            String triggerSource = obj.has("triggerSource") ? obj.get("triggerSource").getAsString() : "";
+            String audience = obj.has("audience") ? obj.get("audience").getAsString() : "";
+            String inputKind = obj.has("inputKind") ? obj.get("inputKind").getAsString() : "";
+            String finishReason = obj.has("finishReason") ? obj.get("finishReason").getAsString() : "";
+            int contentLength = obj.has("contentLength") ? obj.get("contentLength").getAsInt() : 0;
 
             int color = switch (level) {
                 case "ERROR" -> 0xFF5555;
@@ -114,8 +128,11 @@ public class LogPanel extends AbstractWidget {
 
             String tag = purpose.isBlank() ? "" : purpose + " ";
             String src = source.isBlank() ? "" : source + " ";
-            String text = String.format("[%s] %s%s%s | %s | %dms | %s", level, src, tag, provider, status, latency, summary);
-            entries.add(new LogDisplayEntry(text, color, purpose, requestBody, responseBody, error));
+            String actor = responder.isBlank() ? "" : "[Responder: " + responder + "] ";
+            String text = String.format("[%s] %s%s%s%s | %s | %dms | %s", level, src, tag, actor,
+                    provider, status, latency, summary);
+            entries.add(new LogDisplayEntry(text, color, purpose, requestBody, responseBody, error,
+                    responder, triggerSource, audience, inputKind, finishReason, contentLength));
             while (entries.size() > MAX_ENTRIES) {
                 entries.remove(0);
                 if (selectionAnchor >= 0) selectionAnchor = Math.max(-1, selectionAnchor - 1);
@@ -387,6 +404,12 @@ public class LogPanel extends AbstractWidget {
     private void appendEntryDetailSegs(List<DetailSeg> segs, List<String> unwrapped, LogDisplayEntry e) {
         addLineSeg(segs, unwrapped, e.text);
         if (e.purpose != null && !e.purpose.isBlank()) addLineSeg(segs, unwrapped, "purpose: " + e.purpose);
+        if (e.responder != null && !e.responder.isBlank()) addLineSeg(segs, unwrapped, "responder: " + e.responder);
+        if (e.triggerSource != null && !e.triggerSource.isBlank()) addLineSeg(segs, unwrapped, "trigger: " + e.triggerSource);
+        if (e.audience != null && !e.audience.isBlank()) addLineSeg(segs, unwrapped, "audience: " + e.audience);
+        if (e.inputKind != null && !e.inputKind.isBlank()) addLineSeg(segs, unwrapped, "inputKind: " + e.inputKind);
+        if (e.finishReason != null && !e.finishReason.isBlank()) addLineSeg(segs, unwrapped, "finishReason: " + e.finishReason);
+        addLineSeg(segs, unwrapped, "contentLength: " + e.contentLength);
         if (e.error != null && !e.error.isBlank()) addLineSeg(segs, unwrapped, "error: " + e.error);
         addLineSeg(segs, unwrapped, "--- REQUEST ---");
         addBodySegs(segs, unwrapped, e.requestBody == null || e.requestBody.isBlank() ? "(empty)" : e.requestBody);
@@ -563,6 +586,12 @@ public class LogPanel extends AbstractWidget {
             sb.append("===== ENTRY ").append(i + 1).append(" =====\n");
             sb.append(e.text).append('\n');
             if (e.purpose != null && !e.purpose.isBlank()) sb.append("purpose: ").append(e.purpose).append('\n');
+            if (e.responder != null && !e.responder.isBlank()) sb.append("responder: ").append(e.responder).append('\n');
+            if (e.triggerSource != null && !e.triggerSource.isBlank()) sb.append("trigger: ").append(e.triggerSource).append('\n');
+            if (e.audience != null && !e.audience.isBlank()) sb.append("audience: ").append(e.audience).append('\n');
+            if (e.inputKind != null && !e.inputKind.isBlank()) sb.append("inputKind: ").append(e.inputKind).append('\n');
+            if (e.finishReason != null && !e.finishReason.isBlank()) sb.append("finishReason: ").append(e.finishReason).append('\n');
+            sb.append("contentLength: ").append(e.contentLength).append('\n');
             if (e.error != null && !e.error.isBlank()) sb.append("error: ").append(e.error).append('\n');
             sb.append("--- REQUEST ---\n");
             sb.append(e.requestBody == null || e.requestBody.isBlank() ? "(empty)" : e.requestBody);

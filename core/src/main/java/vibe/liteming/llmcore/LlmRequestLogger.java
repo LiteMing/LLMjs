@@ -25,12 +25,26 @@ public final class LlmRequestLogger {
             String error,
             String finishReason,
             int contentLength,
-            String responsePreview) {
+            String responsePreview,
+            String responderEntityId,
+            String responderName,
+            String triggerSource,
+            String audience,
+            String inputKind) {
         public Event(String source, String purpose, String requestId, String provider, String model,
                 boolean success, long latencyMs, int promptTokens, int completionTokens, String summary,
                 String requestBody, String responseBody, String error) {
             this(source, purpose, requestId, provider, model, success, latencyMs, promptTokens,
                     completionTokens, summary, requestBody, responseBody, error, "", 0, "");
+        }
+
+        public Event(String source, String purpose, String requestId, String provider, String model,
+                boolean success, long latencyMs, int promptTokens, int completionTokens, String summary,
+                String requestBody, String responseBody, String error, String finishReason, int contentLength,
+                String responsePreview) {
+            this(source, purpose, requestId, provider, model, success, latencyMs, promptTokens, completionTokens,
+                    summary, requestBody, responseBody, error, finishReason, contentLength, responsePreview,
+                    "", "", "", "", purpose);
         }
     }
 
@@ -79,7 +93,12 @@ public final class LlmRequestLogger {
                 response.error(),
                 response.finishReason(),
                 response.content() == null ? 0 : response.content().length(),
-                preview(response.content())));
+                preview(response.content()),
+                request.context() == null ? "" : request.context().responderEntityId(),
+                request.context() == null ? "" : request.context().responderName(),
+                request.context() == null ? "" : request.context().triggerSource(),
+                request.context() == null ? "" : request.context().audience(),
+                request.context() == null ? "" : request.context().inputKind()));
     }
 
     private static String preview(String value) {

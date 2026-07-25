@@ -11,7 +11,19 @@ public record LlmRequestContext(
         String customName,
         String sessionId,
         String explicitRoute,
-        boolean structured) {
+        boolean structured,
+        String responderEntityId,
+        String responderName,
+        String triggerSource,
+        String audience,
+        String inputKind) {
+
+    /** Backward-compatible context shape used by llm-core 1.0.0 callers. */
+    public LlmRequestContext(String requestId, String purpose, String entityId, String entityType,
+            String customName, String sessionId, String explicitRoute, boolean structured) {
+        this(requestId, purpose, entityId, entityType, customName, sessionId, explicitRoute, structured,
+                entityId, customName, "", "", purpose);
+    }
 
     public LlmRequestContext {
         requestId = clean(requestId).isEmpty() ? UUID.randomUUID().toString() : clean(requestId);
@@ -21,10 +33,16 @@ public record LlmRequestContext(
         customName = clean(customName);
         sessionId = clean(sessionId);
         explicitRoute = clean(explicitRoute);
+        responderEntityId = clean(responderEntityId);
+        responderName = clean(responderName);
+        triggerSource = clean(triggerSource);
+        audience = clean(audience);
+        inputKind = clean(inputKind).isEmpty() ? purpose : clean(inputKind);
     }
 
     public static LlmRequestContext chat() {
-        return new LlmRequestContext("", "CHAT", "", "", "", "", "", false);
+        return new LlmRequestContext("", "CHAT", "", "", "", "", "", false,
+                "", "", "", "", "player");
     }
 
     private static String clean(String value) {

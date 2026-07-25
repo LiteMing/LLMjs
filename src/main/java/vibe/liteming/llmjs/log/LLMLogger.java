@@ -36,7 +36,12 @@ public class LLMLogger {
             String responseBody,
             String finishReason,
             int contentLength,
-            String responsePreview
+            String responsePreview,
+            String responderEntityId,
+            String responderName,
+            String triggerSource,
+            String audience,
+            String inputKind
     ) {
         public JsonObject toJson() {
             JsonObject obj = new JsonObject();
@@ -55,6 +60,11 @@ public class LLMLogger {
             if (finishReason != null && !finishReason.isBlank()) obj.addProperty("finishReason", finishReason);
             obj.addProperty("contentLength", contentLength);
             if (responsePreview != null && !responsePreview.isBlank()) obj.addProperty("responsePreview", responsePreview);
+            if (responderEntityId != null && !responderEntityId.isBlank()) obj.addProperty("responderEntityId", responderEntityId);
+            if (responderName != null && !responderName.isBlank()) obj.addProperty("responderName", responderName);
+            if (triggerSource != null && !triggerSource.isBlank()) obj.addProperty("triggerSource", triggerSource);
+            if (audience != null && !audience.isBlank()) obj.addProperty("audience", audience);
+            if (inputKind != null && !inputKind.isBlank()) obj.addProperty("inputKind", inputKind);
             if (requestBody != null && !requestBody.isBlank()) obj.addProperty("requestBody", requestBody);
             if (responseBody != null && !responseBody.isBlank()) obj.addProperty("responseBody", responseBody);
             return obj;
@@ -88,7 +98,8 @@ public class LLMLogger {
         log(level, event.provider(), summary, status, event.latencyMs(), event.promptTokens(),
                 event.completionTokens(), event.error(), event.purpose(), event.requestId(),
                 event.source(), event.requestBody(), event.responseBody(), event.finishReason(),
-                event.contentLength(), event.responsePreview());
+                event.contentLength(), event.responsePreview(), event.responderEntityId(), event.responderName(),
+                event.triggerSource(), event.audience(), event.inputKind());
     }
 
     public void resize(int capacity) {
@@ -126,6 +137,17 @@ public class LLMLogger {
                     @Nullable String errorMessage, String purpose, String requestId, String source,
                     String requestBody, String responseBody, String finishReason, int contentLength,
                     String responsePreview) {
+        log(level, provider, prompt, status, latencyMs, promptTokens, completionTokens, errorMessage, purpose,
+                requestId, source, requestBody, responseBody, finishReason, contentLength, responsePreview,
+                "", "", "", "", purpose);
+    }
+
+    public void log(Level level, String provider, String prompt, String status,
+                    long latencyMs, int promptTokens, int completionTokens,
+                    @Nullable String errorMessage, String purpose, String requestId, String source,
+                    String requestBody, String responseBody, String finishReason, int contentLength,
+                    String responsePreview, String responderEntityId, String responderName,
+                    String triggerSource, String audience, String inputKind) {
         String summary = prompt == null ? "" : prompt;
         if (summary.length() > 100) summary = summary.substring(0, 100) + "...";
         LogEntry entry = new LogEntry(Instant.now(), level, provider == null ? "" : provider, summary,
@@ -133,7 +155,12 @@ public class LLMLogger {
                 purpose == null ? "" : purpose, requestId == null ? "" : requestId,
                 source == null ? "" : source, trimBody(requestBody), trimBody(responseBody),
                 finishReason == null ? "" : finishReason, contentLength,
-                responsePreview == null ? "" : responsePreview);
+                responsePreview == null ? "" : responsePreview,
+                responderEntityId == null ? "" : responderEntityId,
+                responderName == null ? "" : responderName,
+                triggerSource == null ? "" : triggerSource,
+                audience == null ? "" : audience,
+                inputKind == null ? "" : inputKind);
 
         lock.writeLock().lock();
         try {

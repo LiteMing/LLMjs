@@ -155,4 +155,16 @@ class LlmOrchestratorTest {
         assertEquals("length", response.finishReason());
         assertEquals("length", response.attempts().get(0).finishReason());
     }
+
+    @Test
+    void preservesResponderAndTriggerContextFields() {
+        LlmRequestContext context = new LlmRequestContext("req", "NPC_SOCIAL_REALTIME", "entity",
+                "minecraft:villager", "Ada", "session", "route", false,
+                "entity", "Ada", "NPC:Reimu", "observer", "social");
+        assertEquals("entity", context.responderEntityId());
+        assertEquals("Ada", context.responderName());
+        assertEquals("NPC:Reimu", context.triggerSource());
+        assertEquals("observer", context.audience());
+        assertEquals("social", context.inputKind());
+    }
 }
