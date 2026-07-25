@@ -132,4 +132,27 @@ class LlmOrchestratorTest {
         assertEquals("good", response.provider());
         assertEquals(List.of("bad:Bearer key-one", "good:Bearer key-good"), requests);
     }
+
+    @Test
+    void exposesNormalizedFinishReasonForTruncatedResponse() throws Exception {
+        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/chat", exchange -> {
+            byte[] body = "{\"choices\":[{\"message\":{\"content\":\"partial\"},\"finish_reason\":\"length\"}]}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        ProviderSpec spec = new ProviderSpec("test", "openai",
+                "http://localhost:" + server.getAddress().getPort() + "/chat", "model", 0.0, 20,
+                List.of(new ProviderSpec.Credential("one", "key-one", 1)));
+        LlmResponse response = new LlmOrchestrator(Map.of("test", spec)).send(new LlmRequest(
+                List.of(new LlmMessage("user", "hi")), List.of("test"), 0.0, 20, 5,
+                LlmRequestContext.chat())).join();
+
+        assertTrue(response.success());
+        assertEquals("length", response.finishReason());
+        assertEquals("length", response.attempts().get(0).finishReason());
+    }
 }

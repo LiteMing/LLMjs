@@ -33,7 +33,10 @@ public class LLMLogger {
             String requestId,
             String source,
             String requestBody,
-            String responseBody
+            String responseBody,
+            String finishReason,
+            int contentLength,
+            String responsePreview
     ) {
         public JsonObject toJson() {
             JsonObject obj = new JsonObject();
@@ -49,6 +52,9 @@ public class LLMLogger {
             if (purpose != null && !purpose.isBlank()) obj.addProperty("purpose", purpose);
             if (requestId != null && !requestId.isBlank()) obj.addProperty("requestId", requestId);
             if (source != null && !source.isBlank()) obj.addProperty("source", source);
+            if (finishReason != null && !finishReason.isBlank()) obj.addProperty("finishReason", finishReason);
+            obj.addProperty("contentLength", contentLength);
+            if (responsePreview != null && !responsePreview.isBlank()) obj.addProperty("responsePreview", responsePreview);
             if (requestBody != null && !requestBody.isBlank()) obj.addProperty("requestBody", requestBody);
             if (responseBody != null && !responseBody.isBlank()) obj.addProperty("responseBody", responseBody);
             return obj;
@@ -81,7 +87,8 @@ public class LLMLogger {
         }
         log(level, event.provider(), summary, status, event.latencyMs(), event.promptTokens(),
                 event.completionTokens(), event.error(), event.purpose(), event.requestId(),
-                event.source(), event.requestBody(), event.responseBody());
+                event.source(), event.requestBody(), event.responseBody(), event.finishReason(),
+                event.contentLength(), event.responsePreview());
     }
 
     public void resize(int capacity) {
@@ -110,12 +117,23 @@ public class LLMLogger {
                     long latencyMs, int promptTokens, int completionTokens,
                     @Nullable String errorMessage, String purpose, String requestId, String source,
                     String requestBody, String responseBody) {
+        log(level, provider, prompt, status, latencyMs, promptTokens, completionTokens, errorMessage, purpose,
+                requestId, source, requestBody, responseBody, "", 0, "");
+    }
+
+    public void log(Level level, String provider, String prompt, String status,
+                    long latencyMs, int promptTokens, int completionTokens,
+                    @Nullable String errorMessage, String purpose, String requestId, String source,
+                    String requestBody, String responseBody, String finishReason, int contentLength,
+                    String responsePreview) {
         String summary = prompt == null ? "" : prompt;
         if (summary.length() > 100) summary = summary.substring(0, 100) + "...";
         LogEntry entry = new LogEntry(Instant.now(), level, provider == null ? "" : provider, summary,
                 status == null ? "" : status, latencyMs, promptTokens, completionTokens, errorMessage,
                 purpose == null ? "" : purpose, requestId == null ? "" : requestId,
-                source == null ? "" : source, trimBody(requestBody), trimBody(responseBody));
+                source == null ? "" : source, trimBody(requestBody), trimBody(responseBody),
+                finishReason == null ? "" : finishReason, contentLength,
+                responsePreview == null ? "" : responsePreview);
 
         lock.writeLock().lock();
         try {

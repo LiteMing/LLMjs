@@ -22,7 +22,16 @@ public final class LlmRequestLogger {
             String summary,
             String requestBody,
             String responseBody,
-            String error) {
+            String error,
+            String finishReason,
+            int contentLength,
+            String responsePreview) {
+        public Event(String source, String purpose, String requestId, String provider, String model,
+                boolean success, long latencyMs, int promptTokens, int completionTokens, String summary,
+                String requestBody, String responseBody, String error) {
+            this(source, purpose, requestId, provider, model, success, latencyMs, promptTokens,
+                    completionTokens, summary, requestBody, responseBody, error, "", 0, "");
+        }
     }
 
     private static final List<Consumer<Event>> LISTENERS = new CopyOnWriteArrayList<>();
@@ -67,6 +76,15 @@ public final class LlmRequestLogger {
                 summary,
                 response.requestBody(),
                 response.responseBody(),
-                response.error()));
+                response.error(),
+                response.finishReason(),
+                response.content() == null ? 0 : response.content().length(),
+                preview(response.content())));
+    }
+
+    private static String preview(String value) {
+        if (value == null || value.isBlank()) return "";
+        String clean = value.replace('\n', ' ').replace('\r', ' ');
+        return clean.length() <= 240 ? clean : clean.substring(0, 237) + "...";
     }
 }
