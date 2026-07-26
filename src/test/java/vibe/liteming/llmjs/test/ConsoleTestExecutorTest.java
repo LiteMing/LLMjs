@@ -128,6 +128,56 @@ class ConsoleTestExecutorTest {
         assertEquals("npc-1", decoded.metadata().get("entityId"));
     }
 
+    @Test
+    void codecAcceptsCreatureChatStudioHandoffV1() {
+        String requestId = UUID.randomUUID().toString();
+        String fixture = """
+                {
+                  "schemaVersion": 1,
+                  "requestId": "%s",
+                  "routingMode": "PURPOSE",
+                  "purpose": "CHAT",
+                  "generationType": "DIRECT_CHAT",
+                  "providerChain": [],
+                  "messages": [
+                    {
+                      "entryId": "output_rules",
+                      "provenance": "creaturechat/editable_template/builtin.output_rules@relative:0",
+                      "role": "system",
+                      "parts": [{"type":"text","text":"rules","mimeType":"","base64Data":"","detail":""}],
+                      "required": true,
+                      "priority": 1000
+                    },
+                    {
+                      "entryId": "current_focus",
+                      "provenance": "creaturechat/structural_marker/structure.current_focus@relative:0",
+                      "role": "user",
+                      "parts": [{"type":"text","text":"hello","mimeType":"","base64Data":"","detail":""}],
+                      "required": true,
+                      "priority": 1000
+                    }
+                  ],
+                  "overrides": {},
+                  "metadata": {
+                    "source": "creaturechat-studio",
+                    "entityId": "npc-1",
+                    "presetId": "builtin.legacy-default",
+                    "warningCount": "0"
+                  }
+                }
+                """.formatted(requestId);
+
+        ConsoleTestRequest request = ConsoleTestCodec.parseRequest(fixture, false);
+
+        assertEquals(requestId, request.requestId());
+        assertEquals(ConsoleTestRequest.RoutingMode.PURPOSE, request.routingMode());
+        assertEquals("DIRECT_CHAT", request.generationType());
+        assertEquals(2, request.messages().size());
+        assertEquals("structure.current_focus",
+                request.messages().get(1).provenance().split("/")[2].split("@")[0]);
+        assertEquals("creaturechat-studio", request.metadata().get("source"));
+    }
+
     private static ProviderSpec provider(String name, int port, String path) {
         return new ProviderSpec(name, "openai", "http://localhost:" + port + path, "model", 0.2, 32,
                 200, List.of(new ProviderSpec.Credential(name + "#1", "key", 1)));
