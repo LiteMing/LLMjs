@@ -1,3 +1,10 @@
+LLMjs 2.3.1 / LLM Core 1.1.1
+================================
+ - Test Result supports drag selection, right-click copy, and Ctrl/Cmd+C.
+ - LLM Console now includes complete English and Simplified Chinese localization.
+ - Added practical tooltips for Test, Log, Providers, Routing, and Setup controls.
+ - Raised the standalone llmcore Forge mod and shared llm-core library to 1.1.1.
+
 1.20.1 Changelog
 47.4
 ====
@@ -1046,4 +1053,3 @@
             * Make "Potentially dangerous alternative prefix" a debug warning, not info.
             Co-authored-by: Curle <curle@gemwire.uk>
             Co-authored-by: sciwhiz12 <arnoldnunag12@gmail.com>
-
