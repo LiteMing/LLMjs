@@ -18,7 +18,7 @@ class ProviderConfigLoaderTest {
         Path providers = tempDir.resolve("providers.json");
         Path secret = tempDir.resolve("llmjs.secret");
         Files.writeString(providers, """
-                {"fast":{"format":"openai","url":"http://localhost/test","model":"test-model"}}
+                {"fast":{"format":"openai","url":"http://localhost/test","model":"test-model","context_window_tokens":32768}}
                 """);
         Files.writeString(secret, """
                 {"providers":{"fast":{"keys":[{"id":"primary","key":"sk-one"},{"id":"secondary","key":"sk-two"}]}}}
@@ -29,5 +29,6 @@ class ProviderConfigLoaderTest {
         assertEquals(2, result.get("fast").credentials().size());
         assertEquals("primary", result.get("fast").credentials().get(0).id());
         assertEquals("secondary", result.get("fast").credentials().get(1).id());
+        assertEquals(32768, result.get("fast").contextWindowTokens());
     }
 }

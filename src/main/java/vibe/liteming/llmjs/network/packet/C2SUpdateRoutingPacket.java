@@ -5,12 +5,11 @@ import vibe.liteming.llmcore.RoutingConfigStore;
 import vibe.liteming.llmjs.network.LLMNetwork;
 import vibe.liteming.llmjs.provider.ProviderManager;
 import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.network.NetworkEvent;
 import net.minecraftforge.network.PacketDistributor;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
@@ -45,7 +44,13 @@ public class C2SUpdateRoutingPacket {
         ctx.get().enqueueWork(() -> {
             ServerPlayer player = ctx.get().getSender();
             if (player == null || !player.hasPermissions(2)) return;
-            PriorityRoutingConfig parsed = parseLoose(msg.routingJson);
+            PriorityRoutingConfig parsed;
+            try {
+                parsed = RoutingConfigStore.parse(msg.routingJson);
+            } catch (IllegalArgumentException e) {
+                player.sendSystemMessage(Component.literal("Routing update rejected: " + e.getMessage()));
+                return;
+            }
             ProviderManager.INSTANCE.updateRouting(parsed);
             // Broadcast refreshed status to every player who can see the console, so
             // all open Routing tabs reflect the new table.
@@ -60,41 +65,13 @@ public class C2SUpdateRoutingPacket {
         ctx.get().setPacketHandled(true);
     }
 
-    /**
-     * Tolerant parse used on the wire (clients may send a partial JSON with only
-     * the fields they care about). Falls back to an empty config on any error.
-     */
-    private static PriorityRoutingConfig parseLoose(String json) {
-        if (json == null || json.isBlank()) return PriorityRoutingConfig.empty();
-        try {
-            var root = com.google.gson.JsonParser.parseString(json).getAsJsonObject();
-            List<String> defaultChain = new ArrayList<>();
-            if (root.has("default") && root.get("default").isJsonArray()) {
-                for (var el : root.getAsJsonArray("default")) {
-                    if (el.isJsonPrimitive()) defaultChain.add(el.getAsString());
-                }
-            }
-            Map<String, List<String>> purposes = new LinkedHashMap<>();
-            if (root.has("purposes") && root.get("purposes").isJsonObject()) {
-                var obj = root.getAsJsonObject("purposes");
-                for (var entry : obj.entrySet()) {
-                    if (entry.getValue().isJsonArray()) {
-                        List<String> chain = new ArrayList<>();
-                        for (var el : entry.getValue().getAsJsonArray()) {
-                            if (el.isJsonPrimitive()) chain.add(el.getAsString());
-                        }
-                        if (!chain.isEmpty()) purposes.put(entry.getKey(), chain);
-                    }
-                }
-            }
-            return new PriorityRoutingConfig(purposes, defaultChain);
-        } catch (Exception e) {
-            return PriorityRoutingConfig.empty();
-        }
-    }
-
     /** Convenience builder used by the client UI to serialize its edited table. */
     public static String toJson(List<String> defaultChain, Map<String, List<String>> purposes) {
         return RoutingConfigStore.toJsonString(new PriorityRoutingConfig(purposes, defaultChain));
+    }
+
+    public static String toJson(List<String> defaultChain, Map<String, List<String>> purposes,
+            Map<String, vibe.liteming.llmcore.LlmRouteOptions> options) {
+        return RoutingConfigStore.toJsonString(new PriorityRoutingConfig(purposes, defaultChain, options));
     }
 }

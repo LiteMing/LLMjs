@@ -157,6 +157,48 @@ class LlmOrchestratorTest {
     }
 
     @Test
+    void resolvesTestThenPurposeThenProviderDefaultsAndUsesRouteOnWire() throws Exception {
+        List<String> requestBodies = new ArrayList<>();
+        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/chat", exchange -> {
+            requestBodies.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            byte[] body = "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        ProviderSpec spec = new ProviderSpec("test", "openai",
+                "http://localhost:" + server.getAddress().getPort() + "/chat", "model", 0.2, 100,
+                1000, List.of(new ProviderSpec.Credential("one", "key-one", 1)));
+        LlmOrchestrator orchestrator = new LlmOrchestrator(Map.of("test", spec));
+        orchestrator.setGlobalDefaults(new LlmRouteOptions(null, null, 30, null, null));
+        orchestrator.setRoutingConfig(new PriorityRoutingConfig(Map.of("CHAT", List.of("test")), List.of(),
+                Map.of("CHAT", new LlmRouteOptions(0.5, 200, 40, 900, 300))));
+        LlmRequest routed = LlmRequest.routed(List.of(new LlmMessage("user", "hi")), LlmRequestContext.chat());
+
+        LlmResolvedParameters purpose = orchestrator.resolveParameters(routed, "test");
+        assertEquals(0.5, purpose.temperature());
+        assertEquals(200, purpose.maxOutputTokens());
+        assertEquals(40, purpose.timeoutSeconds());
+        assertEquals(700, purpose.inputBudgetTokens());
+        assertEquals(300, purpose.outputReserveTokens());
+
+        LlmRequest testOverride = new LlmRequest(routed.messages(), List.of(), null, null, 0, routed.context(),
+                new LlmRouteOptions(0.9, 333, 55, 500, 100));
+        LlmResolvedParameters test = orchestrator.resolveParameters(testOverride, "test");
+        assertEquals(0.9, test.temperature());
+        assertEquals(333, test.maxOutputTokens());
+        assertEquals(55, test.timeoutSeconds());
+        assertEquals(500, test.inputBudgetTokens());
+
+        assertTrue(orchestrator.send(routed).join().success());
+        assertTrue(requestBodies.get(0).contains("\"temperature\":0.5"));
+        assertTrue(requestBodies.get(0).contains("\"max_tokens\":200"));
+    }
+
+    @Test
     void preservesResponderAndTriggerContextFields() {
         LlmRequestContext context = new LlmRequestContext("req", "NPC_SOCIAL_REALTIME", "entity",
                 "minecraft:villager", "Ada", "session", "route", false,

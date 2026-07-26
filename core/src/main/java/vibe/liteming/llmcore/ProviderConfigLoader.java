@@ -40,6 +40,7 @@ public final class ProviderConfigLoader {
                     getString(definition, "model", ""),
                     getDouble(definition, "temperature"),
                     getInteger(definition, "max_tokens"),
+                    getContextWindow(definition),
                     readCredentials(entry.getKey(), secrets));
             if (spec.isValid()) {
                 result.put(spec.name(), spec);
@@ -61,6 +62,7 @@ public final class ProviderConfigLoader {
                     getString(secretDefinition, "model", ""),
                     getDouble(secretDefinition, "temperature"),
                     getInteger(secretDefinition, "max_tokens"),
+                    getContextWindow(secretDefinition),
                     readCredentials(entry.getKey(), secrets));
             if (spec.isValid()) {
                 result.put(spec.name(), spec);
@@ -133,5 +135,10 @@ public final class ProviderConfigLoader {
 
     private static Integer getInteger(JsonObject object, String key) {
         return object.has(key) ? object.get(key).getAsInt() : null;
+    }
+
+    private static Integer getContextWindow(JsonObject object) {
+        Integer value = getInteger(object, "context_window_tokens");
+        return value != null ? value : getInteger(object, "context_window");
     }
 }

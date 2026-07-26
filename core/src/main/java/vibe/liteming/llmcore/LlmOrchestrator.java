@@ -33,6 +33,7 @@ public final class LlmOrchestrator {
     private final HttpClient httpClient;
     private final Map<String, ProviderRuntime> providers = new ConcurrentHashMap<>();
     private volatile PriorityRoutingConfig routingConfig = PriorityRoutingConfig.empty();
+    private volatile LlmRouteOptions globalDefaults = new LlmRouteOptions(null, null, 30, null, null);
 
     public LlmOrchestrator(Map<String, ProviderSpec> providerSpecs) {
         this.httpClient = HttpClient.newBuilder()
@@ -64,12 +65,21 @@ public final class LlmOrchestrator {
         return routingConfig;
     }
 
+    /** Generic host defaults; provider values still win for temperature/max output. */
+    public void setGlobalDefaults(LlmRouteOptions defaults) {
+        this.globalDefaults = defaults == null ? LlmRouteOptions.empty() : defaults;
+    }
+
+    public LlmRouteOptions getGlobalDefaults() {
+        return globalDefaults;
+    }
+
     /**
      * Resolve the effective provider chain for a request: explicit caller-supplied
      * chain wins; otherwise the global {@link PriorityRoutingConfig} for the request's
      * purpose (with fallback to its default chain); otherwise every known provider.
      */
-    private List<String> resolveChain(LlmRequest request) {
+    public List<String> resolveChain(LlmRequest request) {
         List<String> requested = request.providerChain();
         if (requested != null && !requested.isEmpty()) return new ArrayList<>(requested);
         List<String> all = new ArrayList<>(providers.keySet());
@@ -84,6 +94,44 @@ public final class LlmOrchestrator {
     public ProviderSpec getProviderSpec(String name) {
         ProviderRuntime runtime = providers.get(name);
         return runtime == null ? null : runtime.spec;
+    }
+
+    /** Resolve one provider attempt using test > purpose > provider/global precedence. */
+    public LlmResolvedParameters resolveParameters(LlmRequest request, String providerName) {
+        LlmRequest safeRequest = request == null ? LlmRequest.routed(List.of(), LlmRequestContext.chat()) : request;
+        ProviderSpec provider = getProviderSpec(providerName);
+        LlmRouteOptions providerDefaults = provider == null
+                ? LlmRouteOptions.empty()
+                : new LlmRouteOptions(provider.temperature(), provider.maxTokens(), null, null, null);
+        String purpose = safeRequest.context() == null ? null : safeRequest.context().purpose();
+        LlmRouteOptions purposeOverrides = routingConfig.resolveOptions(purpose);
+        LlmRouteOptions effective = globalDefaults.overlay(providerDefaults)
+                .overlay(purposeOverrides)
+                .overlay(safeRequest.requestOverrides());
+
+        int timeout = effective.timeoutSeconds() == null ? 30 : effective.timeoutSeconds();
+        int reserve = effective.outputReserveTokens() != null
+                ? effective.outputReserveTokens()
+                : (effective.maxOutputTokens() == null ? 0 : effective.maxOutputTokens());
+        int inputBudget = effective.inputBudgetTokens() == null
+                ? LlmResolvedParameters.UNBOUNDED_INPUT : effective.inputBudgetTokens();
+        Integer contextWindow = provider == null ? null : provider.contextWindowTokens();
+        if (contextWindow != null) {
+            inputBudget = Math.min(inputBudget, Math.max(0, contextWindow - reserve));
+        }
+        return new LlmResolvedParameters(providerName, effective.temperature(), effective.maxOutputTokens(),
+                timeout, inputBudget, reserve, contextWindow);
+    }
+
+    public LlmResolvedParameters resolveParameters(String purpose, String providerName) {
+        LlmRequestContext context = new LlmRequestContext("", purpose, "", "", "", "", "", false);
+        return resolveParameters(LlmRequest.routed(List.of(), context), providerName);
+    }
+
+    public LlmMessageFinalization finalizeDraft(LlmMessageDraft draft, LlmRequest request, String providerName,
+            LlmMessageFinalizer.TokenEstimator estimator) {
+        return LlmMessageFinalizer.finalize(draft,
+                resolveParameters(request, providerName).inputBudgetTokens(), estimator);
     }
 
     public CompletableFuture<LlmResponse> send(LlmRequest request) {
@@ -115,7 +163,7 @@ public final class LlmOrchestrator {
         }
         if (!"openai".equals(provider.spec.format())) {
             LlmRequest singleProvider = new LlmRequest(request.messages(), List.of(providerName), request.temperature(),
-                    request.maxTokens(), request.timeoutSeconds(), request.context());
+                    request.maxTokens(), request.timeoutSeconds(), request.context(), request.overrides());
             return send(singleProvider).thenCompose(response -> {
                 attempts.addAll(response.attempts());
                 if (response.success()) {
@@ -271,10 +319,11 @@ public final class LlmOrchestrator {
             ProviderSpec.Credential credential) {
         String format = provider.format();
         String url = resolveUrl(provider, credential.key());
-        JsonObject body = buildBody(format, provider, request);
+        LlmResolvedParameters parameters = resolveParameters(request, provider.name());
+        JsonObject body = buildBody(format, provider, request, parameters);
         String requestBody = GSON.toJson(body);
         HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
-                .timeout(Duration.ofSeconds(request.timeoutSeconds()))
+                .timeout(Duration.ofSeconds(parameters.timeoutSeconds()))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(requestBody));
         applyHeaders(builder, format, credential.key());
@@ -286,13 +335,13 @@ public final class LlmOrchestrator {
 
     private CompletableFuture<StreamResult> sendSingleStreaming(LlmRequest request, ProviderSpec provider,
             ProviderSpec.Credential credential, Consumer<String> onDelta) {
+        LlmResolvedParameters parameters = resolveParameters(request, provider.name());
         JsonObject body = buildOpenAiBody(provider.model(), request.messages(),
-                request.temperature() != null ? request.temperature() : provider.temperature(),
-                request.maxTokens() != null ? request.maxTokens() : provider.maxTokens(), false);
+                parameters.temperature(), parameters.maxOutputTokens(), false);
         body.addProperty("stream", true);
         String requestBody = GSON.toJson(body);
         HttpRequest httpRequest = HttpRequest.newBuilder(URI.create(provider.url()))
-                .timeout(Duration.ofSeconds(request.timeoutSeconds()))
+                .timeout(Duration.ofSeconds(parameters.timeoutSeconds()))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + credential.key())
                 .POST(HttpRequest.BodyPublishers.ofString(requestBody))
@@ -392,9 +441,10 @@ public final class LlmOrchestrator {
         return GSON.toJson(body);
     }
 
-    private static JsonObject buildBody(String format, ProviderSpec provider, LlmRequest request) {
-        Double temperature = request.temperature() != null ? request.temperature() : provider.temperature();
-        Integer maxTokens = request.maxTokens() != null ? request.maxTokens() : provider.maxTokens();
+    private static JsonObject buildBody(String format, ProviderSpec provider, LlmRequest request,
+            LlmResolvedParameters parameters) {
+        Double temperature = parameters.temperature();
+        Integer maxTokens = parameters.maxOutputTokens();
         return switch (format) {
             case "claude", "anthropic" -> buildClaudeBody(provider.model(), request.messages(), temperature, maxTokens);
             case "gemini" -> buildGeminiBody(request.messages(), temperature, maxTokens);

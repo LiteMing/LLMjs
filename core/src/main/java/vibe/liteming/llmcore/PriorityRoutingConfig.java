@@ -19,20 +19,33 @@ import java.util.Objects;
  *
  * @param purposeChains purpose id -> ordered provider chain (mutable on load; treated as snapshot)
  * @param defaultChain  provider chain used when a purpose has no explicit entry
+ * @param purposeOptions purpose id -> nullable/inherited generic request controls
  */
-public record PriorityRoutingConfig(Map<String, List<String>> purposeChains, List<String> defaultChain) {
+public record PriorityRoutingConfig(
+        Map<String, List<String>> purposeChains,
+        List<String> defaultChain,
+        Map<String, LlmRouteOptions> purposeOptions) {
+
+    public PriorityRoutingConfig(Map<String, List<String>> purposeChains, List<String> defaultChain) {
+        this(purposeChains, defaultChain, Map.of());
+    }
 
     public PriorityRoutingConfig {
         purposeChains = new LinkedHashMap<>(Objects.requireNonNullElse(purposeChains, Map.of()));
         defaultChain = new ArrayList<>(Objects.requireNonNullElse(defaultChain, List.of()));
+        purposeOptions = new LinkedHashMap<>(Objects.requireNonNullElse(purposeOptions, Map.of()));
         // freeze inner lists so callers can't mutate them in place
         for (var entry : purposeChains.entrySet()) {
             entry.setValue(List.copyOf(Objects.requireNonNullElse(entry.getValue(), List.of())));
         }
+        purposeChains = Collections.unmodifiableMap(purposeChains);
+        defaultChain = List.copyOf(defaultChain);
+        purposeOptions.replaceAll((purpose, options) -> options == null ? LlmRouteOptions.empty() : options);
+        purposeOptions = Collections.unmodifiableMap(purposeOptions);
     }
 
     public static PriorityRoutingConfig empty() {
-        return new PriorityRoutingConfig(Map.of(), List.of());
+        return new PriorityRoutingConfig(Map.of(), List.of(), Map.of());
     }
 
     /**
@@ -54,17 +67,35 @@ public record PriorityRoutingConfig(Map<String, List<String>> purposeChains, Lis
      * instance stays immutable. Empty / blank chains remove the entry.
      */
     public PriorityRoutingConfig withPurpose(String purpose, List<String> chain) {
+        String key = purpose == null ? "" : purpose.trim();
+        if (key.isEmpty() && chain != null && !chain.isEmpty()) {
+            throw new IllegalArgumentException("purpose is required");
+        }
         Map<String, List<String>> next = new LinkedHashMap<>(purposeChains);
         if (chain == null || chain.isEmpty()) {
-            next.remove(purpose == null ? "" : purpose.trim());
+            next.remove(key);
         } else {
-            next.put(purpose.trim(), List.copyOf(chain));
+            next.put(key, List.copyOf(chain));
         }
-        return new PriorityRoutingConfig(next, defaultChain);
+        return new PriorityRoutingConfig(next, defaultChain, purposeOptions);
     }
 
     public PriorityRoutingConfig withDefault(List<String> chain) {
         List<String> next = chain == null || chain.isEmpty() ? List.of() : List.copyOf(chain);
-        return new PriorityRoutingConfig(purposeChains, next);
+        return new PriorityRoutingConfig(purposeChains, next, purposeOptions);
+    }
+
+    public LlmRouteOptions resolveOptions(String purpose) {
+        if (purpose == null) return LlmRouteOptions.empty();
+        return purposeOptions.getOrDefault(purpose.trim(), LlmRouteOptions.empty());
+    }
+
+    public PriorityRoutingConfig withPurposeOptions(String purpose, LlmRouteOptions options) {
+        String key = purpose == null ? "" : purpose.trim();
+        if (key.isEmpty()) throw new IllegalArgumentException("purpose is required");
+        Map<String, LlmRouteOptions> next = new LinkedHashMap<>(purposeOptions);
+        if (options == null || options.isEmpty()) next.remove(key);
+        else next.put(key, options);
+        return new PriorityRoutingConfig(purposeChains, defaultChain, next);
     }
 }

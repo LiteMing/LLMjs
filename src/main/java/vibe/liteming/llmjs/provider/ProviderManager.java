@@ -6,6 +6,8 @@ import vibe.liteming.llmcore.LlmMessage;
 import vibe.liteming.llmcore.LlmOrchestrator;
 import vibe.liteming.llmcore.LlmRequest;
 import vibe.liteming.llmcore.LlmRequestContext;
+import vibe.liteming.llmcore.LlmResolvedParameters;
+import vibe.liteming.llmcore.LlmRouteOptions;
 import vibe.liteming.llmcore.PriorityRoutingConfig;
 import vibe.liteming.llmcore.ProviderConfigLoader;
 import vibe.liteming.llmcore.ProviderSpec;
@@ -65,6 +67,7 @@ public class ProviderManager {
                 configDir.resolve("providers.json"),
                 gameRoot.resolve("llmjs.secret"));
         this.orchestrator = new LlmOrchestrator(specs);
+        this.orchestrator.setGlobalDefaults(new LlmRouteOptions(null, null, LLMConfig.TIMEOUT.get(), null, null));
         Map<String, Provider> newProviders = new LinkedHashMap<>();
         specs.forEach((name, spec) -> newProviders.put(name, new CoreProviderAdapter(spec, orchestrator)));
         ProviderLoader.loadAll(configDir, gameRoot).forEach((name, provider) -> {
@@ -128,7 +131,9 @@ public class ProviderManager {
         // routing payload (default + per-purpose chains) consumed by the Routing tab
         result.add("routing", com.google.gson.JsonParser.parseString(
                 RoutingConfigStore.toJsonString(routingConfig)).getAsJsonObject());
+        result.addProperty("routingFingerprint", RoutingConfigStore.fingerprint(routingConfig));
         JsonArray purposesArray = new JsonArray();
+        List<String> allCoreProviders = new ArrayList<>(orchestrator.getProviderNames());
         for (PurposeMeta meta : PurposeRegistry.snapshot()) {
             JsonObject pm = new JsonObject();
             pm.addProperty("id", meta.id());
@@ -136,10 +141,34 @@ public class ProviderManager {
             pm.addProperty("description", meta.description());
             pm.addProperty("modId", meta.modId());
             pm.addProperty("builtIn", meta.builtIn());
+            List<String> chain = routingConfig.resolveChain(meta.id(), allCoreProviders);
+            String effectiveProvider = chain.isEmpty() ? "" : chain.get(0);
+            pm.add("effective", effectiveParametersJson(
+                    orchestrator.resolveParameters(meta.id(), effectiveProvider)));
             purposesArray.add(pm);
         }
         result.add("purposes", purposesArray);
         return result;
+    }
+
+    private static JsonObject effectiveParametersJson(LlmResolvedParameters parameters) {
+        JsonObject json = new JsonObject();
+        json.addProperty("provider", parameters.provider());
+        if (parameters.temperature() != null) json.addProperty("temperature", parameters.temperature());
+        if (parameters.maxOutputTokens() != null) {
+            json.addProperty("maxOutputTokens", parameters.maxOutputTokens());
+        }
+        json.addProperty("timeoutSeconds", parameters.timeoutSeconds());
+        json.addProperty("outputReserveTokens", parameters.outputReserveTokens());
+        if (parameters.hasBoundedInput()) {
+            json.addProperty("inputBudgetTokens", parameters.inputBudgetTokens());
+        } else {
+            json.addProperty("inputBudgetUnbounded", true);
+        }
+        if (parameters.contextWindowTokens() != null) {
+            json.addProperty("contextWindowTokens", parameters.contextWindowTokens());
+        }
+        return json;
     }
 
     public @Nullable Provider getProvider(String name) { return providers.get(name); }
@@ -220,7 +249,7 @@ public class ProviderManager {
     /**
      * Probe whether a provider's model accepts image input. Sends a tiny 1x1 PNG
      * and "describe this image" via the provider's normal chat path (single-element
-     * chain so fallbacks are NOT used — we are testing this specific provider).
+     * chain so fallbacks are NOT used; we are testing this specific provider).
      * The future completes with {@code true} on any 2xx + parseable content, and
      * {@code false} with an error message otherwise (e.g. "image not supported").
      */
@@ -229,7 +258,7 @@ public class ProviderManager {
         if (provider == null) return CompletableFuture.completedFuture(
                 new VisionProbeResult(false, "Provider not found", 0));
         int timeout = LLMConfig.TIMEOUT.get();
-        // Inline 1x1 transparent PNG (67 bytes) — avoids any file IO at probe time.
+        // Inline 1x1 transparent PNG (67 bytes) avoids file IO at probe time.
         byte[] png = java.util.Base64.getDecoder().decode(
                 "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC");
         String base64 = java.util.Base64.getEncoder().encodeToString(png);
