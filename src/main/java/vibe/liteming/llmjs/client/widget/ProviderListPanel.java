@@ -18,10 +18,13 @@ import net.minecraftforge.api.distmarker.OnlyIn;
 import java.util.ArrayList;
 import java.util.List;
 
+import static vibe.liteming.llmjs.client.ConsoleTexts.string;
+import static vibe.liteming.llmjs.client.ConsoleTexts.text;
+
 @OnlyIn(Dist.CLIENT)
 public class ProviderListPanel extends AbstractWidget {
     public record ProviderEntry(String name, String type, String format, String model, String url,
-                                 String maskedKey, String status, boolean configured) {}
+                                 String maskedKey, String status, String statusKind, boolean configured) {}
 
     private final List<ProviderEntry> providers = new ArrayList<>();
     private int hoveredRow = -1;
@@ -29,7 +32,7 @@ public class ProviderListPanel extends AbstractWidget {
     private static final int DELETE_W = 52;
 
     public ProviderListPanel(int x, int y, int width, int height, String statusJson) {
-        super(x, y, width, height, Component.literal("Providers"));
+        super(x, y, width, height, text("tab.providers"));
         updateStatus(statusJson);
     }
 
@@ -50,17 +53,22 @@ public class ProviderListPanel extends AbstractWidget {
                 boolean configured = !p.has("configured") || p.get("configured").getAsBoolean();
 
                 String status;
+                String statusKind;
                 if (!configured) {
-                    status = "NO KEY";
+                    status = string("providers.status.no_key");
+                    statusKind = "no_key";
                 } else if (p.has("status") && p.get("status").isJsonObject()) {
                     JsonObject st = p.getAsJsonObject("status");
-                    status = st.get("connected").getAsBoolean()
-                            ? "OK (" + st.get("latency").getAsLong() + "ms)"
-                            : "ERROR";
+                    boolean connected = st.get("connected").getAsBoolean();
+                    status = connected ? string("providers.status.ok", st.get("latency").getAsLong())
+                            : string("providers.status.error");
+                    statusKind = connected ? "ok" : "error";
                 } else {
-                    status = "untested";
+                    status = string("providers.status.untested");
+                    statusKind = "untested";
                 }
-                providers.add(new ProviderEntry(name, type, format, model, url, maskedKey, status, configured));
+                providers.add(new ProviderEntry(name, type, format, model, url, maskedKey,
+                        status, statusKind, configured));
             }
         } catch (Exception ignored) {}
     }
@@ -81,17 +89,21 @@ public class ProviderListPanel extends AbstractWidget {
         graphics.fill(getX(), getY(), getX() + width, getY() + height, 0x90000000);
 
         int y = getY() + 6;
-        graphics.drawString(font, "Name", getX() + 8, y, 0xAAAAAA, false);
-        graphics.drawString(font, "Format", getX() + 110, y, 0xAAAAAA, false);
-        graphics.drawString(font, "Model", getX() + 170, y, 0xAAAAAA, false);
-        graphics.drawString(font, "Status", getX() + 300, y, 0xAAAAAA, false);
+        graphics.drawString(font, text("providers.name"), getX() + 8, y, 0xAAAAAA, false);
+        graphics.drawString(font, text("providers.format"), getX() + 110, y, 0xAAAAAA, false);
+        graphics.drawString(font, text("providers.model"), getX() + 170, y, 0xAAAAAA, false);
+        graphics.drawString(font, text("providers.status"), getX() + 300, y, 0xAAAAAA, false);
         y += ROW_HEIGHT;
         graphics.fill(getX() + 4, y - 2, getX() + width - 4, y - 1, 0xFF555555);
 
         if (providers.isEmpty()) {
-            graphics.drawString(font, "No providers. Use Setup tab or wait for CreatureChat migration.",
+            graphics.drawString(font, text("providers.empty"),
                     getX() + 8, y + 6, 0xFF5555, false);
-            graphics.drawString(font, "Right-click empty area to refresh", getX() + 8, getY() + height - 14, 0x666666, false);
+            graphics.drawString(font, text("providers.refresh_help"),
+                    getX() + 8, getY() + height - 14, 0x666666, false);
+            if (isMouseOver(mouseX, mouseY)) {
+                graphics.renderTooltip(font, text("providers.empty.tip"), mouseX, mouseY);
+            }
             return;
         }
 
@@ -106,8 +118,8 @@ public class ProviderListPanel extends AbstractWidget {
             ProviderEntry p = providers.get(i);
             int statusColor;
             if (!p.configured) statusColor = 0xFF8800;
-            else if (p.status.startsWith("OK")) statusColor = 0x55FF55;
-            else if (p.status.equals("untested")) statusColor = 0xFFFF55;
+            else if (p.statusKind.equals("ok")) statusColor = 0x55FF55;
+            else if (p.statusKind.equals("untested")) statusColor = 0xFFFF55;
             else statusColor = 0xFF5555;
 
             if (i == hoveredRow) {
@@ -123,13 +135,25 @@ public class ProviderListPanel extends AbstractWidget {
             int dx = deleteX();
             boolean overDelete = mouseX >= dx && mouseX <= dx + DELETE_W && mouseY >= y && mouseY < y + ROW_HEIGHT - 2;
             graphics.fill(dx, y, dx + DELETE_W, y + ROW_HEIGHT - 4, overDelete ? 0xAA883333 : 0x66883333);
-            graphics.drawCenteredString(font, "Delete", dx + DELETE_W / 2, y + 3, 0xFFAAAA);
+            graphics.drawCenteredString(font, text("providers.delete"), dx + DELETE_W / 2, y + 3, 0xFFAAAA);
 
             y += ROW_HEIGHT;
         }
 
-        graphics.drawString(font, "Click row to edit (key optional) | Delete removes provider | Right-click refresh",
+        graphics.drawString(font, text("providers.footer"),
                 getX() + 8, getY() + height - 14, 0x666666, false);
+        if (hoveredRow >= 0) {
+            ProviderEntry hovered = providers.get(hoveredRow);
+            int rowY = headerH + hoveredRow * ROW_HEIGHT;
+            boolean overDelete = mouseX >= deleteX() && mouseX <= deleteX() + DELETE_W
+                    && mouseY >= rowY && mouseY < rowY + ROW_HEIGHT - 2;
+            if (overDelete) {
+                graphics.renderTooltip(font, text("providers.delete.tip", hovered.name), mouseX, mouseY);
+            } else {
+                graphics.renderTooltip(font, text("providers.row.tip", hovered.name, hovered.format,
+                        hovered.model, font.plainSubstrByWidth(hovered.url, 300), hovered.maskedKey), mouseX, mouseY);
+            }
+        }
     }
 
     @Override

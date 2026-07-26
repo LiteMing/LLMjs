@@ -15,6 +15,9 @@ import net.minecraftforge.api.distmarker.OnlyIn;
 import java.util.ArrayList;
 import java.util.List;
 
+import static vibe.liteming.llmjs.client.ConsoleTexts.string;
+import static vibe.liteming.llmjs.client.ConsoleTexts.text;
+
 @OnlyIn(Dist.CLIENT)
 public class LogPanel extends AbstractWidget {
     private final List<LogDisplayEntry> entries = new ArrayList<>();
@@ -57,7 +60,7 @@ public class LogPanel extends AbstractWidget {
             int contentLength) {}
 
     public LogPanel(int x, int y, int width, int height) {
-        super(x, y, width, height, Component.literal("Log"));
+        super(x, y, width, height, text("tab.log"));
     }
 
     public void clear() {
@@ -272,12 +275,12 @@ public class LogPanel extends AbstractWidget {
 
         int listH = listHeight();
         graphics.fill(getX(), getY(), getX() + width, getY() + listH, 0x40000000);
-        graphics.drawString(font, "Logs  (hold LMB select, RMB copy)", getX() + 4, getY() + 2, 0xAAAAAA, false);
+        graphics.drawString(font, text("log.title"), getX() + 4, getY() + 2, 0xAAAAAA, false);
 
         int contentY = getY() + 14;
         int contentH = listH - 16;
         if (entries.isEmpty()) {
-            graphics.drawString(font, "No log entries yet. CreatureChat / LLMjs requests will appear here.",
+            graphics.drawString(font, text("log.empty"),
                     getX() + 4, contentY, 0x888888, false);
         } else {
             int maxVisible = Math.max(1, contentH / LINE_HEIGHT);
@@ -299,9 +302,9 @@ public class LogPanel extends AbstractWidget {
         graphics.fill(getX(), dTop, getX() + width, getY() + height, 0x50000000);
         int low = selectionLow();
         int high = selectionHigh();
-        String title = low < 0 ? "Raw request / response"
-                : (low == high ? "Raw request / response"
-                : "Selection " + (low + 1) + "-" + (high + 1) + " (" + (high - low + 1) + " rows)");
+        String title = low < 0 ? string("log.raw")
+                : (low == high ? string("log.raw")
+                : string("log.selection", low + 1, high + 1, high - low + 1));
         graphics.drawString(font, title, getX() + 4, dTop + 2, 0x88CCFF, false);
 
         DetailBuild build = buildDetailLinesBoth();
@@ -340,7 +343,13 @@ public class LogPanel extends AbstractWidget {
             graphics.drawString(font, visible, textX, drawY, 0xDDDDDD, false);
         }
         if (System.currentTimeMillis() < copyFlashUntilMs) {
-            graphics.drawString(font, "Copied to clipboard", getX() + width - 120, dTop + 2, 0x55FF55, false);
+            graphics.drawString(font, text("common.copied"), getX() + width - 120, dTop + 2, 0x55FF55, false);
+        }
+        if (mouseX >= getX() && mouseX < getX() + width && mouseY >= getY() && mouseY < getY() + 14) {
+            graphics.renderTooltip(font, text("log.title.tip"), mouseX, mouseY);
+        } else if (mouseX >= getX() && mouseX < getX() + width
+                && mouseY >= dTop && mouseY < dTop + 14) {
+            graphics.renderTooltip(font, text("log.raw.tip"), mouseX, mouseY);
         }
     }
 

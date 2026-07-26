@@ -14,6 +14,10 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 
+import static vibe.liteming.llmjs.client.ConsoleTexts.string;
+import static vibe.liteming.llmjs.client.ConsoleTexts.text;
+import static vibe.liteming.llmjs.client.ConsoleTexts.tooltip;
+
 @OnlyIn(Dist.CLIENT)
 public class SetupPanel {
     private final int x, y, width, height;
@@ -43,27 +47,27 @@ public class SetupPanel {
         int inputW = Math.min(width - LABEL_W - 28, 360);
         int row = y + 10;
 
-        nameInput = new EditBox(font, inputX, row, inputW, 18, Component.literal("Name"));
+        nameInput = new EditBox(font, inputX, row, inputW, 18, text("setup.name"));
         nameInput.setMaxLength(64);
         nameInput.setValue("");
         row += ROW_H;
 
-        formatInput = new EditBox(font, inputX, row, inputW, 18, Component.literal("Format"));
+        formatInput = new EditBox(font, inputX, row, inputW, 18, text("setup.format"));
         formatInput.setMaxLength(32);
         formatInput.setValue("openai");
         row += ROW_H;
 
-        urlInput = new EditBox(font, inputX, row, inputW, 18, Component.literal("URL"));
+        urlInput = new EditBox(font, inputX, row, inputW, 18, text("setup.url"));
         urlInput.setMaxLength(512);
         urlInput.setValue("https://api.openai.com/v1/chat/completions");
         row += ROW_H;
 
-        modelInput = new EditBox(font, inputX, row, inputW, 18, Component.literal("Model"));
+        modelInput = new EditBox(font, inputX, row, inputW, 18, text("setup.model"));
         modelInput.setMaxLength(128);
         modelInput.setValue("");
         row += ROW_H;
 
-        keyInput = new EditBox(font, inputX, row, inputW, 18, Component.literal("API Key"));
+        keyInput = new EditBox(font, inputX, row, inputW, 18, text("setup.api_key"));
         keyInput.setMaxLength(256);
         keyInput.setValue("");
         // Hide typed characters for security; leave empty to keep existing key
@@ -71,13 +75,18 @@ public class SetupPanel {
                 "*".repeat(Math.max(0, value.length())), net.minecraft.network.chat.Style.EMPTY));
         row += ROW_H + 6;
 
-        saveButton = Button.builder(Component.literal("Save"), b -> save())
-                .pos(inputX, row).size(100, 20).build();
-        clearKeyButton = Button.builder(Component.literal("Clear key field"), b -> {
+        saveButton = tooltip(Button.builder(text("setup.save"), b -> save())
+                .pos(inputX, row).size(100, 20).build(), "setup.save.tip");
+        clearKeyButton = tooltip(Button.builder(text("setup.clear_key"), b -> {
             keyInput.setValue("");
-            statusMessage = "Key field cleared (leave empty on Save to keep existing key)";
+            statusMessage = string("setup.status.key_field_cleared");
             statusColor = 0xAAAAAA;
-        }).pos(inputX + 108, row).size(120, 20).build();
+        }).pos(inputX + 108, row).size(120, 20).build(), "setup.clear_key.tip");
+        tooltip(nameInput, "setup.name.tip");
+        tooltip(formatInput, "setup.format.tip");
+        tooltip(urlInput, "setup.url.tip");
+        tooltip(modelInput, "setup.model.tip");
+        tooltip(keyInput, "setup.api_key.tip");
     }
 
     public List<net.minecraft.client.gui.components.AbstractWidget> getWidgets() {
@@ -106,13 +115,13 @@ public class SetupPanel {
         modelInput.setValue(model == null ? "" : model);
         keyInput.setValue("");
         if (maskedKey != null && !maskedKey.isBlank() && !maskedKey.equals("***")) {
-            statusMessage = "Editing '" + name + "'. Key on file: " + maskedKey + " (leave blank to keep)";
+            statusMessage = string("setup.status.editing_masked", name, maskedKey);
             statusColor = 0x55FF55;
         } else if (maskedKey != null && !maskedKey.isBlank()) {
-            statusMessage = "Editing '" + name + "'. Key is set (hidden). Leave blank to keep.";
+            statusMessage = string("setup.status.editing_hidden", name);
             statusColor = 0x55FF55;
         } else {
-            statusMessage = "Editing '" + name + "'. No key set yet - enter one to enable.";
+            statusMessage = string("setup.status.editing_no_key", name);
             statusColor = 0xFFFF55;
             editMode = false;
         }
@@ -126,24 +135,24 @@ public class SetupPanel {
         String key = keyInput.getValue().strip();
 
         if (name.isEmpty()) {
-            statusMessage = "Name is required";
+            statusMessage = string("setup.validation.name_required");
             statusColor = 0xFF5555;
             return;
         }
         if (url.isEmpty()) {
-            statusMessage = "URL is required";
+            statusMessage = string("setup.validation.url_required");
             statusColor = 0xFF5555;
             return;
         }
         if (key.isEmpty() && !editMode) {
-            statusMessage = "API Key is required for new providers";
+            statusMessage = string("setup.validation.key_required");
             statusColor = 0xFF5555;
             return;
         }
 
         String sendKey = key.isEmpty() ? "__KEEP__" : key;
         LLMNetwork.CHANNEL.sendToServer(new C2SSetupProviderPacket(name, url, model, sendKey, format));
-        statusMessage = "Saved provider '" + name + "'" + (key.isEmpty() ? " (key unchanged)" : "");
+        statusMessage = string(key.isEmpty() ? "setup.status.saved_unchanged" : "setup.status.saved", name);
         statusColor = 0x55FF55;
         keyInput.setValue("");
         editMode = true;
@@ -158,18 +167,19 @@ public class SetupPanel {
         int labelX = x + 8;
         int row = y + 14;
 
-        graphics.drawString(font, "Name", labelX, row, 0xFFFFFF, false);
+        graphics.drawString(font, text("setup.name"), labelX, row, 0xFFFFFF, false);
         row += ROW_H;
-        graphics.drawString(font, "Format", labelX, row, 0xFFFFFF, false);
+        graphics.drawString(font, text("setup.format"), labelX, row, 0xFFFFFF, false);
         graphics.drawString(font, "openai / claude / gemini", x + LABEL_W + 380, row, 0x666666, false);
         row += ROW_H;
-        graphics.drawString(font, "URL", labelX, row, 0xFFFFFF, false);
+        graphics.drawString(font, text("setup.url"), labelX, row, 0xFFFFFF, false);
         row += ROW_H;
-        graphics.drawString(font, "Model", labelX, row, 0xFFFFFF, false);
+        graphics.drawString(font, text("setup.model"), labelX, row, 0xFFFFFF, false);
         row += ROW_H;
-        graphics.drawString(font, "API Key", labelX, row, 0xFFFFFF, false);
+        graphics.drawString(font, text("setup.api_key"), labelX, row, 0xFFFFFF, false);
         if (currentMaskedKey != null && !currentMaskedKey.isBlank()) {
-            graphics.drawString(font, "on file: " + currentMaskedKey, x + LABEL_W + 380, row, 0x55AA55, false);
+            graphics.drawString(font, text("setup.key_on_file", currentMaskedKey),
+                    x + LABEL_W + 380, row, 0x55AA55, false);
         }
         row += ROW_H + 8;
 
@@ -178,8 +188,8 @@ public class SetupPanel {
         }
 
         int helpY = y + height - 36;
-        graphics.drawString(font, "Keys go to llmjs.secret (not shipped with modpacks).", labelX, helpY, 0x666666, false);
-        graphics.drawString(font, "CreatureChat dialogue_primary / legacy endpoints are managed here when shared providers are active.",
+        graphics.drawString(font, text("setup.secret_help"), labelX, helpY, 0x666666, false);
+        graphics.drawString(font, text("setup.creaturechat_help"),
                 labelX, helpY + 12, 0x666666, false);
     }
 }

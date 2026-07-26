@@ -1,5 +1,6 @@
 package vibe.liteming.llmjs.client.screen;
 
+import com.google.gson.JsonObject;
 import vibe.liteming.llmjs.client.ClientEventHandler;
 import vibe.liteming.llmjs.client.widget.LogPanel;
 import vibe.liteming.llmjs.client.widget.ProviderListPanel;
@@ -17,6 +18,10 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.List;
 import java.util.UUID;
+
+import static vibe.liteming.llmjs.client.ConsoleTexts.string;
+import static vibe.liteming.llmjs.client.ConsoleTexts.text;
+import static vibe.liteming.llmjs.client.ConsoleTexts.tooltip;
 
 @OnlyIn(Dist.CLIENT)
 public class LLMConsoleScreen extends Screen {
@@ -42,7 +47,7 @@ public class LLMConsoleScreen extends Screen {
     }
 
     public LLMConsoleScreen(String statusJson, @Nullable String initialTestHandoff) {
-        super(Component.literal("LLMjs Console"));
+        super(text("title"));
         this.initialStatusJson = statusJson;
         this.initialTestHandoff = initialTestHandoff;
     }
@@ -55,16 +60,16 @@ public class LLMConsoleScreen extends Screen {
         int totalW = tabW * 5 + gap * 4;
         int startX = Math.max(10, (width - totalW) / 2);
 
-        logTab = Button.builder(Component.literal("Log"), b -> switchTab(Tab.LOG))
-                .pos(startX, tabY).size(tabW, 20).build();
-        providersTab = Button.builder(Component.literal("Providers"), b -> switchTab(Tab.PROVIDERS))
-                .pos(startX + (tabW + gap), tabY).size(tabW, 20).build();
-        routingTab = Button.builder(Component.literal("Routing"), b -> switchTab(Tab.ROUTING))
-                .pos(startX + (tabW + gap) * 2, tabY).size(tabW, 20).build();
-        testTab = Button.builder(Component.literal("Test"), b -> switchTab(Tab.TEST))
-                .pos(startX + (tabW + gap) * 3, tabY).size(tabW, 20).build();
-        setupTab = Button.builder(Component.literal("Setup"), b -> switchTab(Tab.SETUP))
-                .pos(startX + (tabW + gap) * 4, tabY).size(tabW, 20).build();
+        logTab = tooltip(Button.builder(text("tab.log"), b -> switchTab(Tab.LOG))
+                .pos(startX, tabY).size(tabW, 20).build(), "tab.log.tip");
+        providersTab = tooltip(Button.builder(text("tab.providers"), b -> switchTab(Tab.PROVIDERS))
+                .pos(startX + (tabW + gap), tabY).size(tabW, 20).build(), "tab.providers.tip");
+        routingTab = tooltip(Button.builder(text("tab.routing"), b -> switchTab(Tab.ROUTING))
+                .pos(startX + (tabW + gap) * 2, tabY).size(tabW, 20).build(), "tab.routing.tip");
+        testTab = tooltip(Button.builder(text("tab.test"), b -> switchTab(Tab.TEST))
+                .pos(startX + (tabW + gap) * 3, tabY).size(tabW, 20).build(), "tab.test.tip");
+        setupTab = tooltip(Button.builder(text("tab.setup"), b -> switchTab(Tab.SETUP))
+                .pos(startX + (tabW + gap) * 4, tabY).size(tabW, 20).build(), "tab.setup.tip");
         addRenderableWidget(logTab);
         addRenderableWidget(providersTab);
         addRenderableWidget(routingTab);
@@ -115,13 +120,17 @@ public class LLMConsoleScreen extends Screen {
         } catch (Exception ignored) {}
         if (!linked) return;
         takeoverTipShown = true;
-        String tip = "{\"level\":\"INFO\",\"provider\":\"system\",\"status\":\"info\",\"latencyMs\":0,"
-                + "\"requestSummary\":\"CreatureChat linked: use /llm console for URL/key/model. "
-                + "Legacy /creaturechat key|url|model and config GUI endpoints are superseded. "
-                + "All CreatureChat LLM traffic appears in this Log tab (including while closed).\","
-                + "\"purpose\":\"NOTICE\",\"source\":\"llmjs\","
-                + "\"requestBody\":\"\",\"responseBody\":\"\"}";
-        logPanel.addEntry(tip);
+        JsonObject tip = new JsonObject();
+        tip.addProperty("level", "INFO");
+        tip.addProperty("provider", "system");
+        tip.addProperty("status", "info");
+        tip.addProperty("latencyMs", 0);
+        tip.addProperty("requestSummary", string("notice.creaturechat_linked"));
+        tip.addProperty("purpose", "NOTICE");
+        tip.addProperty("source", "llmjs");
+        tip.addProperty("requestBody", "");
+        tip.addProperty("responseBody", "");
+        logPanel.addEntry(tip.toString());
     }
 
     private void switchTab(Tab tab) {
@@ -169,7 +178,37 @@ public class LLMConsoleScreen extends Screen {
                 && activeTab == Tab.LOG && logPanel != null) {
             if (logPanel.handleCopyShortcut()) return true;
         }
+        if ((keyCode == 67) && (Screen.hasControlDown() || (Minecraft.ON_OSX && Screen.hasAltDown()))
+                && activeTab == Tab.TEST && testPanel != null) {
+            if (testPanel.handleCopyShortcut()) return true;
+        }
         return super.keyPressed(keyCode, scanCode, modifiers);
+    }
+
+    @Override
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (activeTab == Tab.TEST && testPanel != null) {
+            if (testPanel.mouseClicked(mouseX, mouseY, button)) {
+                setFocused(null);
+                return true;
+            }
+            testPanel.deactivateResponseSelection();
+        }
+        return super.mouseClicked(mouseX, mouseY, button);
+    }
+
+    @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (activeTab == Tab.TEST && testPanel != null && testPanel.mouseDragged(mouseX, mouseY, button)) {
+            return true;
+        }
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (activeTab == Tab.TEST && testPanel != null && testPanel.mouseReleased(button)) return true;
+        return super.mouseReleased(mouseX, mouseY, button);
     }
 
     @Override

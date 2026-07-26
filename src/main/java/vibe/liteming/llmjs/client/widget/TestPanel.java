@@ -30,6 +30,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import static vibe.liteming.llmjs.client.ConsoleTexts.string;
+import static vibe.liteming.llmjs.client.ConsoleTexts.text;
+import static vibe.liteming.llmjs.client.ConsoleTexts.tooltip;
+
 @OnlyIn(Dist.CLIENT)
 public class TestPanel {
     private final int x, y, width, height;
@@ -61,6 +65,12 @@ public class TestPanel {
     private int visionResultColor = 0xAAAAAA;
     private int responseScroll;
     private int responseLineCount;
+    private List<ResultSegment> responseSegments = List.of();
+    private int responseSelectionAnchor = -1;
+    private int responseSelectionEnd = -1;
+    private boolean draggingResponseSelection;
+    private boolean responseSelectionActive;
+    private long copyFlashUntilMs;
     private PriorityRoutingConfig routingSnapshot = PriorityRoutingConfig.empty();
     private Map<String, String> effectiveByPurpose = new LinkedHashMap<>();
 
@@ -72,6 +82,7 @@ public class TestPanel {
     private int currentTemplateIndex = -1;
 
     public record PromptTemplate(String name, String prompt) {}
+    private record ResultSegment(String text, int startOffset, int endOffset) {}
 
     public TestPanel(int x, int y, int width, int height, Font font) {
         this.x = x;
@@ -81,52 +92,60 @@ public class TestPanel {
         this.font = font;
 
         int purposeWidth = Math.max(70, Math.min(180, width - 220));
-        purposeInput = input(font, x + 62, y + 4, purposeWidth, "Purpose", 96);
+        purposeInput = input(font, x + 62, y + 4, purposeWidth, "test.purpose", 96);
         purposeInput.setValue("DEBUG_TEST");
-        routingModeButton = Button.builder(Component.literal("Purpose"), button -> toggleRoutingMode())
-                .pos(x + 66 + purposeWidth, y + 4).size(70, 18).build();
-        visionProbeButton = Button.builder(Component.literal("Vision"), button -> sendVisionProbe())
-                .pos(x + width - 72, y + 4).size(62, 18).build();
-        providerInput = input(font, x + 62, y + 28, Math.max(80, width - 72), "Provider chain", 512);
+        routingModeButton = tooltip(Button.builder(text("test.mode.purpose"), button -> toggleRoutingMode())
+                .pos(x + 66 + purposeWidth, y + 4).size(70, 18).build(), "test.mode.tip");
+        visionProbeButton = tooltip(Button.builder(text("test.vision"), button -> sendVisionProbe())
+                .pos(x + width - 72, y + 4).size(62, 18).build(), "test.vision.tip");
+        providerInput = input(font, x + 62, y + 28, Math.max(80, width - 72), "test.provider_chain", 512);
 
-        promptInput = input(font, x + 62, y + 52, Math.max(70, width - 208), "Prompt", 16_384);
-        promptInput.setValue("Hello, this is a test.");
-        sendButton = Button.builder(Component.literal("Send"), button -> sendTest())
-                .pos(x + width - 140, y + 52).size(64, 18).build();
-        simpleButton = Button.builder(Component.literal("Simple"), button -> enterSimpleMode())
-                .pos(x + width - 72, y + 52).size(62, 18).build();
+        promptInput = input(font, x + 62, y + 52, Math.max(70, width - 208), "test.prompt", 16_384);
+        promptInput.setValue(string("test.default_prompt"));
+        sendButton = tooltip(Button.builder(text("test.send"), button -> sendTest())
+                .pos(x + width - 140, y + 52).size(64, 18).build(), "test.send.tip");
+        simpleButton = tooltip(Button.builder(text("test.simple"), button -> enterSimpleMode())
+                .pos(x + width - 72, y + 52).size(62, 18).build(), "test.simple.tip");
 
         int parameterY = y + 85;
         int parameterCell = Math.max(1, (width - 8) / 5);
-        temperatureInput = parameterInput(font, x + 4, parameterY, parameterCell - 4, "Temperature");
-        maxOutputInput = parameterInput(font, x + 4 + parameterCell, parameterY, parameterCell - 4, "Max output");
-        timeoutInput = parameterInput(font, x + 4 + parameterCell * 2, parameterY, parameterCell - 4, "Timeout");
-        inputBudgetInput = parameterInput(font, x + 4 + parameterCell * 3, parameterY, parameterCell - 4, "Input budget");
-        outputReserveInput = parameterInput(font, x + 4 + parameterCell * 4, parameterY, parameterCell - 4, "Output reserve");
+        temperatureInput = parameterInput(font, x + 4, parameterY, parameterCell - 4,
+                "parameter.temperature", "parameter.temperature.tip");
+        maxOutputInput = parameterInput(font, x + 4 + parameterCell, parameterY, parameterCell - 4,
+                "parameter.max_output", "parameter.max_output.tip");
+        timeoutInput = parameterInput(font, x + 4 + parameterCell * 2, parameterY, parameterCell - 4,
+                "parameter.timeout", "parameter.timeout.tip");
+        inputBudgetInput = parameterInput(font, x + 4 + parameterCell * 3, parameterY, parameterCell - 4,
+                "parameter.input_budget", "parameter.input_budget.tip");
+        outputReserveInput = parameterInput(font, x + 4 + parameterCell * 4, parameterY, parameterCell - 4,
+                "parameter.output_reserve", "parameter.output_reserve.tip");
 
-        prevTemplateBtn = Button.builder(Component.literal("<"), button -> cycleTemplate(-1))
-                .pos(x + 4, y + 106).size(20, 16).build();
-        nextTemplateBtn = Button.builder(Component.literal(">"), button -> cycleTemplate(1))
-                .pos(x + 26, y + 106).size(20, 16).build();
-        saveTemplateBtn = Button.builder(Component.literal("Save tpl"), button -> saveCurrentAsTemplate())
-                .pos(x + 50, y + 106).size(62, 16).build();
-        copyButton = Button.builder(Component.literal("Copy result"), button -> copyResult())
-                .pos(x + 116, y + 106).size(90, 16).build();
-        saveRouteButton = Button.builder(Component.literal("Save route"), button -> saveToRouting())
-                .pos(x + 210, y + 106).size(80, 16).build();
+        prevTemplateBtn = tooltip(Button.builder(Component.literal("<"), button -> cycleTemplate(-1))
+                .pos(x + 4, y + 106).size(20, 16).build(), "test.template.previous.tip");
+        nextTemplateBtn = tooltip(Button.builder(Component.literal(">"), button -> cycleTemplate(1))
+                .pos(x + 26, y + 106).size(20, 16).build(), "test.template.next.tip");
+        saveTemplateBtn = tooltip(Button.builder(text("test.template.save"), button -> saveCurrentAsTemplate())
+                .pos(x + 50, y + 106).size(62, 16).build(), "test.template.save.tip");
+        copyButton = tooltip(Button.builder(text("test.copy_result"), button -> copyResult())
+                .pos(x + 116, y + 106).size(90, 16).build(), "test.copy_result.tip");
+        saveRouteButton = tooltip(Button.builder(text("test.save_route"), button -> saveToRouting())
+                .pos(x + 210, y + 106).size(80, 16).build(), "test.save_route.tip");
+        tooltip(purposeInput, "test.purpose.tip");
+        tooltip(providerInput, "test.provider_chain.tip");
+        tooltip(promptInput, "test.prompt.tip");
         loadTemplatesFromConfig();
     }
 
-    private static EditBox input(Font font, int x, int y, int width, String label, int maxLength) {
-        EditBox input = new EditBox(font, x, y, width, 18, Component.literal(label));
+    private static EditBox input(Font font, int x, int y, int width, String labelKey, int maxLength) {
+        EditBox input = new EditBox(font, x, y, width, 18, text(labelKey));
         input.setMaxLength(maxLength);
         return input;
     }
 
-    private static EditBox parameterInput(Font font, int x, int y, int width, String label) {
-        EditBox input = input(font, x, y, Math.max(34, width), label, 12);
-        input.setHint(Component.literal("inherit"));
-        return input;
+    private static EditBox parameterInput(Font font, int x, int y, int width, String labelKey, String tipKey) {
+        EditBox input = input(font, x, y, Math.max(34, width), labelKey, 12);
+        input.setHint(text("common.inherit"));
+        return tooltip(input, tipKey);
     }
 
     public List<AbstractWidget> getWidgets() {
@@ -176,15 +195,15 @@ public class TestPanel {
     }
 
     private static String effectiveSummary(JsonObject effective) {
-        String provider = jsonText(effective, "provider", "none");
-        String temperature = jsonText(effective, "temperature", "unset");
-        String output = jsonText(effective, "maxOutputTokens", "unset");
-        String timeout = jsonText(effective, "timeoutSeconds", "unset");
+        String provider = jsonText(effective, "provider", string("common.none"));
+        String temperature = jsonText(effective, "temperature", string("common.unset"));
+        String output = jsonText(effective, "maxOutputTokens", string("common.unset"));
+        String timeout = jsonText(effective, "timeoutSeconds", string("common.unset"));
         String input = effective.has("inputBudgetUnbounded") && effective.get("inputBudgetUnbounded").getAsBoolean()
-                ? "unbounded" : jsonText(effective, "inputBudgetTokens", "unset");
-        String reserve = jsonText(effective, "outputReserveTokens", "unset");
-        return provider + " T=" + temperature + " out=" + output + " sec=" + timeout
-                + " in=" + input + " res=" + reserve;
+                ? string("common.unbounded")
+                : jsonText(effective, "inputBudgetTokens", string("common.unset"));
+        String reserve = jsonText(effective, "outputReserveTokens", string("common.unset"));
+        return string("test.effective", provider, temperature, output, timeout, input, reserve);
     }
 
     private static String jsonText(JsonObject json, String key, String fallback) {
@@ -232,11 +251,10 @@ public class TestPanel {
             providerInput.setValue(String.join(",", request.providerChain()));
             setOverrides(request.overrides());
             promptInput.setValue(lastText(request));
-            responseText = "Draft " + request.requestId() + " | " + request.messages().size()
-                    + " messages | " + request.generationType();
-            responseScroll = 0;
+            setResponseText(string("test.status.draft", request.requestId(), request.messages().size(),
+                    request.generationType()));
         } catch (IllegalArgumentException e) {
-            responseText = "ERROR: " + e.getMessage();
+            setResponseText(string("common.error", e.getMessage()));
         }
     }
 
@@ -247,8 +265,8 @@ public class TestPanel {
     }
 
     private void updateRoutingModeButton() {
-        routingModeButton.setMessage(Component.literal(
-                routingMode == ConsoleTestRequest.RoutingMode.PURPOSE ? "Purpose" : "Explicit"));
+        routingModeButton.setMessage(text(routingMode == ConsoleTestRequest.RoutingMode.PURPOSE
+                ? "test.mode.purpose" : "test.mode.explicit"));
     }
 
     private void enterSimpleMode() {
@@ -257,8 +275,7 @@ public class TestPanel {
         purposeInput.setValue("DEBUG_TEST");
         routingMode = ConsoleTestRequest.RoutingMode.PURPOSE;
         updateRoutingModeButton();
-        responseText = null;
-        responseScroll = 0;
+        setResponseText(null);
     }
 
     private void sendTest() {
@@ -268,11 +285,10 @@ public class TestPanel {
             String requestJson = ConsoleTestCodec.toJson(request);
             activeRequestId = request.requestUuid();
             waiting = true;
-            responseText = "Sending " + request.purpose() + "...";
-            responseScroll = 0;
+            setResponseText(string("test.status.sending", request.purpose()));
             LLMNetwork.CHANNEL.sendToServer(new C2SChatRequestPacket(activeRequestId, requestJson));
         } catch (IllegalArgumentException e) {
-            responseText = "ERROR: " + e.getMessage();
+            setResponseText(string("common.error", e.getMessage()));
         }
     }
 
@@ -321,11 +337,11 @@ public class TestPanel {
     }
 
     private LlmRouteOptions readOverrides() {
-        return new LlmRouteOptions(parseDouble(temperatureInput.getValue(), "temperature"),
-                parseInteger(maxOutputInput.getValue(), "max output"),
-                parseInteger(timeoutInput.getValue(), "timeout"),
-                parseInteger(inputBudgetInput.getValue(), "input budget"),
-                parseInteger(outputReserveInput.getValue(), "output reserve"));
+        return new LlmRouteOptions(parseDouble(temperatureInput.getValue(), string("parameter.temperature")),
+                parseInteger(maxOutputInput.getValue(), string("parameter.max_output")),
+                parseInteger(timeoutInput.getValue(), string("parameter.timeout")),
+                parseInteger(inputBudgetInput.getValue(), string("parameter.input_budget")),
+                parseInteger(outputReserveInput.getValue(), string("parameter.output_reserve")));
     }
 
     private void setOverrides(LlmRouteOptions overrides) {
@@ -345,7 +361,7 @@ public class TestPanel {
         try {
             return Double.parseDouble(text.trim());
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException(label + " must be a number");
+            throw new IllegalArgumentException(string("validation.number", label));
         }
     }
 
@@ -354,7 +370,7 @@ public class TestPanel {
         try {
             return Integer.parseInt(text.trim());
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException(label + " must be an integer");
+            throw new IllegalArgumentException(string("validation.integer", label));
         }
     }
 
@@ -373,22 +389,21 @@ public class TestPanel {
         if (activeRequestId == null || !activeRequestId.equals(requestId)) return;
         waiting = false;
         try {
-            responseText = ConsoleTestCodec.pretty(resultJson);
+            setResponseText(ConsoleTestCodec.pretty(resultJson));
         } catch (Exception e) {
-            responseText = "ERROR: invalid result payload: " + e.getMessage();
+            setResponseText(string("test.status.invalid_result", e.getMessage()));
         }
-        responseScroll = 0;
     }
 
     private void sendVisionProbe() {
         List<String> chain = parseProviderChain(providerInput.getValue());
         if (chain.isEmpty()) {
-            visionResultText = "Provider required";
+            visionResultText = string("test.vision.provider_required");
             visionResultColor = 0xFF5555;
             return;
         }
         String provider = chain.get(0);
-        visionResultText = "Probing " + provider + "...";
+        visionResultText = string("test.vision.probing", provider);
         visionResultColor = 0xAAAAFF;
         LLMNetwork.CHANNEL.sendToServer(new C2SVisionProbePacket(provider));
     }
@@ -397,10 +412,11 @@ public class TestPanel {
         List<String> chain = parseProviderChain(providerInput.getValue());
         if (chain.isEmpty() || !chain.get(0).equalsIgnoreCase(providerName)) return;
         if (supported) {
-            visionResultText = "Vision: OK (" + latencyMs + "ms)";
+            visionResultText = string("test.vision.ok", latencyMs);
             visionResultColor = 0x55FF55;
         } else {
-            visionResultText = "Vision: NO - " + (error == null || error.isEmpty() ? "not supported" : error);
+            visionResultText = string("test.vision.no",
+                    error == null || error.isEmpty() ? string("test.vision.not_supported") : error);
             visionResultColor = 0xFF5555;
         }
     }
@@ -414,55 +430,207 @@ public class TestPanel {
     }
 
     private void copyResult() {
-        if (responseText != null) Minecraft.getInstance().keyboardHandler.setClipboard(responseText);
+        if (responseText == null) return;
+        int low = selectionLow();
+        int high = selectionHigh();
+        String copied = low >= 0 && high > low ? responseText.substring(low, high) : responseText;
+        try {
+            Minecraft.getInstance().keyboardHandler.setClipboard(copied);
+            copyFlashUntilMs = System.currentTimeMillis() + 1_500L;
+        } catch (Exception ignored) {
+        }
     }
 
     private void saveToRouting() {
         try {
             String purpose = purposeInput.getValue().trim();
-            if (purpose.isEmpty()) throw new IllegalArgumentException("purpose is required");
+            if (purpose.isEmpty()) throw new IllegalArgumentException(string("validation.purpose_required"));
             PriorityRoutingConfig next = routingSnapshot.withPurposeOptions(purpose, readOverrides());
             List<String> chain = parseProviderChain(providerInput.getValue());
             if (routingMode == ConsoleTestRequest.RoutingMode.EXPLICIT_CHAIN && !chain.isEmpty()) {
                 next = next.withPurpose(purpose, chain);
             }
             LLMNetwork.CHANNEL.sendToServer(new C2SUpdateRoutingPacket(RoutingConfigStore.toJsonString(next)));
-            responseText = "Routing save requested for " + purpose;
-            responseScroll = 0;
+            setResponseText(string("test.status.routing_saved", purpose));
         } catch (IllegalArgumentException e) {
-            responseText = "ERROR: " + e.getMessage();
+            setResponseText(string("common.error", e.getMessage()));
         }
     }
 
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         if (!visible) return;
         graphics.fill(x, y, x + width, y + height, 0x80000000);
-        graphics.drawString(font, "Purpose", x + 4, y + 9, 0xFFFFFF, false);
-        graphics.drawString(font, "Chain", x + 4, y + 33, 0xFFFFFF, false);
-        graphics.drawString(font, loadedHandoff == null ? "Prompt" : "Focus", x + 4, y + 57, 0xFFFFFF, false);
+        graphics.drawString(font, text("test.purpose"), x + 4, y + 9, 0xFFFFFF, false);
+        graphics.drawString(font, text("test.chain"), x + 4, y + 33, 0xFFFFFF, false);
+        graphics.drawString(font, text(loadedHandoff == null ? "test.prompt" : "test.focus"),
+                x + 4, y + 57, 0xFFFFFF, false);
         int parameterY = y + 76;
         int parameterCell = Math.max(1, (width - 8) / 5);
         String[] labels = {"T", "Out", "Sec", "In", "Res"};
         for (int index = 0; index < labels.length; index++) {
             graphics.drawString(font, labels[index], x + 4 + parameterCell * index, parameterY, 0xAAAAAA, false);
         }
-        String effective = effectiveByPurpose.getOrDefault(purposeInput.getValue().trim(), "effective unavailable");
-        String draftPrefix = loadedHandoff == null ? "" : loadedHandoff.messages().size() + " msgs | ";
+        String effective = effectiveByPurpose.getOrDefault(purposeInput.getValue().trim(),
+                string("test.effective_unavailable"));
+        String draftPrefix = loadedHandoff == null ? "" : string("test.message_count", loadedHandoff.messages().size());
         String status = visionResultText != null ? visionResultText : draftPrefix + effective;
         graphics.drawString(font, font.plainSubstrByWidth(status, width - 12),
                 x + 4, y + 127, visionResultText == null ? 0x77AAFF : visionResultColor, false);
 
         int responseY = y + 140;
-        graphics.drawString(font, "Result", x + 4, responseY, 0xAAAAAA, false);
-        if (responseText == null) return;
-        List<net.minecraft.util.FormattedCharSequence> lines = font.split(Component.literal(responseText), width - 12);
-        responseLineCount = lines.size();
+        graphics.drawString(font, text("test.result"), x + 4, responseY, 0xAAAAAA, false);
+        if (responseText == null) {
+            if (mouseX >= x && mouseX < x + width && mouseY >= responseY && mouseY < responseY + 12) {
+                graphics.renderTooltip(font, text("test.result.tip"), mouseX, mouseY);
+            }
+            return;
+        }
+        responseLineCount = responseSegments.size();
         int lineY = responseY + 12;
-        for (int index = responseScroll; index < lines.size(); index++) {
+        for (int index = responseScroll; index < responseSegments.size(); index++) {
             if (lineY > y + height - 10) break;
-            graphics.drawString(font, lines.get(index), x + 4, lineY, 0xFFFFFF, false);
+            ResultSegment segment = responseSegments.get(index);
+            renderResultSelection(graphics, segment, x + 4, lineY);
+            graphics.drawString(font, segment.text(), x + 4, lineY, 0xFFFFFF, false);
             lineY += 10;
         }
+        if (System.currentTimeMillis() < copyFlashUntilMs) {
+            graphics.drawString(font, text("common.copied"), x + width - 120, responseY, 0x55FF55, false);
+        }
+        if (mouseX >= x && mouseX < x + width && mouseY >= responseY && mouseY < responseY + 12) {
+            graphics.renderTooltip(font, text("test.result.tip"), mouseX, mouseY);
+        } else if (mouseX >= x && mouseX < x + width && mouseY >= y + 124 && mouseY < y + 139) {
+            graphics.renderTooltip(font, text("test.effective.tip"), mouseX, mouseY);
+        }
+    }
+
+    private void setResponseText(@Nullable String text) {
+        responseText = text;
+        responseScroll = 0;
+        responseSelectionAnchor = -1;
+        responseSelectionEnd = -1;
+        responseSelectionActive = false;
+        draggingResponseSelection = false;
+        responseSegments = buildResultSegments(text);
+        responseLineCount = responseSegments.size();
+    }
+
+    private List<ResultSegment> buildResultSegments(@Nullable String text) {
+        if (text == null) return List.of();
+        List<ResultSegment> segments = new ArrayList<>();
+        String[] logicalLines = text.split("\\n", -1);
+        int globalOffset = 0;
+        int maxWidth = Math.max(8, width - 12);
+        for (int lineIndex = 0; lineIndex < logicalLines.length; lineIndex++) {
+            String line = logicalLines[lineIndex];
+            if (line.isEmpty()) {
+                segments.add(new ResultSegment("", globalOffset, globalOffset));
+            } else {
+                int localOffset = 0;
+                while (localOffset < line.length()) {
+                    String remaining = line.substring(localOffset);
+                    String visible = font.plainSubstrByWidth(remaining, maxWidth);
+                    int length = Math.max(1, visible.length());
+                    int end = Math.min(line.length(), localOffset + length);
+                    segments.add(new ResultSegment(line.substring(localOffset, end),
+                            globalOffset + localOffset, globalOffset + end));
+                    localOffset = end;
+                }
+            }
+            globalOffset += line.length();
+            if (lineIndex + 1 < logicalLines.length) globalOffset++;
+        }
+        return List.copyOf(segments);
+    }
+
+    private int selectionLow() {
+        if (responseSelectionAnchor < 0 || responseSelectionEnd < 0) return -1;
+        return Math.min(responseSelectionAnchor, responseSelectionEnd);
+    }
+
+    private int selectionHigh() {
+        if (responseSelectionAnchor < 0 || responseSelectionEnd < 0) return -1;
+        return Math.max(responseSelectionAnchor, responseSelectionEnd);
+    }
+
+    private void renderResultSelection(GuiGraphics graphics, ResultSegment segment, int textX, int drawY) {
+        int low = selectionLow();
+        int high = selectionHigh();
+        if (low < 0 || high <= low) return;
+        int overlapStart = Math.max(low, segment.startOffset());
+        int overlapEnd = Math.min(high, segment.endOffset());
+        if (overlapEnd <= overlapStart) return;
+        int localStart = overlapStart - segment.startOffset();
+        int localEnd = overlapEnd - segment.startOffset();
+        int x1 = textX + font.width(segment.text().substring(0, localStart));
+        int x2 = textX + font.width(segment.text().substring(0, localEnd));
+        graphics.fill(x1, drawY - 1, x2, drawY + 9, 0x663388FF);
+    }
+
+    private boolean isInResponseArea(double mouseX, double mouseY) {
+        return visible && responseText != null && mouseX >= x && mouseX <= x + width
+                && mouseY >= y + 152 && mouseY < y + height;
+    }
+
+    private int resultCharOffsetAt(double mouseX, double mouseY, boolean clamp) {
+        if (responseSegments.isEmpty()) return -1;
+        int row = (int) ((mouseY - (y + 152)) / 10);
+        int segmentIndex = responseScroll + row;
+        if (clamp) segmentIndex = Math.max(0, Math.min(responseSegments.size() - 1, segmentIndex));
+        if (segmentIndex < 0 || segmentIndex >= responseSegments.size()) return -1;
+        ResultSegment segment = responseSegments.get(segmentIndex);
+        double dx = mouseX - (x + 4);
+        if (dx <= 0) return segment.startOffset();
+        int local = 0;
+        for (int index = 1; index <= segment.text().length(); index++) {
+            if (font.width(segment.text().substring(0, index)) <= dx) local = index;
+            else break;
+        }
+        return segment.startOffset() + local;
+    }
+
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (!isInResponseArea(mouseX, mouseY)) return false;
+        responseSelectionActive = true;
+        if (button == 1) {
+            copyResult();
+            return true;
+        }
+        if (button != 0) return false;
+        int offset = resultCharOffsetAt(mouseX, mouseY, false);
+        if (offset < 0) return false;
+        responseSelectionAnchor = offset;
+        responseSelectionEnd = offset;
+        draggingResponseSelection = true;
+        return true;
+    }
+
+    public boolean mouseDragged(double mouseX, double mouseY, int button) {
+        if (!draggingResponseSelection || button != 0 || responseText == null) return false;
+        int offset = resultCharOffsetAt(mouseX, mouseY, true);
+        if (offset >= 0) responseSelectionEnd = offset;
+        int visibleLines = Math.max(1, (height - 154) / 10);
+        int maxScroll = Math.max(0, responseSegments.size() - visibleLines);
+        if (mouseY < y + 158 && responseScroll > 0) responseScroll--;
+        else if (mouseY > y + height - 8 && responseScroll < maxScroll) responseScroll++;
+        return true;
+    }
+
+    public boolean mouseReleased(int button) {
+        if (button != 0 || !draggingResponseSelection) return false;
+        draggingResponseSelection = false;
+        return true;
+    }
+
+    public void deactivateResponseSelection() {
+        responseSelectionActive = false;
+        draggingResponseSelection = false;
+    }
+
+    public boolean handleCopyShortcut() {
+        if (!visible || !responseSelectionActive || selectionHigh() <= selectionLow()) return false;
+        copyResult();
+        return true;
     }
 
     private void loadTemplatesFromConfig() {
@@ -471,8 +639,9 @@ public class TestPanel {
             templates.add(new PromptTemplate(template.name(), template.prompt()));
         }
         if (templates.isEmpty()) {
-            templates.add(new PromptTemplate("connection", "Say 'ok' to confirm connection."));
-            templates.add(new PromptTemplate("simple", "Hello, this is a test."));
+            templates.add(new PromptTemplate(string("test.template.connection"),
+                    string("test.template.connection_prompt")));
+            templates.add(new PromptTemplate(string("test.template.simple"), string("test.default_prompt")));
         }
     }
 

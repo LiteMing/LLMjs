@@ -22,6 +22,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import static vibe.liteming.llmjs.client.ConsoleTexts.string;
+import static vibe.liteming.llmjs.client.ConsoleTexts.text;
+import static vibe.liteming.llmjs.client.ConsoleTexts.tooltip;
+
 /**
  * Routing tab widget for the /llm console. Renders one row per registered purpose
  * (from {@link vibe.liteming.llmcore.PurposeRegistry}) plus a "default" row. Each row
@@ -62,22 +66,22 @@ public class RoutingPanel extends AbstractWidget {
     private boolean dirty = false;
 
     public RoutingPanel(int x, int y, int width, int height, Font font, String statusJson) {
-        super(x, y, width, height, Component.literal("Routing"));
+        super(x, y, width, height, text("tab.routing"));
         this.font = font;
-        this.temperatureInput = parameterInput(font, "Temperature");
-        this.maxOutputInput = parameterInput(font, "Max output");
-        this.timeoutInput = parameterInput(font, "Timeout");
-        this.inputBudgetInput = parameterInput(font, "Input budget");
-        this.outputReserveInput = parameterInput(font, "Output reserve");
+        this.temperatureInput = parameterInput(font, "parameter.temperature", "parameter.temperature.tip");
+        this.maxOutputInput = parameterInput(font, "parameter.max_output", "parameter.max_output.tip");
+        this.timeoutInput = parameterInput(font, "parameter.timeout", "parameter.timeout.tip");
+        this.inputBudgetInput = parameterInput(font, "parameter.input_budget", "parameter.input_budget.tip");
+        this.outputReserveInput = parameterInput(font, "parameter.output_reserve", "parameter.output_reserve.tip");
         updateStatus(statusJson);
     }
 
-    private static EditBox parameterInput(Font font, String label) {
-        EditBox input = new EditBox(font, 0, 0, 60, 16, Component.literal(label));
+    private static EditBox parameterInput(Font font, String labelKey, String tipKey) {
+        EditBox input = new EditBox(font, 0, 0, 60, 16, text(labelKey));
         input.setMaxLength(12);
-        input.setHint(Component.literal("inherit"));
+        input.setHint(text("common.inherit"));
         input.visible = false;
-        return input;
+        return tooltip(input, tipKey);
     }
 
     public void updateStatus(String statusJson) {
@@ -163,11 +167,14 @@ public class RoutingPanel extends AbstractWidget {
     }
 
     private static EffectiveValues readEffective(JsonObject json) {
-        return new EffectiveValues(text(json, "provider", "none"), text(json, "temperature", "unset"),
-                text(json, "maxOutputTokens", "unset"), text(json, "timeoutSeconds", "unset"),
+        return new EffectiveValues(textValue(json, "provider", string("common.none")),
+                textValue(json, "temperature", string("common.unset")),
+                textValue(json, "maxOutputTokens", string("common.unset")),
+                textValue(json, "timeoutSeconds", string("common.unset")),
                 json.has("inputBudgetUnbounded") && json.get("inputBudgetUnbounded").getAsBoolean()
-                        ? "unbounded" : text(json, "inputBudgetTokens", "unset"),
-                text(json, "outputReserveTokens", "unset"));
+                        ? string("common.unbounded")
+                        : textValue(json, "inputBudgetTokens", string("common.unset")),
+                textValue(json, "outputReserveTokens", string("common.unset")));
     }
 
     private static Double nullableDouble(JsonObject json, String key) {
@@ -178,7 +185,7 @@ public class RoutingPanel extends AbstractWidget {
         return json.has(key) && !json.get(key).isJsonNull() ? json.get(key).getAsInt() : null;
     }
 
-    private static String text(JsonObject json, String key, String fallback) {
+    private static String textValue(JsonObject json, String key, String fallback) {
         return json.has(key) && !json.get(key).isJsonNull() ? json.get(key).getAsString() : fallback;
     }
 
@@ -237,11 +244,11 @@ public class RoutingPanel extends AbstractWidget {
         if (editingRow <= 0 || editingRow > purposes.size()) return true;
         try {
             LlmRouteOptions options = new LlmRouteOptions(
-                    parseDouble(temperatureInput.getValue(), "temperature"),
-                    parseInteger(maxOutputInput.getValue(), "max output"),
-                    parseInteger(timeoutInput.getValue(), "timeout"),
-                    parseInteger(inputBudgetInput.getValue(), "input budget"),
-                    parseInteger(outputReserveInput.getValue(), "output reserve"));
+                    parseDouble(temperatureInput.getValue(), string("parameter.temperature")),
+                    parseInteger(maxOutputInput.getValue(), string("parameter.max_output")),
+                    parseInteger(timeoutInput.getValue(), string("parameter.timeout")),
+                    parseInteger(inputBudgetInput.getValue(), string("parameter.input_budget")),
+                    parseInteger(outputReserveInput.getValue(), string("parameter.output_reserve")));
             String purpose = purposes.get(editingRow - 1).id();
             LlmRouteOptions previous = editedOptions.getOrDefault(purpose, LlmRouteOptions.empty());
             if (!options.equals(previous)) {
@@ -263,7 +270,7 @@ public class RoutingPanel extends AbstractWidget {
         try {
             return Double.parseDouble(value);
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException(label + " must be a number");
+            throw new IllegalArgumentException(string("validation.number", label));
         }
     }
 
@@ -273,12 +280,12 @@ public class RoutingPanel extends AbstractWidget {
         try {
             return Integer.parseInt(value);
         } catch (NumberFormatException e) {
-            throw new IllegalArgumentException(label + " must be an integer");
+            throw new IllegalArgumentException(string("validation.integer", label));
         }
     }
 
     private String getRowLabel(int row) {
-        if (row == 0) return "default";
+        if (row == 0) return string("routing.default");
         if (row >= 1 && row <= purposes.size()) return purposes.get(row - 1).displayName();
         return "?";
     }
@@ -287,13 +294,14 @@ public class RoutingPanel extends AbstractWidget {
     protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         graphics.fill(getX(), getY(), getX() + width, getY() + height, 0x90000000);
         int y = getY() + HEADER_Y_OFFSET;
-        graphics.drawString(font, "Purpose", getX() + 8, y, 0xAAAAAA, false);
-        graphics.drawString(font, "Provider Chain (priority order)", getX() + 150, y, 0xAAAAAA, false);
+        graphics.drawString(font, text("routing.purpose"), getX() + 8, y, 0xAAAAAA, false);
+        graphics.drawString(font, text("routing.provider_chain"), getX() + 150, y, 0xAAAAAA, false);
         if (!routingFingerprint.isEmpty() && width > 520) {
             graphics.drawString(font, "cfg " + routingFingerprint.substring(0, Math.min(8, routingFingerprint.length())),
                     getX() + width - 150, y, 0x777777, false);
         }
-        graphics.drawString(font, dirty ? "* unsaved" : "saved", getX() + width - 70, y, dirty ? 0xFFAA00 : 0x55FF55, false);
+        graphics.drawString(font, text(dirty ? "routing.unsaved" : "routing.saved"),
+                getX() + width - 70, y, dirty ? 0xFFAA00 : 0x55FF55, false);
         y += ROW_HEIGHT;
         graphics.fill(getX() + 4, y - 2, getX() + width - 4, y - 1, 0xFF555555);
 
@@ -316,7 +324,8 @@ public class RoutingPanel extends AbstractWidget {
             }
             graphics.drawString(font, font.plainSubstrByWidth(getRowLabel(row), 140), getX() + 8, rowY + 2, 0xFFFFFF, false);
             List<String> chain = getRowChain(row);
-            String chainText = chain == null || chain.isEmpty() ? "(none -> all providers)" : String.join("  >  ", chain);
+            String chainText = chain == null || chain.isEmpty()
+                    ? string("routing.chain_all") : String.join("  >  ", chain);
             int chainWidth = width >= 650 ? Math.max(120, width / 3) : width - 320;
             graphics.drawString(font, font.plainSubstrByWidth(chainText, chainWidth), getX() + 150, rowY + 2, 0xCCCCCC, false);
             if (row > 0 && width >= 650) {
@@ -324,22 +333,81 @@ public class RoutingPanel extends AbstractWidget {
                 graphics.drawString(font, font.plainSubstrByWidth(summary, width - chainWidth - 330),
                         getX() + 158 + chainWidth, rowY + 2, 0x999999, false);
             }
-            graphics.drawCenteredString(font, isEditing ? "Done" : "Edit", getX() + width - 56, rowY + 3, 0xFFAAAA);
+            graphics.drawCenteredString(font, text(isEditing ? "routing.done" : "routing.edit"),
+                    getX() + width - 56, rowY + 3, 0xFFAAAA);
             y += ROW_HEIGHT;
         }
 
         // Footer: action buttons (text labels; clicked via mouseClicked)
         int footerY = getY() + height - 22;
-        graphics.drawString(font, "[Save]", getX() + 8, footerY, dirty ? 0x55FF55 : 0x666666, false);
-        graphics.drawString(font, "[Reset]", getX() + 60, footerY, 0xAAAAFF, false);
-        graphics.drawString(font, "[Refresh]", getX() + 110, footerY, 0xAAAAFF, false);
+        graphics.drawString(font, text("routing.save"), getX() + 8, footerY, dirty ? 0x55FF55 : 0x666666, false);
+        graphics.drawString(font, text("routing.reset"), getX() + 60, footerY, 0xAAAAFF, false);
+        graphics.drawString(font, text("routing.refresh"), getX() + 110, footerY, 0xAAAAFF, false);
         if (providerNames.isEmpty()) {
-            graphics.drawString(font, "Add providers in Providers tab first.", getX() + 200, footerY, 0xFF5555, false);
+            graphics.drawString(font, text("routing.no_providers"), getX() + 200, footerY, 0xFF5555, false);
         }
 
         // Inline editor row when editing
         if (editingRow >= 0) {
             renderInlineEditor(graphics, mouseX, mouseY, partialTick);
+        }
+        renderRoutingTooltip(graphics, mouseX, mouseY, hoveredRow, headerH, footerY);
+    }
+
+    private void renderRoutingTooltip(GuiGraphics graphics, int mouseX, int mouseY,
+                                      int hoveredRow, int headerH, int footerY) {
+        if (mouseX < getX() || mouseX >= getX() + width
+                || mouseY < getY() || mouseY >= getY() + height) return;
+        if (editingRow > 0) {
+            String[] parameterTips = {"parameter.temperature.tip", "parameter.max_output.tip",
+                    "parameter.timeout.tip", "parameter.input_budget.tip", "parameter.output_reserve.tip"};
+            List<EditBox> inputs = parameterInputs();
+            for (int index = 0; index < inputs.size(); index++) {
+                if (inputs.get(index).isMouseOver(mouseX, mouseY)) {
+                    graphics.renderTooltip(font, text(parameterTips[index]), mouseX, mouseY);
+                    return;
+                }
+            }
+            int editorY = editorTop();
+            if (mouseY >= editorY + 12 && mouseY < editorY + 28) {
+                graphics.renderTooltip(font, text(mouseX < getX() + width / 2
+                        ? "routing.active.tip" : "routing.available.tip"), mouseX, mouseY);
+                return;
+            }
+            if (mouseY >= editorY + 28 && mouseY < editorY + 44) {
+                graphics.renderTooltip(font, text("routing.effective.tip"), mouseX, mouseY);
+                return;
+            }
+        }
+        if (mouseY >= getY() && mouseY < headerH) {
+            if (mouseX < getX() + 145) {
+                graphics.renderTooltip(font, text("routing.purpose.tip"), mouseX, mouseY);
+            } else if (mouseX < getX() + width - 160) {
+                graphics.renderTooltip(font, text("routing.provider_chain.tip"), mouseX, mouseY);
+            } else {
+                graphics.renderTooltip(font, text("routing.state.tip"), mouseX, mouseY);
+            }
+            return;
+        }
+        if (hoveredRow >= 0 && mouseY >= headerH && mouseY < footerY) {
+            if (hoveredRow == 0) {
+                graphics.renderTooltip(font, text("routing.default.tip"), mouseX, mouseY);
+            } else if (hoveredRow <= purposes.size()) {
+                PurposeRow purpose = purposes.get(hoveredRow - 1);
+                graphics.renderTooltip(font, text("routing.row.tip", purpose.id(), purpose.modId(),
+                        purpose.description().isBlank() ? string("common.none") : purpose.description()),
+                        mouseX, mouseY);
+            }
+            return;
+        }
+        if (mouseY >= footerY && mouseY < footerY + 14) {
+            if (inLabel(mouseX, 8, 44)) {
+                graphics.renderTooltip(font, text("routing.save.tip"), mouseX, mouseY);
+            } else if (inLabel(mouseX, 60, 96)) {
+                graphics.renderTooltip(font, text("routing.reset.tip"), mouseX, mouseY);
+            } else if (inLabel(mouseX, 110, 168)) {
+                graphics.renderTooltip(font, text("routing.refresh.tip"), mouseX, mouseY);
+            }
         }
     }
 
@@ -348,11 +416,12 @@ public class RoutingPanel extends AbstractWidget {
         if (chain == null) chain = new ArrayList<>();
         int ey = editorTop();
         graphics.fill(getX() + 4, ey - 2, getX() + width - 4, getY() + height - 26, 0xE0222222);
-        graphics.drawString(font, "Editing: " + getRowLabel(editingRow), getX() + 8, ey, 0xFFFFFF, false);
+        graphics.drawString(font, text("routing.editing", getRowLabel(editingRow)),
+                getX() + 8, ey, 0xFFFFFF, false);
         // Active chain column (click to remove, click arrows to reorder)
         int cx = getX() + 8;
         int cy = ey + 14;
-        graphics.drawString(font, "Active:", cx, cy, 0xAAAAFF, false);
+        graphics.drawString(font, text("routing.active"), cx, cy, 0xAAAAFF, false);
         int slotX = cx + 40;
         for (int i = 0; i < chain.size(); i++) {
             graphics.fill(slotX, cy - 1, slotX + 90, cy + 11, 0xFF333355);
@@ -364,7 +433,7 @@ public class RoutingPanel extends AbstractWidget {
         // Available providers column (click to append)
         int ax = getX() + width / 2 + 8;
         int ay = cy;
-        graphics.drawString(font, "Available:", ax, ay, 0xAAAAFF, false);
+        graphics.drawString(font, text("routing.available"), ax, ay, 0xAAAAFF, false);
         int colX = ax + 50;
         for (String name : providerNames) {
             boolean inChain = chain.contains(name);
@@ -378,10 +447,9 @@ public class RoutingPanel extends AbstractWidget {
         if (editingRow > 0) {
             String purpose = purposes.get(editingRow - 1).id();
             EffectiveValues effective = effectiveValues.get(purpose);
-            String effectiveText = effective == null ? "Effective after save: unavailable"
-                    : "Effective (server): provider=" + effective.provider + " T=" + effective.temperature
-                            + " out=" + effective.maxOutput + " sec=" + effective.timeout
-                            + " in=" + effective.inputBudget + " reserve=" + effective.outputReserve;
+            String effectiveText = effective == null ? string("routing.effective_unavailable")
+                    : string("routing.effective", effective.provider, effective.temperature,
+                            effective.maxOutput, effective.timeout, effective.inputBudget, effective.outputReserve);
             graphics.drawString(font, font.plainSubstrByWidth(effectiveText, width - 20),
                     getX() + 8, ey + 32, 0x88CCFF, false);
             updateParameterGeometry(ey);
@@ -392,9 +460,7 @@ public class RoutingPanel extends AbstractWidget {
                 graphics.drawString(font, labels[index], input.getX(), ey + 47, 0xAAAAAA, false);
                 input.render(graphics, mouseX, mouseY, partialTick);
             }
-            String help = parameterError.isEmpty()
-                    ? "Blank = inherit; input budget is capped by provider context minus output reserve."
-                    : parameterError;
+            String help = parameterError.isEmpty() ? string("routing.parameter_help") : parameterError;
             graphics.drawString(font, font.plainSubstrByWidth(help, width - 20), getX() + 8, ey + 80,
                     parameterError.isEmpty() ? 0x777777 : 0xFF5555, false);
         }
@@ -423,7 +489,7 @@ public class RoutingPanel extends AbstractWidget {
     }
 
     private static String inherited(Number value) {
-        return value == null ? "inherit" : value.toString();
+        return value == null ? string("common.inherit") : value.toString();
     }
 
     @Override
