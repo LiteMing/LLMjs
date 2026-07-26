@@ -1,45 +1,73 @@
 package vibe.liteming.llmjs.client.widget;
 
-import vibe.liteming.llmjs.config.GlobalConfig;
-import vibe.liteming.llmjs.network.LLMNetwork;
-import vibe.liteming.llmjs.network.packet.C2SChatRequestPacket;
-import vibe.liteming.llmjs.network.packet.C2SVisionProbePacket;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
+import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.network.chat.Component;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
 import org.jetbrains.annotations.Nullable;
+import vibe.liteming.llmcore.LlmRouteOptions;
+import vibe.liteming.llmcore.PriorityRoutingConfig;
+import vibe.liteming.llmcore.RoutingConfigStore;
+import vibe.liteming.llmjs.config.GlobalConfig;
+import vibe.liteming.llmjs.network.LLMNetwork;
+import vibe.liteming.llmjs.network.packet.C2SChatRequestPacket;
+import vibe.liteming.llmjs.network.packet.C2SVisionProbePacket;
+import vibe.liteming.llmjs.network.packet.C2SUpdateRoutingPacket;
+import vibe.liteming.llmjs.test.ConsoleTestCodec;
+import vibe.liteming.llmjs.test.ConsoleTestRequest;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @OnlyIn(Dist.CLIENT)
 public class TestPanel {
     private final int x, y, width, height;
+    private final Font font;
+    private final EditBox purposeInput;
     private final EditBox providerInput;
     private final EditBox promptInput;
+    private final EditBox temperatureInput;
+    private final EditBox maxOutputInput;
+    private final EditBox timeoutInput;
+    private final EditBox inputBudgetInput;
+    private final EditBox outputReserveInput;
+    private final Button routingModeButton;
     private final Button sendButton;
     private final Button visionProbeButton;
+    private final Button simpleButton;
+    private final Button copyButton;
+    private final Button saveRouteButton;
     private final Button prevTemplateBtn;
     private final Button nextTemplateBtn;
     private final Button saveTemplateBtn;
     private @Nullable String responseText;
-    private boolean waiting = false;
+    private @Nullable UUID activeRequestId;
+    private @Nullable ConsoleTestRequest loadedHandoff;
+    private boolean waiting;
     private boolean visible = true;
-    private @Nullable String visionResultText = null;
+    private ConsoleTestRequest.RoutingMode routingMode = ConsoleTestRequest.RoutingMode.PURPOSE;
+    private @Nullable String visionResultText;
     private int visionResultColor = 0xAAAAAA;
+    private int responseScroll;
+    private int responseLineCount;
+    private PriorityRoutingConfig routingSnapshot = PriorityRoutingConfig.empty();
+    private Map<String, String> effectiveByPurpose = new LinkedHashMap<>();
 
-    // Provider tab-complete
     private List<String> providerNames = new ArrayList<>();
+    private List<String> purposeNames = new ArrayList<>();
     private int providerCycleIndex = -1;
-    private String providerCyclePrefix = "";
-
-    // Prompt templates
+    private int purposeCycleIndex = -1;
     private final List<PromptTemplate> templates = new ArrayList<>();
     private int currentTemplateIndex = -1;
 
@@ -50,173 +78,324 @@ public class TestPanel {
         this.y = y;
         this.width = width;
         this.height = height;
+        this.font = font;
 
-        providerInput = new EditBox(font, x + 80, y + 4, 150, 18, Component.literal("Provider"));
-        providerInput.setValue("");
-        providerInput.setMaxLength(64);
+        int purposeWidth = Math.max(70, Math.min(180, width - 220));
+        purposeInput = input(font, x + 62, y + 4, purposeWidth, "Purpose", 96);
+        purposeInput.setValue("DEBUG_TEST");
+        routingModeButton = Button.builder(Component.literal("Purpose"), button -> toggleRoutingMode())
+                .pos(x + 66 + purposeWidth, y + 4).size(70, 18).build();
+        visionProbeButton = Button.builder(Component.literal("Vision"), button -> sendVisionProbe())
+                .pos(x + width - 72, y + 4).size(62, 18).build();
+        providerInput = input(font, x + 62, y + 28, Math.max(80, width - 72), "Provider chain", 512);
 
-        promptInput = new EditBox(font, x + 80, y + 28, width - 170, 18, Component.literal("Prompt"));
-        promptInput.setMaxLength(1000);
+        promptInput = input(font, x + 62, y + 52, Math.max(70, width - 208), "Prompt", 16_384);
         promptInput.setValue("Hello, this is a test.");
+        sendButton = Button.builder(Component.literal("Send"), button -> sendTest())
+                .pos(x + width - 140, y + 52).size(64, 18).build();
+        simpleButton = Button.builder(Component.literal("Simple"), button -> enterSimpleMode())
+                .pos(x + width - 72, y + 52).size(62, 18).build();
 
-        sendButton = Button.builder(Component.literal("Send"), b -> sendTest())
-                .pos(x + width - 80, y + 28).size(70, 18).build();
+        int parameterY = y + 85;
+        int parameterCell = Math.max(1, (width - 8) / 5);
+        temperatureInput = parameterInput(font, x + 4, parameterY, parameterCell - 4, "Temperature");
+        maxOutputInput = parameterInput(font, x + 4 + parameterCell, parameterY, parameterCell - 4, "Max output");
+        timeoutInput = parameterInput(font, x + 4 + parameterCell * 2, parameterY, parameterCell - 4, "Timeout");
+        inputBudgetInput = parameterInput(font, x + 4 + parameterCell * 3, parameterY, parameterCell - 4, "Input budget");
+        outputReserveInput = parameterInput(font, x + 4 + parameterCell * 4, parameterY, parameterCell - 4, "Output reserve");
 
-        // Vision probe button: next to Send, fires a 1x1 PNG to the current provider
-        // and reports whether that model accepts image input.
-        visionProbeButton = Button.builder(Component.literal("Vision"), b -> sendVisionProbe())
-                .pos(x + width - 80, y + 4).size(70, 18).build();
-
-        // Template navigation buttons
-        int templateY = y + 52;
-        prevTemplateBtn = Button.builder(Component.literal("<"), b -> cycleTemplate(-1))
-                .pos(x + 80, templateY).size(20, 16).build();
-        nextTemplateBtn = Button.builder(Component.literal(">"), b -> cycleTemplate(1))
-                .pos(x + 102, templateY).size(20, 16).build();
-        saveTemplateBtn = Button.builder(Component.literal("Save"), b -> saveCurrentAsTemplate())
-                .pos(x + 126, templateY).size(40, 16).build();
-
-        // Load templates from config/llmjs/templates.json
+        prevTemplateBtn = Button.builder(Component.literal("<"), button -> cycleTemplate(-1))
+                .pos(x + 4, y + 106).size(20, 16).build();
+        nextTemplateBtn = Button.builder(Component.literal(">"), button -> cycleTemplate(1))
+                .pos(x + 26, y + 106).size(20, 16).build();
+        saveTemplateBtn = Button.builder(Component.literal("Save tpl"), button -> saveCurrentAsTemplate())
+                .pos(x + 50, y + 106).size(62, 16).build();
+        copyButton = Button.builder(Component.literal("Copy result"), button -> copyResult())
+                .pos(x + 116, y + 106).size(90, 16).build();
+        saveRouteButton = Button.builder(Component.literal("Save route"), button -> saveToRouting())
+                .pos(x + 210, y + 106).size(80, 16).build();
         loadTemplatesFromConfig();
     }
 
-    private void loadTemplatesFromConfig() {
-        templates.clear();
-        List<GlobalConfig.Template> loaded = GlobalConfig.loadTemplates();
-        for (GlobalConfig.Template t : loaded) {
-            templates.add(new PromptTemplate(t.name(), t.prompt()));
-        }
-        // Fallback if file was empty/missing
-        if (templates.isEmpty()) {
-            templates.add(new PromptTemplate("connection", "Say 'ok' to confirm connection."));
-            templates.add(new PromptTemplate("simple", "Hello, this is a test."));
-        }
+    private static EditBox input(Font font, int x, int y, int width, String label, int maxLength) {
+        EditBox input = new EditBox(font, x, y, width, 18, Component.literal(label));
+        input.setMaxLength(maxLength);
+        return input;
     }
 
-    public List<net.minecraft.client.gui.components.AbstractWidget> getWidgets() {
-        return List.of(providerInput, promptInput, sendButton, visionProbeButton,
-                prevTemplateBtn, nextTemplateBtn, saveTemplateBtn);
+    private static EditBox parameterInput(Font font, int x, int y, int width, String label) {
+        EditBox input = input(font, x, y, Math.max(34, width), label, 12);
+        input.setHint(Component.literal("inherit"));
+        return input;
     }
 
-    public void setVisible(boolean v) {
-        this.visible = v;
-        providerInput.visible = v;
-        promptInput.visible = v;
-        sendButton.visible = v;
-        visionProbeButton.visible = v;
-        prevTemplateBtn.visible = v;
-        nextTemplateBtn.visible = v;
-        saveTemplateBtn.visible = v;
+    public List<AbstractWidget> getWidgets() {
+        return List.of(purposeInput, routingModeButton, providerInput, visionProbeButton, promptInput, sendButton,
+                simpleButton, temperatureInput, maxOutputInput, timeoutInput, inputBudgetInput, outputReserveInput,
+                prevTemplateBtn, nextTemplateBtn, saveTemplateBtn, copyButton, saveRouteButton);
     }
 
-    public boolean isVisible() { return visible; }
-
-    /** Update the available provider names for tab-complete. */
-    public void updateProviderNames(List<String> names) {
-        this.providerNames = new ArrayList<>(names);
+    public void setVisible(boolean value) {
+        visible = value;
+        for (AbstractWidget widget : getWidgets()) widget.visible = value;
     }
 
-    /**
-     * Handle Tab key for provider name cycling.
-     * Called from the Screen's keyPressed.
-     */
-    public boolean handleTabComplete(int keyCode) {
-        // Tab key = 258
-        if (keyCode != 258) return false;
-        if (!providerInput.isFocused()) return false;
-        if (providerNames.isEmpty()) return false;
+    public boolean isVisible() {
+        return visible;
+    }
 
-        String current = providerInput.getValue();
-
-        // Start a new cycle if prefix changed
-        if (!current.equals(providerCyclePrefix) && (providerCycleIndex == -1 || !isMatchingCycle(current))) {
-            providerCyclePrefix = current;
-            providerCycleIndex = -1;
-        }
-
-        // Find next matching provider
-        List<String> matches = new ArrayList<>();
-        for (String name : providerNames) {
-            if (providerCyclePrefix.isEmpty() || name.toLowerCase().startsWith(providerCyclePrefix.toLowerCase())) {
-                matches.add(name);
+    public void updateStatus(String statusJson) {
+        List<String> providers = new ArrayList<>();
+        List<String> purposes = new ArrayList<>();
+        Map<String, String> effective = new LinkedHashMap<>();
+        try {
+            JsonObject root = JsonParser.parseString(statusJson).getAsJsonObject();
+            if (root.has("routing") && root.get("routing").isJsonObject()) {
+                routingSnapshot = RoutingConfigStore.parse(root.getAsJsonObject("routing").toString());
             }
+            if (root.has("providers") && root.get("providers").isJsonArray()) {
+                for (JsonElement element : root.getAsJsonArray("providers")) {
+                    providers.add(element.getAsJsonObject().get("name").getAsString());
+                }
+            }
+            if (root.has("purposes") && root.get("purposes").isJsonArray()) {
+                for (JsonElement element : root.getAsJsonArray("purposes")) {
+                    JsonObject purpose = element.getAsJsonObject();
+                    String id = purpose.get("id").getAsString();
+                    purposes.add(id);
+                    if (purpose.has("effective") && purpose.get("effective").isJsonObject()) {
+                        effective.put(id, effectiveSummary(purpose.getAsJsonObject("effective")));
+                    }
+                }
+            }
+        } catch (Exception ignored) {
         }
-        if (matches.isEmpty()) return false;
-
-        providerCycleIndex = (providerCycleIndex + 1) % matches.size();
-        providerInput.setValue(matches.get(providerCycleIndex));
-        return true;
+        updateProviderNames(providers);
+        purposeNames = purposes;
+        effectiveByPurpose = effective;
     }
 
-    private boolean isMatchingCycle(String current) {
-        // Check if current value is one of the cycle results
-        for (String name : providerNames) {
-            if (name.equals(current)) return true;
+    private static String effectiveSummary(JsonObject effective) {
+        String provider = jsonText(effective, "provider", "none");
+        String temperature = jsonText(effective, "temperature", "unset");
+        String output = jsonText(effective, "maxOutputTokens", "unset");
+        String timeout = jsonText(effective, "timeoutSeconds", "unset");
+        String input = effective.has("inputBudgetUnbounded") && effective.get("inputBudgetUnbounded").getAsBoolean()
+                ? "unbounded" : jsonText(effective, "inputBudgetTokens", "unset");
+        String reserve = jsonText(effective, "outputReserveTokens", "unset");
+        return provider + " T=" + temperature + " out=" + output + " sec=" + timeout
+                + " in=" + input + " res=" + reserve;
+    }
+
+    private static String jsonText(JsonObject json, String key, String fallback) {
+        return json.has(key) && !json.get(key).isJsonNull() ? json.get(key).getAsString() : fallback;
+    }
+
+    public void updateProviderNames(List<String> names) {
+        providerNames = names == null ? new ArrayList<>() : new ArrayList<>(names);
+    }
+
+    public boolean handleTabComplete(int keyCode) {
+        if (keyCode != 258) return false;
+        if (providerInput.isFocused() && !providerNames.isEmpty()) {
+            providerCycleIndex = cycleMatch(providerInput, providerNames, providerCycleIndex);
+            return providerCycleIndex >= 0;
+        }
+        if (purposeInput.isFocused() && !purposeNames.isEmpty()) {
+            purposeCycleIndex = cycleMatch(purposeInput, purposeNames, purposeCycleIndex);
+            return purposeCycleIndex >= 0;
         }
         return false;
     }
 
-    // === Template management ===
-
-    private void cycleTemplate(int direction) {
-        if (templates.isEmpty()) return;
-        if (currentTemplateIndex == -1) {
-            currentTemplateIndex = direction > 0 ? 0 : templates.size() - 1;
-        } else {
-            currentTemplateIndex = (currentTemplateIndex + direction + templates.size()) % templates.size();
-        }
-        PromptTemplate t = templates.get(currentTemplateIndex);
-        promptInput.setValue(t.prompt);
+    private static int cycleMatch(EditBox input, List<String> values, int currentIndex) {
+        String current = input.getValue().trim();
+        String prefix = values.contains(current) ? "" : current.toLowerCase(java.util.Locale.ROOT);
+        List<String> matches = values.stream()
+                .filter(value -> prefix.isEmpty() || value.toLowerCase(java.util.Locale.ROOT).startsWith(prefix))
+                .toList();
+        if (matches.isEmpty()) return -1;
+        int next = (currentIndex + 1) % matches.size();
+        input.setValue(matches.get(next));
+        return next;
     }
 
-    private void saveCurrentAsTemplate() {
-        String prompt = promptInput.getValue().strip();
-        if (prompt.isEmpty()) return;
-        String name = prompt.length() > 20 ? prompt.substring(0, 20) + "..." : prompt;
-        for (int i = 0; i < templates.size(); i++) {
-            if (templates.get(i).prompt.equals(prompt)) {
-                currentTemplateIndex = i;
-                return;
-            }
+    public void loadHandoff(String handoffJson) {
+        try {
+            ConsoleTestRequest request = ConsoleTestCodec.parseRequest(handoffJson, false);
+            loadedHandoff = request;
+            activeRequestId = request.requestUuid();
+            waiting = false;
+            routingMode = request.routingMode();
+            updateRoutingModeButton();
+            purposeInput.setValue(request.purpose());
+            providerInput.setValue(String.join(",", request.providerChain()));
+            setOverrides(request.overrides());
+            promptInput.setValue(lastText(request));
+            responseText = "Draft " + request.requestId() + " | " + request.messages().size()
+                    + " messages | " + request.generationType();
+            responseScroll = 0;
+        } catch (IllegalArgumentException e) {
+            responseText = "ERROR: " + e.getMessage();
         }
-        templates.add(new PromptTemplate(name, prompt));
-        currentTemplateIndex = templates.size() - 1;
-        persistTemplates();
     }
 
-    private void persistTemplates() {
-        List<GlobalConfig.Template> toSave = new ArrayList<>();
-        for (PromptTemplate t : templates) {
-            toSave.add(new GlobalConfig.Template(t.name, t.prompt));
-        }
-        GlobalConfig.saveTemplates(toSave);
+    private void toggleRoutingMode() {
+        routingMode = routingMode == ConsoleTestRequest.RoutingMode.PURPOSE
+                ? ConsoleTestRequest.RoutingMode.EXPLICIT_CHAIN : ConsoleTestRequest.RoutingMode.PURPOSE;
+        updateRoutingModeButton();
+    }
+
+    private void updateRoutingModeButton() {
+        routingModeButton.setMessage(Component.literal(
+                routingMode == ConsoleTestRequest.RoutingMode.PURPOSE ? "Purpose" : "Explicit"));
+    }
+
+    private void enterSimpleMode() {
+        loadedHandoff = null;
+        activeRequestId = null;
+        purposeInput.setValue("DEBUG_TEST");
+        routingMode = ConsoleTestRequest.RoutingMode.PURPOSE;
+        updateRoutingModeButton();
+        responseText = null;
+        responseScroll = 0;
     }
 
     private void sendTest() {
         if (waiting) return;
-        waiting = true;
-        responseText = "Sending...";
-        UUID requestId = UUID.randomUUID();
-        LLMNetwork.CHANNEL.sendToServer(
-                new C2SChatRequestPacket(requestId, promptInput.getValue(), providerInput.getValue()));
+        try {
+            ConsoleTestRequest request = buildRequest();
+            String requestJson = ConsoleTestCodec.toJson(request);
+            activeRequestId = request.requestUuid();
+            waiting = true;
+            responseText = "Sending " + request.purpose() + "...";
+            responseScroll = 0;
+            LLMNetwork.CHANNEL.sendToServer(new C2SChatRequestPacket(activeRequestId, requestJson));
+        } catch (IllegalArgumentException e) {
+            responseText = "ERROR: " + e.getMessage();
+        }
+    }
+
+    private ConsoleTestRequest buildRequest() {
+        UUID requestId = loadedHandoff == null ? UUID.randomUUID() : loadedHandoff.requestUuid();
+        List<ConsoleTestRequest.MessageEntry> messages = loadedHandoff == null
+                ? List.of(ConsoleTestRequest.MessageEntry.text("simple.prompt", "console", "user",
+                        promptInput.getValue(), true, 1000))
+                : replaceLastUserText(loadedHandoff.messages(), promptInput.getValue());
+        Map<String, String> metadata = loadedHandoff == null
+                ? new LinkedHashMap<>(Map.of("source", "console-simple"))
+                : new LinkedHashMap<>(loadedHandoff.metadata());
+        metadata.put("testUi", "llmjs-console");
+        return new ConsoleTestRequest(ConsoleTestRequest.SCHEMA_VERSION, requestId.toString(), routingMode,
+                purposeInput.getValue(), loadedHandoff == null ? "SIMPLE" : loadedHandoff.generationType(),
+                parseProviderChain(providerInput.getValue()), messages, readOverrides(), metadata);
+    }
+
+    private static List<ConsoleTestRequest.MessageEntry> replaceLastUserText(
+            List<ConsoleTestRequest.MessageEntry> messages, String text) {
+        List<ConsoleTestRequest.MessageEntry> result = new ArrayList<>(messages);
+        for (int index = result.size() - 1; index >= 0; index--) {
+            ConsoleTestRequest.MessageEntry message = result.get(index);
+            if (!"user".equals(message.role())) continue;
+            List<ConsoleTestRequest.Part> parts = new ArrayList<>(message.parts());
+            for (int partIndex = 0; partIndex < parts.size(); partIndex++) {
+                if ("text".equals(parts.get(partIndex).type())) {
+                    parts.set(partIndex, ConsoleTestRequest.Part.text(text));
+                    result.set(index, new ConsoleTestRequest.MessageEntry(message.entryId(), message.provenance(),
+                            message.role(), parts, message.required(), message.priority()));
+                    return List.copyOf(result);
+                }
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    private static List<String> parseProviderChain(String value) {
+        if (value == null || value.isBlank()) return List.of();
+        List<String> result = new ArrayList<>();
+        for (String part : value.split("[,>]")) {
+            String provider = part.trim();
+            if (!provider.isEmpty()) result.add(provider);
+        }
+        return List.copyOf(result);
+    }
+
+    private LlmRouteOptions readOverrides() {
+        return new LlmRouteOptions(parseDouble(temperatureInput.getValue(), "temperature"),
+                parseInteger(maxOutputInput.getValue(), "max output"),
+                parseInteger(timeoutInput.getValue(), "timeout"),
+                parseInteger(inputBudgetInput.getValue(), "input budget"),
+                parseInteger(outputReserveInput.getValue(), "output reserve"));
+    }
+
+    private void setOverrides(LlmRouteOptions overrides) {
+        temperatureInput.setValue(number(overrides.temperature()));
+        maxOutputInput.setValue(number(overrides.maxOutputTokens()));
+        timeoutInput.setValue(number(overrides.timeoutSeconds()));
+        inputBudgetInput.setValue(number(overrides.inputBudgetTokens()));
+        outputReserveInput.setValue(number(overrides.outputReserveTokens()));
+    }
+
+    private static String number(Number value) {
+        return value == null ? "" : value.toString();
+    }
+
+    private static Double parseDouble(String text, String label) {
+        if (text == null || text.isBlank()) return null;
+        try {
+            return Double.parseDouble(text.trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(label + " must be a number");
+        }
+    }
+
+    private static Integer parseInteger(String text, String label) {
+        if (text == null || text.isBlank()) return null;
+        try {
+            return Integer.parseInt(text.trim());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(label + " must be an integer");
+        }
+    }
+
+    private static String lastText(ConsoleTestRequest request) {
+        for (int messageIndex = request.messages().size() - 1; messageIndex >= 0; messageIndex--) {
+            ConsoleTestRequest.MessageEntry message = request.messages().get(messageIndex);
+            if (!"user".equals(message.role())) continue;
+            for (ConsoleTestRequest.Part part : message.parts()) {
+                if ("text".equals(part.type())) return part.text();
+            }
+        }
+        return "";
+    }
+
+    public void onResponse(UUID requestId, String resultJson) {
+        if (activeRequestId == null || !activeRequestId.equals(requestId)) return;
+        waiting = false;
+        try {
+            responseText = ConsoleTestCodec.pretty(resultJson);
+        } catch (Exception e) {
+            responseText = "ERROR: invalid result payload: " + e.getMessage();
+        }
+        responseScroll = 0;
     }
 
     private void sendVisionProbe() {
-        String name = providerInput.getValue().trim();
-        if (name.isEmpty()) {
-            visionResultText = "Enter a provider name first";
+        List<String> chain = parseProviderChain(providerInput.getValue());
+        if (chain.isEmpty()) {
+            visionResultText = "Provider required";
             visionResultColor = 0xFF5555;
             return;
         }
-        visionResultText = "Probing " + name + "...";
+        String provider = chain.get(0);
+        visionResultText = "Probing " + provider + "...";
         visionResultColor = 0xAAAAFF;
-        LLMNetwork.CHANNEL.sendToServer(new C2SVisionProbePacket(name));
+        LLMNetwork.CHANNEL.sendToServer(new C2SVisionProbePacket(provider));
     }
 
-    /** Called on the client thread when the server reports the probe result. */
     public void onVisionProbeResult(String providerName, boolean supported, String error, long latencyMs) {
-        String target = providerInput.getValue().trim();
-        if (!target.equalsIgnoreCase(providerName)) return; // stale result for another row
+        List<String> chain = parseProviderChain(providerInput.getValue());
+        if (chain.isEmpty() || !chain.get(0).equalsIgnoreCase(providerName)) return;
         if (supported) {
             visionResultText = "Vision: OK (" + latencyMs + "ms)";
             visionResultColor = 0x55FF55;
@@ -226,50 +405,99 @@ public class TestPanel {
         }
     }
 
-    public void onResponse(boolean success, @Nullable String content, @Nullable String error) {
-        waiting = false;
-        responseText = success ? content : ("ERROR: " + error);
+    public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
+        if (!visible || mouseX < x || mouseX > x + width || mouseY < y + 140 || mouseY > y + height) return false;
+        int visibleLines = Math.max(1, (height - 154) / 10);
+        int maxScroll = Math.max(0, responseLineCount - visibleLines);
+        responseScroll = Math.max(0, Math.min(maxScroll, responseScroll - (int) Math.signum(delta) * 3));
+        return true;
+    }
+
+    private void copyResult() {
+        if (responseText != null) Minecraft.getInstance().keyboardHandler.setClipboard(responseText);
+    }
+
+    private void saveToRouting() {
+        try {
+            String purpose = purposeInput.getValue().trim();
+            if (purpose.isEmpty()) throw new IllegalArgumentException("purpose is required");
+            PriorityRoutingConfig next = routingSnapshot.withPurposeOptions(purpose, readOverrides());
+            List<String> chain = parseProviderChain(providerInput.getValue());
+            if (routingMode == ConsoleTestRequest.RoutingMode.EXPLICIT_CHAIN && !chain.isEmpty()) {
+                next = next.withPurpose(purpose, chain);
+            }
+            LLMNetwork.CHANNEL.sendToServer(new C2SUpdateRoutingPacket(RoutingConfigStore.toJsonString(next)));
+            responseText = "Routing save requested for " + purpose;
+            responseScroll = 0;
+        } catch (IllegalArgumentException e) {
+            responseText = "ERROR: " + e.getMessage();
+        }
     }
 
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         if (!visible) return;
-        var font = Minecraft.getInstance().font;
         graphics.fill(x, y, x + width, y + height, 0x80000000);
-
-        graphics.drawString(font, "Provider:", x + 4, y + 9, 0xFFFFFF, false);
-        graphics.drawString(font, "Prompt:", x + 4, y + 33, 0xFFFFFF, false);
-
-        // Template indicator
-        int templateY = y + 54;
-        graphics.drawString(font, "Template:", x + 4, templateY, 0xAAAAAA, false);
-        if (currentTemplateIndex >= 0 && currentTemplateIndex < templates.size()) {
-            String tName = templates.get(currentTemplateIndex).name;
-            graphics.drawString(font, "(" + (currentTemplateIndex + 1) + "/" + templates.size() + ") " + tName,
-                    x + 172, templateY, 0x888888, false);
-        } else {
-            graphics.drawString(font, "(" + templates.size() + " saved)", x + 172, templateY, 0x666666, false);
+        graphics.drawString(font, "Purpose", x + 4, y + 9, 0xFFFFFF, false);
+        graphics.drawString(font, "Chain", x + 4, y + 33, 0xFFFFFF, false);
+        graphics.drawString(font, loadedHandoff == null ? "Prompt" : "Focus", x + 4, y + 57, 0xFFFFFF, false);
+        int parameterY = y + 76;
+        int parameterCell = Math.max(1, (width - 8) / 5);
+        String[] labels = {"T", "Out", "Sec", "In", "Res"};
+        for (int index = 0; index < labels.length; index++) {
+            graphics.drawString(font, labels[index], x + 4 + parameterCell * index, parameterY, 0xAAAAAA, false);
         }
+        String effective = effectiveByPurpose.getOrDefault(purposeInput.getValue().trim(), "effective unavailable");
+        String draftPrefix = loadedHandoff == null ? "" : loadedHandoff.messages().size() + " msgs | ";
+        String status = visionResultText != null ? visionResultText : draftPrefix + effective;
+        graphics.drawString(font, font.plainSubstrByWidth(status, width - 12),
+                x + 4, y + 127, visionResultText == null ? 0x77AAFF : visionResultColor, false);
 
-        // Tab hint for provider
-        if (providerInput.isFocused()) {
-            graphics.drawString(font, "[Tab to cycle]", x + 236, y + 9, 0x556688, false);
+        int responseY = y + 140;
+        graphics.drawString(font, "Result", x + 4, responseY, 0xAAAAAA, false);
+        if (responseText == null) return;
+        List<net.minecraft.util.FormattedCharSequence> lines = font.split(Component.literal(responseText), width - 12);
+        responseLineCount = lines.size();
+        int lineY = responseY + 12;
+        for (int index = responseScroll; index < lines.size(); index++) {
+            if (lineY > y + height - 10) break;
+            graphics.drawString(font, lines.get(index), x + 4, lineY, 0xFFFFFF, false);
+            lineY += 10;
         }
+    }
 
-        // Vision probe result (just below provider row)
-        if (visionResultText != null) {
-            graphics.drawString(font, visionResultText, x + 80, y + 74, visionResultColor, false);
+    private void loadTemplatesFromConfig() {
+        templates.clear();
+        for (GlobalConfig.Template template : GlobalConfig.loadTemplates()) {
+            templates.add(new PromptTemplate(template.name(), template.prompt()));
         }
+        if (templates.isEmpty()) {
+            templates.add(new PromptTemplate("connection", "Say 'ok' to confirm connection."));
+            templates.add(new PromptTemplate("simple", "Hello, this is a test."));
+        }
+    }
 
-        int respY = y + 74;
-        graphics.drawString(font, "Response:", x + 4, respY, 0xAAAAAA, false);
-        if (responseText != null) {
-            var lines = font.split(Component.literal(responseText), width - 12);
-            int lineY = respY + 12;
-            for (var line : lines) {
-                if (lineY > y + height - 12) break;
-                graphics.drawString(font, line, x + 4, lineY, 0xFFFFFF, false);
-                lineY += 10;
+    private void cycleTemplate(int direction) {
+        if (templates.isEmpty()) return;
+        enterSimpleMode();
+        currentTemplateIndex = currentTemplateIndex == -1
+                ? (direction > 0 ? 0 : templates.size() - 1)
+                : (currentTemplateIndex + direction + templates.size()) % templates.size();
+        promptInput.setValue(templates.get(currentTemplateIndex).prompt());
+    }
+
+    private void saveCurrentAsTemplate() {
+        String prompt = promptInput.getValue().strip();
+        if (prompt.isEmpty()) return;
+        for (int index = 0; index < templates.size(); index++) {
+            if (templates.get(index).prompt().equals(prompt)) {
+                currentTemplateIndex = index;
+                return;
             }
         }
+        String name = prompt.length() > 20 ? prompt.substring(0, 20) + "..." : prompt;
+        templates.add(new PromptTemplate(name, prompt));
+        currentTemplateIndex = templates.size() - 1;
+        GlobalConfig.saveTemplates(templates.stream()
+                .map(template -> new GlobalConfig.Template(template.name(), template.prompt())).toList());
     }
 }

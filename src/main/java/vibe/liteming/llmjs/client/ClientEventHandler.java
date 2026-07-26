@@ -3,6 +3,7 @@ package vibe.liteming.llmjs.client;
 import vibe.liteming.llmjs.client.screen.LLMConsoleScreen;
 import vibe.liteming.llmjs.network.LLMNetwork;
 import vibe.liteming.llmjs.network.packet.C2SVisionImagePacket;
+import vibe.liteming.llmjs.network.packet.C2SStatusRequestPacket;
 import vibe.liteming.llmjs.network.packet.S2CScreenshotRequestPacket;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
@@ -20,12 +21,16 @@ public class ClientEventHandler {
 
     @Nullable
     private static LLMConsoleScreen activeConsole = null;
+    @Nullable
+    private static String pendingTestHandoff = null;
 
     /** Survives while console is closed; server history may replace on open. */
     private static final List<String> clientLogBuffer = new ArrayList<>();
 
     public static void openConsole(String statusJson) {
-        LLMConsoleScreen screen = new LLMConsoleScreen(statusJson);
+        String handoff = pendingTestHandoff;
+        pendingTestHandoff = null;
+        LLMConsoleScreen screen = new LLMConsoleScreen(statusJson, handoff);
         activeConsole = screen;
         net.minecraft.client.Minecraft.getInstance().setScreen(screen);
         List<String> snapshot;
@@ -37,11 +42,19 @@ public class ClientEventHandler {
         }
     }
 
-    public static void handleChatResponse(UUID requestId, boolean success,
-                                           @Nullable String content, @Nullable String error) {
+    public static void handleChatResponse(UUID requestId, String resultJson) {
         if (activeConsole != null) {
-            activeConsole.onChatResponse(requestId, success, content, error);
+            activeConsole.onChatResponse(requestId, resultJson);
         }
+    }
+
+    public static void openConsoleTest(String handoffJson) {
+        if (activeConsole != null) {
+            activeConsole.loadTestHandoff(handoffJson);
+            return;
+        }
+        pendingTestHandoff = handoffJson;
+        LLMNetwork.CHANNEL.sendToServer(new C2SStatusRequestPacket(true));
     }
 
     public static void updateStatus(String statusJson) {

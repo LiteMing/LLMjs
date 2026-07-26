@@ -51,7 +51,11 @@ public class C2SUpdateRoutingPacket {
                 player.sendSystemMessage(Component.literal("Routing update rejected: " + e.getMessage()));
                 return;
             }
-            ProviderManager.INSTANCE.updateRouting(parsed);
+            boolean persisted = ProviderManager.INSTANCE.updateRouting(parsed);
+            if (!persisted) {
+                player.sendSystemMessage(Component.literal(
+                        "Routing applied for this session but could not be persisted"));
+            }
             // Broadcast refreshed status to every player who can see the console, so
             // all open Routing tabs reflect the new table.
             String statusJson = ProviderManager.INSTANCE.getStatusJson().toString();

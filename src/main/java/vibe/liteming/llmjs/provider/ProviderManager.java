@@ -21,6 +21,9 @@ import vibe.liteming.llmjs.config.ProviderLoader;
 import vibe.liteming.llmjs.format.ApiFormat;
 import vibe.liteming.llmjs.log.LLMLogger;
 import vibe.liteming.llmjs.pipeline.LLMResponse;
+import vibe.liteming.llmjs.test.ConsoleTestCodec;
+import vibe.liteming.llmjs.test.ConsoleTestExecutor;
+import vibe.liteming.llmjs.test.ConsoleTestRequest;
 import org.jetbrains.annotations.Nullable;
 
 import java.nio.file.Path;
@@ -182,6 +185,16 @@ public class ProviderManager {
 
     public List<String> getProviderNames() { return new ArrayList<>(providers.keySet()); }
     public Map<String, Provider> getAllProviders() { return Collections.unmodifiableMap(providers); }
+
+    /** Execute Console Test through the same core purpose, routing, fallback and budget path. */
+    public CompletableFuture<String> executeConsoleTest(ConsoleTestRequest test) {
+        if (test == null) return CompletableFuture.completedFuture(ConsoleTestCodec.error("", "Missing test request"));
+        if (!checkRateLimit()) {
+            return CompletableFuture.completedFuture(
+                    ConsoleTestCodec.error(test.requestId(), "Rate limit exceeded"));
+        }
+        return ConsoleTestExecutor.execute(orchestrator, routingConfig, test);
+    }
 
     public CompletableFuture<LLMResponse> sendWithFallback(
             List<ApiFormat.Message> messages, List<String> providerChain,

@@ -64,6 +64,12 @@ dependencies {
     implementation fg.deobf("curse.maven:probejs-585406:5227399")
     implementation fg.deobf("curse.maven:configured-457570:5180900")
     implementation 'com.google.code.gson:gson:2.10.1'
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+test {
+    useJUnitPlatform()
 }
 
 evaluationDependsOn(':core')

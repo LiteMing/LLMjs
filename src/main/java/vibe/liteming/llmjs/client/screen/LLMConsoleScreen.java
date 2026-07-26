@@ -29,6 +29,7 @@ public class LLMConsoleScreen extends Screen {
     private TestPanel testPanel;
     private SetupPanel setupPanel;
     private final String initialStatusJson;
+    private final @Nullable String initialTestHandoff;
     private boolean takeoverTipShown;
     private Button logTab;
     private Button providersTab;
@@ -37,8 +38,13 @@ public class LLMConsoleScreen extends Screen {
     private Button setupTab;
 
     public LLMConsoleScreen(String statusJson) {
+        this(statusJson, null);
+    }
+
+    public LLMConsoleScreen(String statusJson, @Nullable String initialTestHandoff) {
         super(Component.literal("LLMjs Console"));
         this.initialStatusJson = statusJson;
+        this.initialTestHandoff = initialTestHandoff;
     }
 
     @Override
@@ -82,9 +88,14 @@ public class LLMConsoleScreen extends Screen {
         for (var w : testPanel.getWidgets()) addRenderableWidget(w);
         for (var w : setupPanel.getWidgets()) addRenderableWidget(w);
 
-        testPanel.updateProviderNames(providerPanel.getProviderNames());
+        testPanel.updateStatus(initialStatusJson);
         maybeShowTakeoverTip();
-        switchTab(Tab.LOG);
+        if (initialTestHandoff != null && !initialTestHandoff.isBlank()) {
+            testPanel.loadHandoff(initialTestHandoff);
+            switchTab(Tab.TEST);
+        } else {
+            switchTab(Tab.LOG);
+        }
     }
 
     private void maybeShowTakeoverTip() {
@@ -162,20 +173,34 @@ public class LLMConsoleScreen extends Screen {
     }
 
     @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
+        if (activeTab == Tab.TEST && testPanel != null && testPanel.mouseScrolled(mouseX, mouseY, delta)) {
+            return true;
+        }
+        return super.mouseScrolled(mouseX, mouseY, delta);
+    }
+
+    @Override
     public void removed() {
         super.removed();
         ClientEventHandler.clearActiveConsole();
     }
 
-    public void onChatResponse(UUID requestId, boolean success, @Nullable String content, @Nullable String error) {
-        if (testPanel != null) testPanel.onResponse(success, content, error);
+    public void onChatResponse(UUID requestId, String resultJson) {
+        if (testPanel != null) testPanel.onResponse(requestId, resultJson);
+    }
+
+    public void loadTestHandoff(String handoffJson) {
+        if (testPanel == null) return;
+        testPanel.loadHandoff(handoffJson);
+        switchTab(Tab.TEST);
     }
 
     public void onStatusUpdate(String statusJson) {
         if (providerPanel != null) {
             providerPanel.updateStatus(statusJson);
             if (testPanel != null) {
-                testPanel.updateProviderNames(providerPanel.getProviderNames());
+                testPanel.updateStatus(statusJson);
             }
             maybeShowTakeoverTip();
         }
