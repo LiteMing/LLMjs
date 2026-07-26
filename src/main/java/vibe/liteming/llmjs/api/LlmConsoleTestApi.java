@@ -26,8 +26,9 @@ public final class LlmConsoleTestApi {
         ConsoleTestCodec.parseRequest(handoffJson, false);
         net.minecraft.client.Minecraft minecraft = net.minecraft.client.Minecraft.getInstance();
         if (minecraft.player == null || minecraft.getConnection() == null) return false;
+        net.minecraft.client.gui.screens.Screen returnScreen = minecraft.screen;
         minecraft.execute(
-                () -> ClientEventHandler.openConsoleTest(handoffJson));
+                () -> ClientEventHandler.openConsoleTest(handoffJson, returnScreen));
         return true;
     }
 }

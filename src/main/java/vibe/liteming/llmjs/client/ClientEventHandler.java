@@ -5,8 +5,12 @@ import vibe.liteming.llmjs.network.LLMNetwork;
 import vibe.liteming.llmjs.network.packet.C2SVisionImagePacket;
 import vibe.liteming.llmjs.network.packet.C2SStatusRequestPacket;
 import vibe.liteming.llmjs.network.packet.S2CScreenshotRequestPacket;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
+import net.minecraftforge.client.event.ClientPlayerNetworkEvent;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.common.Mod;
 import org.jetbrains.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -14,6 +18,7 @@ import java.util.List;
 import java.util.UUID;
 
 @OnlyIn(Dist.CLIENT)
+@Mod.EventBusSubscriber(modid = "llmjs", value = Dist.CLIENT)
 public class ClientEventHandler {
 
     private static final int MAX_CLIENT_BUFFER = 300;
@@ -23,14 +28,18 @@ public class ClientEventHandler {
     private static LLMConsoleScreen activeConsole = null;
     @Nullable
     private static String pendingTestHandoff = null;
+    @Nullable
+    private static Screen pendingReturnScreen = null;
 
     /** Survives while console is closed; server history may replace on open. */
     private static final List<String> clientLogBuffer = new ArrayList<>();
 
     public static void openConsole(String statusJson) {
         String handoff = pendingTestHandoff;
+        Screen returnScreen = pendingReturnScreen;
         pendingTestHandoff = null;
-        LLMConsoleScreen screen = new LLMConsoleScreen(statusJson, handoff);
+        pendingReturnScreen = null;
+        LLMConsoleScreen screen = new LLMConsoleScreen(statusJson, handoff, returnScreen);
         activeConsole = screen;
         net.minecraft.client.Minecraft.getInstance().setScreen(screen);
         List<String> snapshot;
@@ -49,11 +58,16 @@ public class ClientEventHandler {
     }
 
     public static void openConsoleTest(String handoffJson) {
+        openConsoleTest(handoffJson, null);
+    }
+
+    public static void openConsoleTest(String handoffJson, @Nullable Screen returnScreen) {
         if (activeConsole != null) {
             activeConsole.loadTestHandoff(handoffJson);
             return;
         }
         pendingTestHandoff = handoffJson;
+        pendingReturnScreen = returnScreen;
         LLMNetwork.CHANNEL.sendToServer(new C2SStatusRequestPacket(true));
     }
 
@@ -119,6 +133,13 @@ public class ClientEventHandler {
 
     public static void clearActiveConsole() {
         activeConsole = null;
+    }
+
+    @SubscribeEvent
+    public static void onLogout(ClientPlayerNetworkEvent.LoggingOut event) {
+        activeConsole = null;
+        pendingTestHandoff = null;
+        pendingReturnScreen = null;
     }
 
     /** Forwarded from S2CVisionProbeResultPacket on the client thread. */

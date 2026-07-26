@@ -35,6 +35,7 @@ public class LLMConsoleScreen extends Screen {
     private SetupPanel setupPanel;
     private final String initialStatusJson;
     private final @Nullable String initialTestHandoff;
+    private @Nullable Screen returnScreen;
     private boolean takeoverTipShown;
     private Button logTab;
     private Button providersTab;
@@ -43,13 +44,19 @@ public class LLMConsoleScreen extends Screen {
     private Button setupTab;
 
     public LLMConsoleScreen(String statusJson) {
-        this(statusJson, null);
+        this(statusJson, null, null);
     }
 
     public LLMConsoleScreen(String statusJson, @Nullable String initialTestHandoff) {
+        this(statusJson, initialTestHandoff, null);
+    }
+
+    public LLMConsoleScreen(String statusJson, @Nullable String initialTestHandoff,
+            @Nullable Screen returnScreen) {
         super(text("title"));
         this.initialStatusJson = statusJson;
         this.initialTestHandoff = initialTestHandoff;
+        this.returnScreen = returnScreen;
     }
 
     @Override
@@ -169,6 +176,17 @@ public class LLMConsoleScreen extends Screen {
     }
 
     @Override
+    public void onClose() {
+        if (minecraft != null && returnScreen != null) {
+            Screen parent = returnScreen;
+            returnScreen = null;
+            minecraft.setScreen(parent);
+            return;
+        }
+        super.onClose();
+    }
+
+    @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
         if (keyCode == 258 && activeTab == Tab.TEST && testPanel != null) {
             if (testPanel.handleTabComplete(keyCode)) return true;
@@ -221,6 +239,7 @@ public class LLMConsoleScreen extends Screen {
 
     @Override
     public void removed() {
+        returnScreen = null;
         super.removed();
         ClientEventHandler.clearActiveConsole();
     }
