@@ -10,7 +10,7 @@ import vibe.liteming.llmjs.provider.ProviderManager;
 
 import java.util.function.Supplier;
 
-/** Client -> Server: delete a provider from providers.json + llmjs.secret. */
+/** Client -> Server: delete a provider from providers.json + llmcore.secret. */
 public class C2SDeleteProviderPacket {
     private final String name;
 

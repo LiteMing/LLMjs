@@ -14,7 +14,7 @@ import java.util.List;
  * - templates.json: test prompt templates
  *
  * This directory ships with modpacks. Server config can override providers.
- * Keys are NEVER stored here - they go in llmjs.secret only.
+ * Keys are NEVER stored here - they go in llmcore.secret only.
  */
 public class GlobalConfig {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -92,7 +92,7 @@ public class GlobalConfig {
 
     private static String getDefaultProviders() {
         JsonObject root = new JsonObject();
-        root.addProperty("_comment", "Global provider presets. Keys go in llmjs.secret, not here. Server config can override.");
+        root.addProperty("_comment", "Global provider presets. Keys go in llmcore.secret, not here. Server config can override.");
 
         JsonObject openai = new JsonObject();
         openai.addProperty("type", "simple");

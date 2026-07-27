@@ -16,8 +16,9 @@ Runtime and Console classes moved to the `llmcore` artifact before their Java
 packages are renamed. Their existing `vibe.liteming.llmjs.*` binary names stay
 available from `llmcore` so linked mods can continue using the current handoff
 contract without a coordinated release. Existing `config/llmjs`,
-`serverconfig/llmjs`, `llmjs.secret`, translation keys, and the `/llm` command
-also remain stable.
+`serverconfig/llmjs`, translation keys, and the `/llm` command also remain
+stable. New installations store credentials in `llmcore.secret`; existing
+`llmjs.secret` files remain a supported fallback during migration.
 
 The Gradle `check` tasks enforce artifact ownership and reject adapter-only
 KubeJS dependencies in `llmcore`.

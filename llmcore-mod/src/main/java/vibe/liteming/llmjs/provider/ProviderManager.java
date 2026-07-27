@@ -68,7 +68,7 @@ public class ProviderManager {
         Map<String, ProviderSpec> specs = ProviderConfigLoader.load(
                 GlobalConfig.getGlobalProvidersFile(),
                 configDir.resolve("providers.json"),
-                gameRoot.resolve("llmjs.secret"));
+                ProviderLoader.resolveSecretFile(gameRoot));
         this.orchestrator = new LlmOrchestrator(specs);
         this.orchestrator.setGlobalDefaults(new LlmRouteOptions(null, null, LLMConfig.TIMEOUT.get(), null, null));
         Map<String, Provider> newProviders = new LinkedHashMap<>();

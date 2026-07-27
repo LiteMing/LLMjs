@@ -16,16 +16,33 @@ import java.util.Map;
  * Provider loading with 3-layer merge:
  * 1. config/llmjs/providers.json        (global presets, no keys)
  * 2. serverconfig/llmjs/providers.json   (server override, no keys)
- * 3. llmjs.secret                        (keys only)
+ * 3. llmcore.secret                      (keys only)
  */
 public class ProviderLoader {
+    public static final String SECRET_FILE_NAME = "llmcore.secret";
+    public static final String LEGACY_SECRET_FILE_NAME = "llmjs.secret";
+
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static Path gameRootDir;
+    private static Path secretFilePath;
+
+    /**
+     * New installations use llmcore.secret. Existing installations keep using
+     * llmjs.secret until they are explicitly migrated, so an upgrade never
+     * appears to lose configured credentials.
+     */
+    public static Path resolveSecretFile(Path gameRoot) {
+        Path current = gameRoot.resolve(SECRET_FILE_NAME);
+        if (Files.exists(current)) return current;
+        Path legacy = gameRoot.resolve(LEGACY_SECRET_FILE_NAME);
+        return Files.exists(legacy) ? legacy : current;
+    }
 
     public static Map<String, Provider> loadAll(Path serverConfigDir, Path gameRoot) {
         gameRootDir = gameRoot;
         Map<String, Provider> providers = new LinkedHashMap<>();
-        Path secretFile = gameRoot.resolve("llmjs.secret");
+        Path secretFile = resolveSecretFile(gameRoot);
+        secretFilePath = secretFile;
         Path serverRawFile = serverConfigDir.resolve("providers_raw.json");
 
         try {
@@ -36,7 +53,10 @@ public class ProviderLoader {
             }
             if (!Files.exists(secretFile)) {
                 Files.writeString(secretFile, getDefaultSecret());
-                LlmCoreMod.LOGGER.info("Created llmjs.secret - fill in your API keys here");
+                LlmCoreMod.LOGGER.info("Created {} - fill in your API keys here", SECRET_FILE_NAME);
+            } else if (LEGACY_SECRET_FILE_NAME.equals(secretFile.getFileName().toString())) {
+                LlmCoreMod.LOGGER.warn("Using legacy {}; rename it to {} when all consumers support the new path",
+                        LEGACY_SECRET_FILE_NAME, SECRET_FILE_NAME);
             }
         } catch (IOException e) {
             LlmCoreMod.LOGGER.error("Failed to create config files", e);
@@ -79,13 +99,13 @@ public class ProviderLoader {
                 return root.has("providers") ? root.getAsJsonObject("providers") : root;
             }
         } catch (Exception e) {
-            LlmCoreMod.LOGGER.error("Failed to load llmjs.secret", e);
+            LlmCoreMod.LOGGER.error("Failed to load secret file {}", file, e);
         }
         return new JsonObject();
     }
 
     /**
-     * Resolve key from llmjs.secret only.
+     * Resolve key from the selected server-side secret file only.
      */
     private static String resolveKey(String providerName, JsonObject secrets) {
         if (secrets.has(providerName)) {
@@ -125,7 +145,8 @@ public class ProviderLoader {
                 SimpleProvider provider = new SimpleProvider(entry.getKey(), format, url, key, model, temp, maxTokens);
                 if (provider.isValid()) {
                     providers.put(entry.getKey(), provider);
-                    LlmCoreMod.LOGGER.info("Loaded custom provider '{}' from llmjs.secret", entry.getKey());
+                    LlmCoreMod.LOGGER.info("Loaded custom provider '{}' from {}", entry.getKey(),
+                            secretFilePath == null ? SECRET_FILE_NAME : secretFilePath.getFileName());
                 }
             } catch (Exception e) {
                 LlmCoreMod.LOGGER.warn("Failed to load secret provider '{}': {}", entry.getKey(), e.getMessage());
@@ -133,10 +154,10 @@ public class ProviderLoader {
         }
     }
 
-    // === Write operations (all write to llmjs.secret) ===
+    // === Write operations (all write to the selected secret file) ===
 
     public static boolean setKey(String providerName, String apiKey) {
-        return gameRootDir != null && ProviderFiles.setKey(gameRootDir.resolve("llmjs.secret"), providerName, apiKey);
+        return secretFilePath != null && ProviderFiles.setKey(secretFilePath, providerName, apiKey);
     }
 
     public static boolean setup(String name, String url, String model, String key) {
@@ -149,7 +170,7 @@ public class ProviderLoader {
         vibe.liteming.llmcore.ProviderSpec spec = new vibe.liteming.llmcore.ProviderSpec(name, safeFormat, url,
                 model, null, null, java.util.List.of(new vibe.liteming.llmcore.ProviderSpec.Credential(name + "#1", key, 1)));
         return ProviderFiles.setup(gameRootDir.resolve("config/llmjs/providers.json"),
-                gameRootDir.resolve("llmjs.secret"), spec);
+                secretFilePath, spec);
     }
 
     public static boolean updateWithoutKey(String name, String url, String model, String format) {
@@ -161,7 +182,7 @@ public class ProviderLoader {
         if (gameRootDir == null || name == null || name.isBlank()) return false;
         boolean deleted = ProviderFiles.deleteProvider(
                 gameRootDir.resolve("config/llmjs/providers.json"),
-                gameRootDir.resolve("llmjs.secret"),
+                secretFilePath,
                 name);
         // Also drop from server override if present
         deleted |= ProviderFiles.deleteProvider(
@@ -169,36 +190,6 @@ public class ProviderLoader {
                 null,
                 name);
         return deleted;
-    }
-
-    private static boolean updateSecret(String name,
-                                         java.util.function.Consumer<JsonElement> updater,
-                                         java.util.function.Supplier<JsonElement> creator) {
-        if (gameRootDir == null) return false;
-        Path secretFile = gameRootDir.resolve("llmjs.secret");
-        try {
-            JsonObject root;
-            if (Files.exists(secretFile)) {
-                String content = Files.readString(secretFile).strip();
-                root = content.isEmpty() ? new JsonObject() : JsonParser.parseString(content).getAsJsonObject();
-            } else {
-                root = new JsonObject();
-            }
-            if (!root.has("providers")) {
-                root.add("providers", new JsonObject());
-            }
-            JsonObject providers = root.getAsJsonObject("providers");
-            if (providers.has(name)) {
-                updater.accept(providers.get(name));
-            } else {
-                providers.add(name, creator.get());
-            }
-            Files.writeString(secretFile, GSON.toJson(root));
-            return true;
-        } catch (Exception e) {
-            LlmCoreMod.LOGGER.error("Failed to write llmjs.secret for '{}'", name, e);
-            return false;
-        }
     }
 
     // === Config file loading ===
@@ -217,7 +208,7 @@ public class ProviderLoader {
                     String format = obj.has("format") ? obj.get("format").getAsString() : "openai";
                     String url = obj.get("url").getAsString();
                     String model = obj.get("model").getAsString();
-                    // Key comes ONLY from llmjs.secret
+                    // Key comes only from the selected server-side secret file.
                     String key = resolveKey(entry.getKey(), secrets);
                     Double temp = obj.has("temperature") ? obj.get("temperature").getAsDouble() : null;
                     Integer maxTokens = obj.has("max_tokens") ? obj.get("max_tokens").getAsInt() : null;

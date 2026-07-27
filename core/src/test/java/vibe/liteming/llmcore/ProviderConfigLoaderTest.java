@@ -16,7 +16,7 @@ class ProviderConfigLoaderTest {
     @Test
     void loadsMultipleCredentialSlotsWithoutExposingThemInProviderConfig() throws Exception {
         Path providers = tempDir.resolve("providers.json");
-        Path secret = tempDir.resolve("llmjs.secret");
+        Path secret = tempDir.resolve("llmcore.secret");
         Files.writeString(providers, """
                 {"fast":{"format":"openai","url":"http://localhost/test","model":"test-model","context_window_tokens":32768}}
                 """);

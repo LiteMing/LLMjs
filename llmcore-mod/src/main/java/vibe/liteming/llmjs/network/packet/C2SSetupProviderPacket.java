@@ -11,7 +11,7 @@ import net.minecraftforge.network.PacketDistributor;
 import java.util.function.Supplier;
 
 /**
- * Client -> Server: create or update a provider in llmjs.secret.
+ * Client -> Server: create or update a provider in llmcore.secret.
  * Only OP level 2+ can use this.
  */
 public class C2SSetupProviderPacket {
