@@ -36,8 +36,18 @@ import static vibe.liteming.llmjs.client.ConsoleTexts.tooltip;
 
 @OnlyIn(Dist.CLIENT)
 public class TestPanel {
-    private final int x, y, width, height;
+    private static final int PARAMETER_LABEL_Y = 76;
+    private static final int PARAMETER_INPUT_Y = 85;
+    private static final int TOOLBAR_Y = 106;
+    private static final int STATUS_Y = 127;
+    private static final int RESULT_TITLE_Y = 140;
+    private static final int RESULT_TEXT_Y = RESULT_TITLE_Y + 12;
+    private static final int MIN_CONTENT_HEIGHT = 260;
+
+    private int x, y, width, height;
+    private int contentHeight;
     private final Font font;
+    private final ConsoleScrollBar pageScroll = new ConsoleScrollBar();
     private final EditBox purposeInput;
     private final EditBox providerInput;
     private final EditBox promptInput;
@@ -107,7 +117,7 @@ public class TestPanel {
         simpleButton = tooltip(Button.builder(text("test.simple"), button -> enterSimpleMode())
                 .pos(x + width - 72, y + 52).size(62, 18).build(), "test.simple.tip");
 
-        int parameterY = y + 85;
+        int parameterY = y + PARAMETER_INPUT_Y;
         int parameterCell = Math.max(1, (width - 8) / 5);
         temperatureInput = parameterInput(font, x + 4, parameterY, parameterCell - 4,
                 "parameter.temperature", "parameter.temperature.tip");
@@ -121,19 +131,20 @@ public class TestPanel {
                 "parameter.output_reserve", "parameter.output_reserve.tip");
 
         prevTemplateBtn = tooltip(Button.builder(Component.literal("<"), button -> cycleTemplate(-1))
-                .pos(x + 4, y + 106).size(20, 16).build(), "test.template.previous.tip");
+                .pos(x + 4, y + TOOLBAR_Y).size(20, 16).build(), "test.template.previous.tip");
         nextTemplateBtn = tooltip(Button.builder(Component.literal(">"), button -> cycleTemplate(1))
-                .pos(x + 26, y + 106).size(20, 16).build(), "test.template.next.tip");
+                .pos(x + 26, y + TOOLBAR_Y).size(20, 16).build(), "test.template.next.tip");
         saveTemplateBtn = tooltip(Button.builder(text("test.template.save"), button -> saveCurrentAsTemplate())
-                .pos(x + 50, y + 106).size(62, 16).build(), "test.template.save.tip");
+                .pos(x + 50, y + TOOLBAR_Y).size(62, 16).build(), "test.template.save.tip");
         copyButton = tooltip(Button.builder(text("test.copy_result"), button -> copyResult())
-                .pos(x + 116, y + 106).size(90, 16).build(), "test.copy_result.tip");
+                .pos(x + 116, y + TOOLBAR_Y).size(90, 16).build(), "test.copy_result.tip");
         saveRouteButton = tooltip(Button.builder(text("test.save_route"), button -> saveToRouting())
-                .pos(x + 210, y + 106).size(80, 16).build(), "test.save_route.tip");
+                .pos(x + 210, y + TOOLBAR_Y).size(80, 16).build(), "test.save_route.tip");
         tooltip(purposeInput, "test.purpose.tip");
         tooltip(providerInput, "test.provider_chain.tip");
         tooltip(promptInput, "test.prompt.tip");
         loadTemplatesFromConfig();
+        setBounds(x, y, width, height);
     }
 
     private static EditBox input(Font font, int x, int y, int width, String labelKey, int maxLength) {
@@ -154,9 +165,65 @@ public class TestPanel {
                 prevTemplateBtn, nextTemplateBtn, saveTemplateBtn, copyButton, saveRouteButton);
     }
 
+    public void setBounds(int x, int y, int width, int height) {
+        this.x = x;
+        this.y = y;
+        this.width = Math.max(1, width);
+        this.height = Math.max(1, height);
+        this.contentHeight = Math.max(MIN_CONTENT_HEIGHT, this.height);
+        pageScroll.setTrack(this.x + this.width - 6, this.y + 2, this.y + this.height - 2);
+        pageScroll.update(contentHeight, this.height);
+        layoutWidgets();
+        responseSegments = buildResultSegments(responseText);
+        responseLineCount = responseSegments.size();
+        clampResponseScroll();
+    }
+
+    private int contentY(int relativeY) {
+        return y + relativeY - pageScroll.offset();
+    }
+
+    private void layoutWidgets() {
+        int purposeWidth = Math.max(70, Math.min(180, width - 220));
+        place(purposeInput, x + 62, contentY(4), purposeWidth, 18);
+        place(routingModeButton, x + 66 + purposeWidth, contentY(4), 70, 18);
+        place(visionProbeButton, x + width - 72, contentY(4), 62, 18);
+        place(providerInput, x + 62, contentY(28), Math.max(80, width - 72), 18);
+        place(promptInput, x + 62, contentY(52), Math.max(70, width - 208), 18);
+        place(sendButton, x + width - 140, contentY(52), 64, 18);
+        place(simpleButton, x + width - 72, contentY(52), 62, 18);
+
+        int parameterCell = Math.max(1, (width - 8) / 5);
+        List<EditBox> parameters = List.of(temperatureInput, maxOutputInput, timeoutInput,
+                inputBudgetInput, outputReserveInput);
+        for (int index = 0; index < parameters.size(); index++) {
+            place(parameters.get(index), x + 4 + parameterCell * index, contentY(PARAMETER_INPUT_Y),
+                    Math.max(34, parameterCell - 4), 18);
+        }
+
+        place(prevTemplateBtn, x + 4, contentY(TOOLBAR_Y), 20, 16);
+        place(nextTemplateBtn, x + 26, contentY(TOOLBAR_Y), 20, 16);
+        place(saveTemplateBtn, x + 50, contentY(TOOLBAR_Y), 62, 16);
+        place(copyButton, x + 116, contentY(TOOLBAR_Y), 90, 16);
+        place(saveRouteButton, x + 210, contentY(TOOLBAR_Y), 80, 16);
+
+        for (AbstractWidget widget : getWidgets()) {
+            boolean inside = widget.getY() >= y && widget.getY() + widget.getHeight() <= y + height;
+            widget.visible = visible && inside;
+            if (!widget.visible && widget.isFocused()) widget.setFocused(false);
+        }
+    }
+
+    private static void place(AbstractWidget widget, int x, int y, int width, int height) {
+        widget.setX(x);
+        widget.setY(y);
+        widget.setWidth(Math.max(1, width));
+        widget.setHeight(Math.max(1, height));
+    }
+
     public void setVisible(boolean value) {
         visible = value;
-        for (AbstractWidget widget : getWidgets()) widget.visible = value;
+        layoutWidgets();
     }
 
     public boolean isVisible() {
@@ -422,11 +489,18 @@ public class TestPanel {
     }
 
     public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
-        if (!visible || mouseX < x || mouseX > x + width || mouseY < y + 140 || mouseY > y + height) return false;
-        int visibleLines = Math.max(1, (height - 154) / 10);
-        int maxScroll = Math.max(0, responseLineCount - visibleLines);
-        responseScroll = Math.max(0, Math.min(maxScroll, responseScroll - (int) Math.signum(delta) * 3));
-        return true;
+        if (!visible || mouseX < x || mouseX > x + width || mouseY < y || mouseY > y + height) return false;
+        if (isInResponseArea(mouseX, mouseY)) {
+            int before = responseScroll;
+            responseScroll = Math.max(0, Math.min(maxResponseScroll(),
+                    responseScroll - (int) Math.signum(delta) * 3));
+            if (responseScroll != before) return true;
+        }
+        if (pageScroll.scroll(delta, 24)) {
+            layoutWidgets();
+            return true;
+        }
+        return false;
     }
 
     private void copyResult() {
@@ -459,12 +533,15 @@ public class TestPanel {
 
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         if (!visible) return;
+        pageScroll.update(contentHeight, height);
+        layoutWidgets();
         graphics.fill(x, y, x + width, y + height, 0x80000000);
-        graphics.drawString(font, text("test.purpose"), x + 4, y + 9, 0xFFFFFF, false);
-        graphics.drawString(font, text("test.chain"), x + 4, y + 33, 0xFFFFFF, false);
+        graphics.enableScissor(x, y, x + width, y + height);
+        graphics.drawString(font, text("test.purpose"), x + 4, contentY(9), 0xFFFFFF, false);
+        graphics.drawString(font, text("test.chain"), x + 4, contentY(33), 0xFFFFFF, false);
         graphics.drawString(font, text(loadedHandoff == null ? "test.prompt" : "test.focus"),
-                x + 4, y + 57, 0xFFFFFF, false);
-        int parameterY = y + 76;
+                x + 4, contentY(57), 0xFFFFFF, false);
+        int parameterY = contentY(PARAMETER_LABEL_Y);
         int parameterCell = Math.max(1, (width - 8) / 5);
         String[] labels = {"T", "Out", "Sec", "In", "Res"};
         for (int index = 0; index < labels.length; index++) {
@@ -474,12 +551,14 @@ public class TestPanel {
                 string("test.effective_unavailable"));
         String draftPrefix = loadedHandoff == null ? "" : string("test.message_count", loadedHandoff.messages().size());
         String status = visionResultText != null ? visionResultText : draftPrefix + effective;
-        graphics.drawString(font, font.plainSubstrByWidth(status, width - 12),
-                x + 4, y + 127, visionResultText == null ? 0x77AAFF : visionResultColor, false);
+        graphics.drawString(font, font.plainSubstrByWidth(status, Math.max(8, width - 18)),
+                x + 4, contentY(STATUS_Y), visionResultText == null ? 0x77AAFF : visionResultColor, false);
 
-        int responseY = y + 140;
+        int responseY = contentY(RESULT_TITLE_Y);
         graphics.drawString(font, text("test.result"), x + 4, responseY, 0xAAAAAA, false);
         if (responseText == null) {
+            graphics.disableScissor();
+            pageScroll.render(graphics, mouseX, mouseY);
             if (mouseX >= x && mouseX < x + width && mouseY >= responseY && mouseY < responseY + 12) {
                 graphics.renderTooltip(font, text("test.result.tip"), mouseX, mouseY);
             }
@@ -488,7 +567,7 @@ public class TestPanel {
         responseLineCount = responseSegments.size();
         int lineY = responseY + 12;
         for (int index = responseScroll; index < responseSegments.size(); index++) {
-            if (lineY > y + height - 10) break;
+            if (lineY > contentY(contentHeight) - 10) break;
             ResultSegment segment = responseSegments.get(index);
             renderResultSelection(graphics, segment, x + 4, lineY);
             graphics.drawString(font, segment.text(), x + 4, lineY, 0xFFFFFF, false);
@@ -497,9 +576,12 @@ public class TestPanel {
         if (System.currentTimeMillis() < copyFlashUntilMs) {
             graphics.drawString(font, text("common.copied"), x + width - 120, responseY, 0x55FF55, false);
         }
+        graphics.disableScissor();
+        pageScroll.render(graphics, mouseX, mouseY);
         if (mouseX >= x && mouseX < x + width && mouseY >= responseY && mouseY < responseY + 12) {
             graphics.renderTooltip(font, text("test.result.tip"), mouseX, mouseY);
-        } else if (mouseX >= x && mouseX < x + width && mouseY >= y + 124 && mouseY < y + 139) {
+        } else if (mouseX >= x && mouseX < x + width
+                && mouseY >= contentY(STATUS_Y) - 3 && mouseY < contentY(RESULT_TITLE_Y) - 1) {
             graphics.renderTooltip(font, text("test.effective.tip"), mouseX, mouseY);
         }
     }
@@ -520,7 +602,7 @@ public class TestPanel {
         List<ResultSegment> segments = new ArrayList<>();
         String[] logicalLines = text.split("\\n", -1);
         int globalOffset = 0;
-        int maxWidth = Math.max(8, width - 12);
+        int maxWidth = Math.max(8, width - 20);
         for (int lineIndex = 0; lineIndex < logicalLines.length; lineIndex++) {
             String line = logicalLines[lineIndex];
             if (line.isEmpty()) {
@@ -569,12 +651,13 @@ public class TestPanel {
 
     private boolean isInResponseArea(double mouseX, double mouseY) {
         return visible && responseText != null && mouseX >= x && mouseX <= x + width
-                && mouseY >= y + 152 && mouseY < y + height;
+                && mouseY >= Math.max(y, contentY(RESULT_TEXT_Y))
+                && mouseY < Math.min(y + height, contentY(contentHeight));
     }
 
     private int resultCharOffsetAt(double mouseX, double mouseY, boolean clamp) {
         if (responseSegments.isEmpty()) return -1;
-        int row = (int) ((mouseY - (y + 152)) / 10);
+        int row = (int) ((mouseY - contentY(RESULT_TEXT_Y)) / 10);
         int segmentIndex = responseScroll + row;
         if (clamp) segmentIndex = Math.max(0, Math.min(responseSegments.size() - 1, segmentIndex));
         if (segmentIndex < 0 || segmentIndex >= responseSegments.size()) return -1;
@@ -590,6 +673,7 @@ public class TestPanel {
     }
 
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (visible && pageScroll.mouseClicked(mouseX, mouseY, button)) return true;
         if (!isInResponseArea(mouseX, mouseY)) return false;
         responseSelectionActive = true;
         if (button == 1) {
@@ -606,20 +690,33 @@ public class TestPanel {
     }
 
     public boolean mouseDragged(double mouseX, double mouseY, int button) {
+        if (pageScroll.mouseDragged(mouseX, mouseY, button)) {
+            layoutWidgets();
+            return true;
+        }
         if (!draggingResponseSelection || button != 0 || responseText == null) return false;
         int offset = resultCharOffsetAt(mouseX, mouseY, true);
         if (offset >= 0) responseSelectionEnd = offset;
-        int visibleLines = Math.max(1, (height - 154) / 10);
-        int maxScroll = Math.max(0, responseSegments.size() - visibleLines);
-        if (mouseY < y + 158 && responseScroll > 0) responseScroll--;
+        int maxScroll = maxResponseScroll();
+        if (mouseY < contentY(RESULT_TEXT_Y) + 6 && responseScroll > 0) responseScroll--;
         else if (mouseY > y + height - 8 && responseScroll < maxScroll) responseScroll++;
         return true;
     }
 
     public boolean mouseReleased(int button) {
+        if (pageScroll.mouseReleased(button)) return true;
         if (button != 0 || !draggingResponseSelection) return false;
         draggingResponseSelection = false;
         return true;
+    }
+
+    private int maxResponseScroll() {
+        int visibleLines = Math.max(1, (contentHeight - RESULT_TEXT_Y - 4) / 10);
+        return Math.max(0, responseSegments.size() - visibleLines);
+    }
+
+    private void clampResponseScroll() {
+        responseScroll = Math.max(0, Math.min(responseScroll, maxResponseScroll()));
     }
 
     public void deactivateResponseSelection() {

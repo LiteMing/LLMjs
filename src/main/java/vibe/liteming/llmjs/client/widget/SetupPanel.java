@@ -20,7 +20,10 @@ import static vibe.liteming.llmjs.client.ConsoleTexts.tooltip;
 
 @OnlyIn(Dist.CLIENT)
 public class SetupPanel {
-    private final int x, y, width, height;
+    private int x, y, width, height;
+    private int contentHeight;
+    private boolean stackedLayout;
+    private final ConsoleScrollBar pageScroll = new ConsoleScrollBar();
     private final EditBox nameInput;
     private final EditBox formatInput;
     private final EditBox urlInput;
@@ -36,6 +39,8 @@ public class SetupPanel {
 
     private static final int LABEL_W = 70;
     private static final int ROW_H = 26;
+    private static final int NORMAL_MIN_CONTENT_HEIGHT = 224;
+    private static final int STACKED_MIN_CONTENT_HEIGHT = 320;
 
     public SetupPanel(int x, int y, int width, int height, Font font) {
         this.x = x;
@@ -87,21 +92,79 @@ public class SetupPanel {
         tooltip(urlInput, "setup.url.tip");
         tooltip(modelInput, "setup.model.tip");
         tooltip(keyInput, "setup.api_key.tip");
+        setBounds(x, y, width, height);
     }
 
     public List<net.minecraft.client.gui.components.AbstractWidget> getWidgets() {
         return List.of(nameInput, formatInput, urlInput, modelInput, keyInput, saveButton, clearKeyButton);
     }
 
+    public void setBounds(int x, int y, int width, int height) {
+        this.x = x;
+        this.y = y;
+        this.width = Math.max(1, width);
+        this.height = Math.max(1, height);
+        this.stackedLayout = this.width < 250;
+        int minimum = stackedLayout ? STACKED_MIN_CONTENT_HEIGHT : NORMAL_MIN_CONTENT_HEIGHT;
+        this.contentHeight = Math.max(minimum, this.height);
+        pageScroll.setTrack(this.x + this.width - 6, this.y + 2, this.y + this.height - 2);
+        pageScroll.update(contentHeight, this.height);
+        layoutWidgets();
+    }
+
+    private int contentY(int relativeY) {
+        return y + relativeY - pageScroll.offset();
+    }
+
+    private int fieldRelativeY(int index) {
+        return stackedLayout ? 18 + index * 34 : 10 + index * ROW_H;
+    }
+
+    private int labelRelativeY(int index) {
+        return stackedLayout ? 8 + index * 34 : 14 + index * ROW_H;
+    }
+
+    private int buttonRelativeY() {
+        return stackedLayout ? 184 : 146;
+    }
+
+    private int statusRelativeY() {
+        return stackedLayout ? 238 : 176;
+    }
+
+    private void layoutWidgets() {
+        int inputX = stackedLayout ? x + 8 : x + LABEL_W + 10;
+        int inputW = stackedLayout ? Math.max(40, width - 20)
+                : Math.max(60, Math.min(width - LABEL_W - 28, 360));
+        List<EditBox> inputs = List.of(nameInput, formatInput, urlInput, modelInput, keyInput);
+        for (int index = 0; index < inputs.size(); index++) {
+            place(inputs.get(index), inputX, contentY(fieldRelativeY(index)), inputW, 18);
+        }
+        place(saveButton, inputX, contentY(buttonRelativeY()), Math.min(100, inputW), 20);
+        if (stackedLayout) {
+            place(clearKeyButton, inputX, contentY(buttonRelativeY() + 24), Math.min(120, inputW), 20);
+        } else {
+            place(clearKeyButton, inputX + 108, contentY(buttonRelativeY()),
+                    Math.max(40, Math.min(120, x + width - 8 - (inputX + 108))), 20);
+        }
+        for (var widget : getWidgets()) {
+            boolean inside = widget.getY() >= y && widget.getY() + widget.getHeight() <= y + height;
+            widget.visible = visible && inside;
+            if (!widget.visible && widget.isFocused()) widget.setFocused(false);
+        }
+    }
+
+    private static void place(net.minecraft.client.gui.components.AbstractWidget widget,
+                              int x, int y, int width, int height) {
+        widget.setX(x);
+        widget.setY(y);
+        widget.setWidth(Math.max(1, width));
+        widget.setHeight(Math.max(1, height));
+    }
+
     public void setVisible(boolean v) {
         this.visible = v;
-        nameInput.visible = v;
-        formatInput.visible = v;
-        urlInput.visible = v;
-        modelInput.visible = v;
-        keyInput.visible = v;
-        saveButton.visible = v;
-        clearKeyButton.visible = v;
+        layoutWidgets();
     }
 
     public boolean isVisible() { return visible; }
@@ -162,34 +225,61 @@ public class SetupPanel {
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         if (!visible) return;
         var font = Minecraft.getInstance().font;
+        pageScroll.update(contentHeight, height);
+        layoutWidgets();
         graphics.fill(x, y, x + width, y + height, 0x90000000);
+        graphics.enableScissor(x, y, x + width, y + height);
 
         int labelX = x + 8;
-        int row = y + 14;
-
-        graphics.drawString(font, text("setup.name"), labelX, row, 0xFFFFFF, false);
-        row += ROW_H;
-        graphics.drawString(font, text("setup.format"), labelX, row, 0xFFFFFF, false);
-        graphics.drawString(font, "openai / claude / gemini", x + LABEL_W + 380, row, 0x666666, false);
-        row += ROW_H;
-        graphics.drawString(font, text("setup.url"), labelX, row, 0xFFFFFF, false);
-        row += ROW_H;
-        graphics.drawString(font, text("setup.model"), labelX, row, 0xFFFFFF, false);
-        row += ROW_H;
-        graphics.drawString(font, text("setup.api_key"), labelX, row, 0xFFFFFF, false);
-        if (currentMaskedKey != null && !currentMaskedKey.isBlank()) {
-            graphics.drawString(font, text("setup.key_on_file", currentMaskedKey),
-                    x + LABEL_W + 380, row, 0x55AA55, false);
+        String[] labelKeys = {"setup.name", "setup.format", "setup.url", "setup.model", "setup.api_key"};
+        for (int index = 0; index < labelKeys.length; index++) {
+            graphics.drawString(font, text(labelKeys[index]), labelX, contentY(labelRelativeY(index)), 0xFFFFFF, false);
         }
-        row += ROW_H + 8;
+        int inputRight = formatInput.getX() + formatInput.getWidth();
+        int hintX = inputRight + 8;
+        int formatY = contentY(labelRelativeY(1));
+        if (!stackedLayout && hintX + font.width("openai / claude / gemini") < x + width - 8) {
+            graphics.drawString(font, "openai / claude / gemini", hintX, formatY, 0x666666, false);
+        }
+        if (currentMaskedKey != null && !currentMaskedKey.isBlank()) {
+            Component keyText = text("setup.key_on_file", currentMaskedKey);
+            int keyY = contentY(labelRelativeY(4));
+            if (!stackedLayout && hintX + font.width(keyText) < x + width - 8) {
+                graphics.drawString(font, keyText, hintX, keyY, 0x55AA55, false);
+            }
+        }
 
         if (statusMessage != null) {
-            graphics.drawString(font, statusMessage, labelX, row + 24, statusColor, false);
+            graphics.drawString(font, font.plainSubstrByWidth(statusMessage, Math.max(8, width - 18)),
+                    labelX, contentY(statusRelativeY()), statusColor, false);
         }
 
-        int helpY = y + height - 36;
+        int helpY = contentY(contentHeight - 36);
         graphics.drawString(font, text("setup.secret_help"), labelX, helpY, 0x666666, false);
         graphics.drawString(font, text("setup.creaturechat_help"),
                 labelX, helpY + 12, 0x666666, false);
+        graphics.disableScissor();
+        pageScroll.render(graphics, mouseX, mouseY);
+    }
+
+    public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
+        if (!visible || mouseX < x || mouseX > x + width || mouseY < y || mouseY > y + height) return false;
+        if (!pageScroll.scroll(delta, 24)) return false;
+        layoutWidgets();
+        return true;
+    }
+
+    public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        return visible && pageScroll.mouseClicked(mouseX, mouseY, button);
+    }
+
+    public boolean mouseDragged(double mouseX, double mouseY, int button) {
+        if (!pageScroll.mouseDragged(mouseX, mouseY, button)) return false;
+        layoutWidgets();
+        return true;
+    }
+
+    public boolean mouseReleased(int button) {
+        return pageScroll.mouseReleased(button);
     }
 }

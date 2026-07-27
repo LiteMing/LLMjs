@@ -62,10 +62,10 @@ public class LLMConsoleScreen extends Screen {
     @Override
     protected void init() {
         int tabY = 22;
-        int tabW = 64;
-        int gap = 4;
+        int gap = width < 300 ? 2 : 4;
+        int tabW = Math.max(36, Math.min(64, (width - 20 - gap * 4) / 5));
         int totalW = tabW * 5 + gap * 4;
-        int startX = Math.max(10, (width - totalW) / 2);
+        int startX = Math.max(4, (width - totalW) / 2);
 
         logTab = tooltip(Button.builder(text("tab.log"), b -> switchTab(Tab.LOG))
                 .pos(startX, tabY).size(tabW, 20).build(), "tab.log.tip");
@@ -84,9 +84,10 @@ public class LLMConsoleScreen extends Screen {
         addRenderableWidget(setupTab);
 
         int panelY = 48;
-        int panelH = height - 58;
-        int panelW = width - 20;
-        int panelX = 10;
+        int margin = width < 260 ? 4 : 10;
+        int panelH = Math.max(1, height - 58);
+        int panelW = Math.max(1, width - margin * 2);
+        int panelX = margin;
 
         logPanel = new LogPanel(panelX, panelY, panelW, panelH);
         providerPanel = new ProviderListPanel(panelX, panelY, panelW, panelH, initialStatusJson);
@@ -108,6 +109,39 @@ public class LLMConsoleScreen extends Screen {
         } else {
             switchTab(Tab.LOG);
         }
+    }
+
+    @Override
+    protected void repositionElements() {
+        if (logTab == null || logPanel == null || testPanel == null || setupPanel == null) {
+            super.repositionElements();
+            return;
+        }
+        int tabY = 22;
+        int gap = width < 300 ? 2 : 4;
+        int tabW = Math.max(36, Math.min(64, (width - 20 - gap * 4) / 5));
+        int totalW = tabW * 5 + gap * 4;
+        int startX = Math.max(4, (width - totalW) / 2);
+        List<Button> tabs = List.of(logTab, providersTab, routingTab, testTab, setupTab);
+        for (int index = 0; index < tabs.size(); index++) {
+            Button tab = tabs.get(index);
+            tab.setX(startX + (tabW + gap) * index);
+            tab.setY(tabY);
+            tab.setWidth(tabW);
+            tab.setHeight(20);
+        }
+
+        int panelY = 48;
+        int margin = width < 260 ? 4 : 10;
+        int panelH = Math.max(1, height - 58);
+        int panelW = Math.max(1, width - margin * 2);
+        int panelX = margin;
+        logPanel.setBounds(panelX, panelY, panelW, panelH);
+        providerPanel.setBounds(panelX, panelY, panelW, panelH);
+        routingPanel.setBounds(panelX, panelY, panelW, panelH);
+        testPanel.setBounds(panelX, panelY, panelW, panelH);
+        setupPanel.setBounds(panelX, panelY, panelW, panelH);
+        switchTab(activeTab);
     }
 
     private void maybeShowTakeoverTip() {
@@ -144,7 +178,7 @@ public class LLMConsoleScreen extends Screen {
         activeTab = tab;
         logPanel.visible = (tab == Tab.LOG);
         providerPanel.visible = (tab == Tab.PROVIDERS);
-        routingPanel.visible = (tab == Tab.ROUTING);
+        routingPanel.setPanelVisible(tab == Tab.ROUTING);
         testPanel.setVisible(tab == Tab.TEST);
         setupPanel.setVisible(tab == Tab.SETUP);
     }
@@ -165,9 +199,9 @@ public class LLMConsoleScreen extends Screen {
             graphics.fill(active.getX(), active.getY() + active.getHeight() + 1,
                     active.getX() + active.getWidth(), active.getY() + active.getHeight() + 3, 0xFF55AAFF);
         }
-        super.render(graphics, mouseX, mouseY, partialTick);
         testPanel.render(graphics, mouseX, mouseY, partialTick);
         setupPanel.render(graphics, mouseX, mouseY, partialTick);
+        super.render(graphics, mouseX, mouseY, partialTick);
     }
 
     @Override
@@ -212,6 +246,8 @@ public class LLMConsoleScreen extends Screen {
             }
             testPanel.deactivateResponseSelection();
         }
+        if (activeTab == Tab.SETUP && setupPanel != null
+                && setupPanel.mouseClicked(mouseX, mouseY, button)) return true;
         return super.mouseClicked(mouseX, mouseY, button);
     }
 
@@ -220,18 +256,24 @@ public class LLMConsoleScreen extends Screen {
         if (activeTab == Tab.TEST && testPanel != null && testPanel.mouseDragged(mouseX, mouseY, button)) {
             return true;
         }
+        if (activeTab == Tab.SETUP && setupPanel != null
+                && setupPanel.mouseDragged(mouseX, mouseY, button)) return true;
         return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
     }
 
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
         if (activeTab == Tab.TEST && testPanel != null && testPanel.mouseReleased(button)) return true;
+        if (activeTab == Tab.SETUP && setupPanel != null && setupPanel.mouseReleased(button)) return true;
         return super.mouseReleased(mouseX, mouseY, button);
     }
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
         if (activeTab == Tab.TEST && testPanel != null && testPanel.mouseScrolled(mouseX, mouseY, delta)) {
+            return true;
+        }
+        if (activeTab == Tab.SETUP && setupPanel != null && setupPanel.mouseScrolled(mouseX, mouseY, delta)) {
             return true;
         }
         return super.mouseScrolled(mouseX, mouseY, delta);

@@ -27,6 +27,7 @@ public class ProviderListPanel extends AbstractWidget {
                                  String maskedKey, String status, String statusKind, boolean configured) {}
 
     private final List<ProviderEntry> providers = new ArrayList<>();
+    private final ConsoleScrollBar rowScroll = new ConsoleScrollBar();
     private int hoveredRow = -1;
     private static final int ROW_HEIGHT = 18;
     private static final int DELETE_W = 52;
@@ -41,7 +42,10 @@ public class ProviderListPanel extends AbstractWidget {
         try {
             JsonObject root = JsonParser.parseString(statusJson).getAsJsonObject();
             JsonArray arr = root.getAsJsonArray("providers");
-            if (arr == null) return;
+            if (arr == null) {
+                updateScrollRange();
+                return;
+            }
             for (var el : arr) {
                 JsonObject p = el.getAsJsonObject();
                 String name = p.get("name").getAsString();
@@ -71,6 +75,15 @@ public class ProviderListPanel extends AbstractWidget {
                         status, statusKind, configured));
             }
         } catch (Exception ignored) {}
+        updateScrollRange();
+    }
+
+    public void setBounds(int x, int y, int width, int height) {
+        setX(x);
+        setY(y);
+        setWidth(Math.max(1, width));
+        setHeight(Math.max(1, height));
+        updateScrollRange();
     }
 
     public List<String> getProviderNames() {
@@ -80,26 +93,51 @@ public class ProviderListPanel extends AbstractWidget {
     }
 
     private int deleteX() {
-        return getX() + width - DELETE_W - 8;
+        return getX() + width - DELETE_W - 16;
+    }
+
+    private int listTop() {
+        return getY() + 6 + ROW_HEIGHT;
+    }
+
+    private int listBottom() {
+        return Math.max(listTop() + 1, getY() + height - 20);
+    }
+
+    private void updateScrollRange() {
+        int viewport = Math.max(1, listBottom() - listTop());
+        rowScroll.setTrack(getX() + width - 7, listTop(), listBottom());
+        rowScroll.update(providers.size() * ROW_HEIGHT, viewport);
+    }
+
+    private int rowIndexAt(double mouseY) {
+        if (mouseY < listTop() || mouseY >= listBottom()) return -1;
+        int index = (int) ((mouseY - listTop() + rowScroll.offset()) / ROW_HEIGHT);
+        return index >= 0 && index < providers.size() ? index : -1;
+    }
+
+    private int rowY(int index) {
+        return listTop() + index * ROW_HEIGHT - rowScroll.offset();
     }
 
     @Override
     protected void renderWidget(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         var font = Minecraft.getInstance().font;
+        updateScrollRange();
         graphics.fill(getX(), getY(), getX() + width, getY() + height, 0x90000000);
 
         int y = getY() + 6;
         graphics.drawString(font, text("providers.name"), getX() + 8, y, 0xAAAAAA, false);
-        graphics.drawString(font, text("providers.format"), getX() + 110, y, 0xAAAAAA, false);
-        graphics.drawString(font, text("providers.model"), getX() + 170, y, 0xAAAAAA, false);
-        graphics.drawString(font, text("providers.status"), getX() + 300, y, 0xAAAAAA, false);
+        if (width >= 230) graphics.drawString(font, text("providers.format"), getX() + 110, y, 0xAAAAAA, false);
+        if (width >= 330) graphics.drawString(font, text("providers.model"), getX() + 170, y, 0xAAAAAA, false);
+        if (width >= 470) graphics.drawString(font, text("providers.status"), getX() + 300, y, 0xAAAAAA, false);
         y += ROW_HEIGHT;
         graphics.fill(getX() + 4, y - 2, getX() + width - 4, y - 1, 0xFF555555);
 
         if (providers.isEmpty()) {
-            graphics.drawString(font, text("providers.empty"),
+            graphics.drawString(font, font.plainSubstrByWidth(string("providers.empty"), Math.max(8, width - 16)),
                     getX() + 8, y + 6, 0xFF5555, false);
-            graphics.drawString(font, text("providers.refresh_help"),
+            graphics.drawString(font, font.plainSubstrByWidth(string("providers.refresh_help"), Math.max(8, width - 16)),
                     getX() + 8, getY() + height - 14, 0x666666, false);
             if (isMouseOver(mouseX, mouseY)) {
                 graphics.renderTooltip(font, text("providers.empty.tip"), mouseX, mouseY);
@@ -107,15 +145,16 @@ public class ProviderListPanel extends AbstractWidget {
             return;
         }
 
-        int headerH = getY() + 6 + ROW_HEIGHT;
-        hoveredRow = -1;
-        if (mouseX >= getX() && mouseX < getX() + width && mouseY > headerH) {
-            int idx = (int) ((mouseY - headerH) / ROW_HEIGHT);
-            if (idx >= 0 && idx < providers.size()) hoveredRow = idx;
-        }
+        int headerH = listTop();
+        hoveredRow = mouseX >= getX() && mouseX < getX() + width ? rowIndexAt(mouseY) : -1;
 
-        for (int i = 0; i < providers.size(); i++) {
+        graphics.enableScissor(getX(), listTop(), getX() + width, listBottom());
+        int start = Math.max(0, rowScroll.offset() / ROW_HEIGHT);
+        for (int i = start; i < providers.size(); i++) {
             ProviderEntry p = providers.get(i);
+            int rowY = rowY(i);
+            if (rowY >= listBottom()) break;
+            if (rowY + ROW_HEIGHT <= listTop()) continue;
             int statusColor;
             if (!p.configured) statusColor = 0xFF8800;
             else if (p.statusKind.equals("ok")) statusColor = 0x55FF55;
@@ -123,28 +162,40 @@ public class ProviderListPanel extends AbstractWidget {
             else statusColor = 0xFF5555;
 
             if (i == hoveredRow) {
-                graphics.fill(getX() + 4, y - 1, getX() + width - 4, y + ROW_HEIGHT - 2, 0x28FFFFFF);
+                graphics.fill(getX() + 4, rowY - 1, getX() + width - 8, rowY + ROW_HEIGHT - 2, 0x28FFFFFF);
             }
 
             int nameColor = p.configured ? 0xFFFFFF : 0x888888;
-            graphics.drawString(font, font.plainSubstrByWidth(p.name, 100), getX() + 8, y + 2, nameColor, false);
-            graphics.drawString(font, p.format == null ? "-" : p.format, getX() + 110, y + 2, 0xCCCCCC, false);
-            graphics.drawString(font, font.plainSubstrByWidth(p.model, 120), getX() + 170, y + 2, 0xCCCCCC, false);
-            graphics.drawString(font, p.status, getX() + 300, y + 2, statusColor, false);
+            graphics.drawString(font, font.plainSubstrByWidth(p.name, 100), getX() + 8, rowY + 2, nameColor, false);
+            if (width >= 230) {
+                graphics.drawString(font, font.plainSubstrByWidth(p.format == null ? "-" : p.format, 54),
+                        getX() + 110, rowY + 2, 0xCCCCCC, false);
+            }
+            if (width >= 330) {
+                int modelWidth = Math.max(30, Math.min(120, deleteX() - (getX() + 170) - 70));
+                graphics.drawString(font, font.plainSubstrByWidth(p.model, modelWidth),
+                        getX() + 170, rowY + 2, 0xCCCCCC, false);
+            }
+            if (width >= 470) {
+                graphics.drawString(font, font.plainSubstrByWidth(p.status, Math.max(20, deleteX() - getX() - 304)),
+                        getX() + 300, rowY + 2, statusColor, false);
+            }
 
             int dx = deleteX();
-            boolean overDelete = mouseX >= dx && mouseX <= dx + DELETE_W && mouseY >= y && mouseY < y + ROW_HEIGHT - 2;
-            graphics.fill(dx, y, dx + DELETE_W, y + ROW_HEIGHT - 4, overDelete ? 0xAA883333 : 0x66883333);
-            graphics.drawCenteredString(font, text("providers.delete"), dx + DELETE_W / 2, y + 3, 0xFFAAAA);
-
-            y += ROW_HEIGHT;
+            boolean overDelete = mouseX >= dx && mouseX <= dx + DELETE_W
+                    && mouseY >= rowY && mouseY < rowY + ROW_HEIGHT - 2;
+            graphics.fill(dx, rowY, dx + DELETE_W, rowY + ROW_HEIGHT - 4,
+                    overDelete ? 0xAA883333 : 0x66883333);
+            graphics.drawCenteredString(font, text("providers.delete"), dx + DELETE_W / 2, rowY + 3, 0xFFAAAA);
         }
+        graphics.disableScissor();
+        rowScroll.render(graphics, mouseX, mouseY);
 
-        graphics.drawString(font, text("providers.footer"),
+        graphics.drawString(font, font.plainSubstrByWidth(string("providers.footer"), Math.max(8, width - 18)),
                 getX() + 8, getY() + height - 14, 0x666666, false);
         if (hoveredRow >= 0) {
             ProviderEntry hovered = providers.get(hoveredRow);
-            int rowY = headerH + hoveredRow * ROW_HEIGHT;
+            int rowY = rowY(hoveredRow);
             boolean overDelete = mouseX >= deleteX() && mouseX <= deleteX() + DELETE_W
                     && mouseY >= rowY && mouseY < rowY + ROW_HEIGHT - 2;
             if (overDelete) {
@@ -159,19 +210,20 @@ public class ProviderListPanel extends AbstractWidget {
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (!visible || !isMouseOver(mouseX, mouseY)) return false;
+        if (rowScroll.mouseClicked(mouseX, mouseY, button)) return true;
 
         if (button == 1) {
             LLMNetwork.CHANNEL.sendToServer(new C2SStatusRequestPacket());
             return true;
         }
 
-        int headerH = getY() + 6 + ROW_HEIGHT;
-        if (mouseY > headerH) {
-            int rowIndex = (int) ((mouseY - headerH) / ROW_HEIGHT);
+        int headerH = listTop();
+        if (mouseY > headerH && mouseY < listBottom()) {
+            int rowIndex = rowIndexAt(mouseY);
             if (rowIndex >= 0 && rowIndex < providers.size()) {
                 ProviderEntry p = providers.get(rowIndex);
                 int dx = deleteX();
-                int rowY = headerH + rowIndex * ROW_HEIGHT;
+                int rowY = rowY(rowIndex);
                 if (mouseX >= dx && mouseX <= dx + DELETE_W && mouseY >= rowY && mouseY < rowY + ROW_HEIGHT - 2) {
                     LLMNetwork.CHANNEL.sendToServer(new C2SDeleteProviderPacket(p.name));
                     return true;
@@ -186,6 +238,24 @@ public class ProviderListPanel extends AbstractWidget {
 
         LLMNetwork.CHANNEL.sendToServer(new C2SStatusRequestPacket());
         return true;
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
+        if (!visible || !isMouseOver(mouseX, mouseY)) return false;
+        return rowScroll.scroll(delta, ROW_HEIGHT * 3);
+    }
+
+    @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int button, double dragX, double dragY) {
+        if (rowScroll.mouseDragged(mouseX, mouseY, button)) return true;
+        return super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int button) {
+        if (rowScroll.mouseReleased(button)) return true;
+        return super.mouseReleased(mouseX, mouseY, button);
     }
 
     @Override

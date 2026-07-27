@@ -25,15 +25,18 @@ public class LogPanel extends AbstractWidget {
     private int selectionAnchor = -1;
     private int selectionEnd = -1;
     private int detailScroll = 0;
+    private boolean detailExpanded = false;
     private boolean draggingSelect = false;
     private long copyFlashUntilMs = 0L;
     private static final int LINE_HEIGHT = 12;
     private static final int MAX_ENTRIES = 300;
+    private static final int DELETE_WIDTH = 14;
 
     // Detail (raw JSON) area character-level selection.
     // Each point is (logicalLine, charOffset) into unwrappedDetailLines.
     private List<DetailSeg> cachedDetailSegs = List.of();
     private List<String> unwrappedDetailLines = List.of();
+    private boolean detailCacheValid = false;
     private int detailAnchorLine = -1;
     private int detailAnchorChar = -1;
     private int detailEndLine = -1;
@@ -63,6 +66,15 @@ public class LogPanel extends AbstractWidget {
         super(x, y, width, height, text("tab.log"));
     }
 
+    public void setBounds(int x, int y, int width, int height) {
+        setX(x);
+        setY(y);
+        setWidth(Math.max(1, width));
+        setHeight(Math.max(1, height));
+        autoScrollClamp();
+        invalidateDetailCache();
+    }
+
     public void clear() {
         entries.clear();
         selectionAnchor = -1;
@@ -78,6 +90,10 @@ public class LogPanel extends AbstractWidget {
         detailSelectActive = false;
         cachedDetailSegs = List.of();
         unwrappedDetailLines = List.of();
+        detailCacheValid = false;
+        lastDetailListLow = -2;
+        lastDetailListHigh = -2;
+        copyFlashUntilMs = 0L;
     }
 
     public void setHistory(List<String> history) {
@@ -99,6 +115,7 @@ public class LogPanel extends AbstractWidget {
         detailSelectActive = false;
         cachedDetailSegs = List.of();
         unwrappedDetailLines = List.of();
+        detailCacheValid = false;
     }
 
     private void addEntry(String logEntryJson, boolean autoScroll) {
@@ -154,11 +171,43 @@ public class LogPanel extends AbstractWidget {
     }
 
     private int listHeight() {
+        if (detailExpanded) return Math.max(40, Math.min(56, height - 40));
         return Math.max(40, (int) (height * 0.42f));
     }
 
     private int detailTop() {
         return getY() + listHeight() + 2;
+    }
+
+    private int clearButtonX(Font font, Component label) {
+        return getX() + width - font.width(label) - 6;
+    }
+
+    private boolean isOverClear(double mouseX, double mouseY, Font font, Component label) {
+        int clearX = clearButtonX(font, label);
+        return mouseX >= clearX - 2 && mouseX < getX() + width - 2
+                && mouseY >= getY() && mouseY < getY() + 14;
+    }
+
+    private int detailToggleX(Font font, Component label) {
+        return getX() + width - font.width(label) - 6;
+    }
+
+    private boolean isOverDetailToggle(double mouseX, double mouseY, Font font, Component label) {
+        int x = detailToggleX(font, label);
+        return mouseX >= x - 2 && mouseX < getX() + width - 2
+                && mouseY >= detailTop() && mouseY < detailTop() + 14;
+    }
+
+    private int deleteButtonX() {
+        return getX() + width - DELETE_WIDTH - 3;
+    }
+
+    private boolean isOverDelete(int index, double mouseX, double mouseY) {
+        if (index < 0 || index >= entries.size()) return false;
+        int rowY = getY() + 14 + (index - scrollOffset) * LINE_HEIGHT;
+        return mouseX >= deleteButtonX() && mouseX < getX() + width - 2
+                && mouseY >= rowY - 1 && mouseY < rowY + LINE_HEIGHT - 1;
     }
 
     private int selectionLow() {
@@ -204,6 +253,7 @@ public class LogPanel extends AbstractWidget {
     private void invalidateDetailCache() {
         cachedDetailSegs = List.of();
         unwrappedDetailLines = List.of();
+        detailCacheValid = false;
         detailAnchorLine = -1;
         detailAnchorChar = -1;
         detailEndLine = -1;
@@ -275,7 +325,14 @@ public class LogPanel extends AbstractWidget {
 
         int listH = listHeight();
         graphics.fill(getX(), getY(), getX() + width, getY() + listH, 0x40000000);
-        graphics.drawString(font, text("log.title"), getX() + 4, getY() + 2, 0xAAAAAA, false);
+        Component clearText = text("log.clear");
+        int clearX = clearButtonX(font, clearText);
+        boolean clearHovered = isOverClear(mouseX, mouseY, font, clearText);
+        String titleText = string("log.title");
+        graphics.drawString(font, font.plainSubstrByWidth(titleText, Math.max(8, clearX - getX() - 8)),
+                getX() + 4, getY() + 2, 0xAAAAAA, false);
+        graphics.drawString(font, clearText, clearX, getY() + 2,
+                entries.isEmpty() ? 0x666666 : (clearHovered ? 0xFFFFFF : 0xFFAAAA), false);
 
         int contentY = getY() + 14;
         int contentH = listH - 16;
@@ -287,14 +344,18 @@ public class LogPanel extends AbstractWidget {
             int startIdx = Math.max(0, Math.min(scrollOffset, Math.max(0, entries.size() - maxVisible)));
             scrollOffset = startIdx;
             int endIdx = Math.min(entries.size(), startIdx + maxVisible);
+            int hoveredRow = rowIndexAt(mouseY);
             for (int i = startIdx; i < endIdx; i++) {
                 LogDisplayEntry entry = entries.get(i);
                 int drawY = contentY + (i - startIdx) * LINE_HEIGHT;
                 if (isSelected(i)) {
                     graphics.fill(getX() + 1, drawY - 1, getX() + width - 1, drawY + LINE_HEIGHT - 1, 0x553388FF);
                 }
-                String line = font.plainSubstrByWidth(entry.text, width - 10);
+                String line = font.plainSubstrByWidth(entry.text, Math.max(8, width - DELETE_WIDTH - 12));
                 graphics.drawString(font, line, getX() + 4, drawY, entry.color, false);
+                boolean deleteHovered = i == hoveredRow && isOverDelete(i, mouseX, mouseY);
+                graphics.drawCenteredString(font, text("log.delete"), deleteButtonX() + DELETE_WIDTH / 2,
+                        drawY, deleteHovered ? 0xFFFFFFFF : 0x88FFAAAA);
             }
         }
 
@@ -305,10 +366,14 @@ public class LogPanel extends AbstractWidget {
         String title = low < 0 ? string("log.raw")
                 : (low == high ? string("log.raw")
                 : string("log.selection", low + 1, high + 1, high - low + 1));
-        graphics.drawString(font, title, getX() + 4, dTop + 2, 0x88CCFF, false);
+        Component toggleText = text(detailExpanded ? "log.collapse" : "log.expand");
+        int toggleX = detailToggleX(font, toggleText);
+        boolean toggleHovered = isOverDetailToggle(mouseX, mouseY, font, toggleText);
+        graphics.drawString(font, font.plainSubstrByWidth(title, Math.max(8, toggleX - getX() - 8)),
+                getX() + 4, dTop + 2, 0x88CCFF, false);
+        graphics.drawString(font, toggleText, toggleX, dTop + 2,
+                toggleHovered ? 0xFFFFFF : 0xAAAAFF, false);
 
-        DetailBuild build = buildDetailLinesBoth();
-        List<DetailSeg> segs = build.segs();
         // If the underlying list selection changed, the cached detail is stale;
         // any detail selection indices no longer map correctly, so drop it.
         int curListLow = selectionLow();
@@ -316,6 +381,7 @@ public class LogPanel extends AbstractWidget {
         if (curListLow != lastDetailListLow || curListHigh != lastDetailListHigh) {
             lastDetailListLow = curListLow;
             lastDetailListHigh = curListHigh;
+            detailCacheValid = false;
             if (!draggingDetailSelect) {
                 detailAnchorLine = -1;
                 detailAnchorChar = -1;
@@ -324,8 +390,13 @@ public class LogPanel extends AbstractWidget {
                 detailSelectActive = false;
             }
         }
-        cachedDetailSegs = segs;
-        unwrappedDetailLines = build.unwrapped();
+        if (!detailCacheValid) {
+            DetailBuild build = buildDetailLinesBoth();
+            cachedDetailSegs = build.segs();
+            unwrappedDetailLines = build.unwrapped();
+            detailCacheValid = true;
+        }
+        List<DetailSeg> segs = cachedDetailSegs;
         int dContentY = dTop + 14;
         int dContentH = getY() + height - dContentY - 2;
         int maxDetail = Math.max(1, dContentH / LINE_HEIGHT);
@@ -337,19 +408,26 @@ public class LogPanel extends AbstractWidget {
         for (int i = detailScroll; i < end; i++) {
             DetailSeg seg = segs.get(i);
             int drawY = dContentY + (i - detailScroll) * LINE_HEIGHT;
-            // Visible (pixel-clipped) text actually drawn.
-            String visible = font.plainSubstrByWidth(seg.text(), width - 10);
+            String visible = seg.text();
             renderSegHighlight(graphics, font, seg, visible, textX, drawY);
             graphics.drawString(font, visible, textX, drawY, 0xDDDDDD, false);
         }
         if (System.currentTimeMillis() < copyFlashUntilMs) {
-            graphics.drawString(font, text("common.copied"), getX() + width - 120, dTop + 2, 0x55FF55, false);
+            int copiedX = Math.max(getX() + 4, toggleX - 66);
+            graphics.drawString(font, text("common.copied"), copiedX, dTop + 2, 0x55FF55, false);
         }
-        if (mouseX >= getX() && mouseX < getX() + width && mouseY >= getY() && mouseY < getY() + 14) {
+        if (clearHovered) {
+            graphics.renderTooltip(font, text("log.clear.tip"), mouseX, mouseY);
+        } else if (mouseX >= getX() && mouseX < getX() + width && mouseY >= getY() && mouseY < getY() + 14) {
             graphics.renderTooltip(font, text("log.title.tip"), mouseX, mouseY);
         } else if (mouseX >= getX() && mouseX < getX() + width
                 && mouseY >= dTop && mouseY < dTop + 14) {
-            graphics.renderTooltip(font, text("log.raw.tip"), mouseX, mouseY);
+            graphics.renderTooltip(font, text(toggleHovered ? "log.expand.tip" : "log.raw.tip"), mouseX, mouseY);
+        } else {
+            int hovered = rowIndexAt(mouseY);
+            if (hovered >= 0 && isOverDelete(hovered, mouseX, mouseY)) {
+                graphics.renderTooltip(font, text("log.delete.tip"), mouseX, mouseY);
+            }
         }
     }
 
@@ -429,28 +507,58 @@ public class LogPanel extends AbstractWidget {
     private void addLineSeg(List<DetailSeg> segs, List<String> unwrapped, String line) {
         int li = unwrapped.size();
         unwrapped.add(line);
-        segs.add(new DetailSeg(line, li, 0, line.length()));
+        addWrappedSegs(segs, line, li);
     }
 
     private void addBodySegs(List<DetailSeg> segs, List<String> unwrapped, String text) {
         String[] rows = text.replace("\r", "").split("\n", -1);
         for (String row : rows) {
-            int li = unwrapped.size();
-            unwrapped.add(row);
-            if (row.length() <= 180) {
-                segs.add(new DetailSeg(row, li, 0, row.length()));
-            } else {
-                for (int s = 0; s < row.length(); s += 180) {
-                    int e = Math.min(row.length(), s + 180);
-                    segs.add(new DetailSeg(row.substring(s, e), li, s, e));
-                }
-            }
+            addLineSeg(segs, unwrapped, row);
+        }
+    }
+
+    private void addWrappedSegs(List<DetailSeg> segs, String line, int logicalLine) {
+        if (line.isEmpty()) {
+            segs.add(new DetailSeg("", logicalLine, 0, 0));
+            return;
+        }
+        Font font = Minecraft.getInstance().font;
+        int maxWidth = Math.max(8, width - 10);
+        int start = 0;
+        while (start < line.length()) {
+            String remaining = line.substring(start);
+            String visible = font.plainSubstrByWidth(remaining, maxWidth);
+            int length = Math.max(1, visible.length());
+            int end = Math.min(line.length(), start + length);
+            segs.add(new DetailSeg(line.substring(start, end), logicalLine, start, end));
+            start = end;
         }
     }
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
         if (!visible || !isMouseOver(mouseX, mouseY)) return false;
+
+        Font font = Minecraft.getInstance().font;
+        if (button == 0 && isOverClear(mouseX, mouseY, font, text("log.clear"))) {
+            clear();
+            return true;
+        }
+
+        Component toggleText = text(detailExpanded ? "log.collapse" : "log.expand");
+        if (button == 0 && isOverDetailToggle(mouseX, mouseY, font, toggleText)) {
+            detailExpanded = !detailExpanded;
+            autoScrollClamp();
+            detailScroll = Math.max(0, detailScroll);
+            invalidateDetailCache();
+            return true;
+        }
+
+        int deleteIndex = rowIndexAt(mouseY);
+        if (button == 0 && isOverDelete(deleteIndex, mouseX, mouseY)) {
+            deleteEntry(deleteIndex);
+            return true;
+        }
 
         int listH = listHeight();
         boolean inDetailArea = mouseY >= detailTop() + 14 && mouseY < getY() + height;
@@ -613,6 +721,38 @@ public class LogPanel extends AbstractWidget {
         } catch (Exception ignored) {}
     }
 
+    private void deleteEntry(int index) {
+        if (index < 0 || index >= entries.size()) return;
+        int low = selectionLow();
+        int high = selectionHigh();
+        entries.remove(index);
+        if (low >= 0) {
+            if (index < low) {
+                low--;
+                high--;
+            } else if (index <= high) {
+                high--;
+            }
+            if (low < 0 || high < low || entries.isEmpty()) {
+                selectionAnchor = -1;
+                selectionEnd = -1;
+            } else {
+                selectionAnchor = Math.min(low, entries.size() - 1);
+                selectionEnd = Math.min(high, entries.size() - 1);
+            }
+        }
+        detailScroll = 0;
+        draggingSelect = false;
+        draggingDetailSelect = false;
+        invalidateDetailCache();
+        autoScrollClamp();
+    }
+
+    private void autoScrollClamp() {
+        int maxVisible = Math.max(1, (listHeight() - 16) / LINE_HEIGHT);
+        scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, entries.size() - maxVisible)));
+    }
+
     private void copyDetailSelectionToClipboard() {
         if (detailSelectionEmpty() || unwrappedDetailLines.isEmpty()) return;
         int[] start = detailSelStart();
@@ -660,10 +800,10 @@ public class LogPanel extends AbstractWidget {
         int listH = listHeight();
         if (mouseY < getY() + listH) {
             int maxVisible = Math.max(1, (listH - 16) / LINE_HEIGHT);
-            scrollOffset -= (int) delta * 3;
+            scrollOffset -= (int) Math.signum(delta) * 3;
             scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, entries.size() - maxVisible)));
         } else {
-            detailScroll -= (int) delta * 3;
+            detailScroll -= (int) Math.signum(delta) * 3;
             detailScroll = Math.max(0, detailScroll);
         }
         return true;
