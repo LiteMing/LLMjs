@@ -22,3 +22,23 @@ stable. New installations store credentials in `llmcore.secret`; existing
 
 The Gradle `check` tasks enforce artifact ownership and reject adapter-only
 KubeJS dependencies in `llmcore`.
+
+## Console permissions
+
+Console access is split into viewer and administrator roles. The existing
+`allow_all_players` and `require_op_level` settings grant viewer access, which
+only exposes the Log tab and live/recent traffic. Provider metadata, URLs,
+masked keys, routing, setup, and test operations are not sent to viewers.
+Logs include complete LLM request and response content, so viewer access should
+only be granted to trusted players.
+
+Administrator access is granted to OP level 4, the integrated-server owner, or
+UUIDs listed in `admin_uuid_whitelist`. Administrators can use every Console tab
+and the `status`, `test`, `reload`, and `setkey` commands. The server validates
+the administrator role for every management packet; client-side tab state is
+only a usability measure. UUID whitelisting assumes authenticated online-mode
+identities and must not be treated as secure on an offline-mode server.
+
+OP level 4, the integrated-server owner, and the dedicated-server console can
+change the administrator list with `/llm whitelist <player> <true|false>`.
+Whitelisted administrators cannot delegate this permission to other players.

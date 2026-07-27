@@ -1,13 +1,16 @@
 package vibe.liteming.llmjs.command;
 
 import vibe.liteming.llmjs.config.ProviderLoader;
+import vibe.liteming.llmjs.config.LLMConfig;
 import vibe.liteming.llmjs.log.LLMLogger;
 import vibe.liteming.llmjs.network.LLMNetwork;
 import vibe.liteming.llmjs.network.PermissionCheck;
 import vibe.liteming.llmjs.network.packet.S2CLogHistoryPacket;
 import vibe.liteming.llmjs.network.packet.S2CStatusResponsePacket;
 import vibe.liteming.llmjs.provider.ProviderManager;
+import com.mojang.authlib.GameProfile;
 import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.arguments.BoolArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.suggestion.Suggestions;
@@ -15,11 +18,13 @@ import com.mojang.brigadier.suggestion.SuggestionsBuilder;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
+import net.minecraft.commands.arguments.GameProfileArgument;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.network.PacketDistributor;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
@@ -30,23 +35,34 @@ public class LLMCommand {
                 .then(Commands.literal("console")
                         .executes(ctx -> openConsole(ctx.getSource())))
                 .then(Commands.literal("status")
+                        .requires(PermissionCheck::canAdminister)
                         .executes(ctx -> showStatus(ctx.getSource())))
                 .then(Commands.literal("test")
+                        .requires(PermissionCheck::canAdminister)
                         .then(Commands.argument("provider", StringArgumentType.string())
                                 .suggests(LLMCommand::suggestProvidersWithStar)
                                 .executes(ctx -> testProvider(ctx.getSource(),
                                         StringArgumentType.getString(ctx, "provider")))))
                 .then(Commands.literal("reload")
-                        .requires(src -> src.hasPermission(2))
+                        .requires(PermissionCheck::canAdminister)
                         .executes(ctx -> reloadConfig(ctx.getSource())))
                 .then(Commands.literal("setkey")
-                        .requires(src -> src.hasPermission(2))
+                        .requires(PermissionCheck::canAdminister)
                         .then(Commands.argument("provider", StringArgumentType.string())
                                 .suggests(LLMCommand::suggestProviders)
                                 .then(Commands.argument("key", StringArgumentType.greedyString())
                                         .executes(ctx -> setKey(ctx.getSource(),
                                                 StringArgumentType.getString(ctx, "provider"),
                                                 StringArgumentType.getString(ctx, "key"))))))
+                .then(Commands.literal("whitelist")
+                        .requires(PermissionCheck::canManageAdministrators)
+                        .executes(ctx -> showWhitelistUsage(ctx.getSource()))
+                        .then(Commands.argument("player", GameProfileArgument.gameProfile())
+                                .then(Commands.argument("enabled", BoolArgumentType.bool())
+                                        .executes(ctx -> setWhitelist(
+                                                ctx.getSource(),
+                                                GameProfileArgument.getGameProfiles(ctx, "player"),
+                                                BoolArgumentType.getBool(ctx, "enabled"))))))
         );
     }
 
@@ -60,7 +76,7 @@ public class LLMCommand {
             source.sendFailure(Component.literal("No permission to use LLM features"));
             return 0;
         }
-        String statusJson = ProviderManager.INSTANCE.getStatusJson().toString();
+        String statusJson = PermissionCheck.statusFor(player).toString();
         LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                 new S2CStatusResponsePacket(statusJson, true));
         // Dump full recent buffer so logs received while console was closed still appear
@@ -124,6 +140,38 @@ public class LLMCommand {
             source.sendFailure(Component.literal("[LLM Core] Failed to write key. Check server logs."));
             return 0;
         }
+    }
+
+    private static int showWhitelistUsage(CommandSourceStack source) {
+        source.sendSuccess(() -> Component.translatable("command.llm.whitelist.usage"), false);
+        source.sendSuccess(() -> Component.translatable("command.llm.whitelist.warning"), false);
+        return 1;
+    }
+
+    private static int setWhitelist(CommandSourceStack source, Collection<GameProfile> profiles, boolean enabled) {
+        int processed = 0;
+        for (GameProfile profile : profiles) {
+            if (profile.getId() == null) {
+                source.sendFailure(Component.translatable(
+                        "command.llm.whitelist.missing_uuid", profile.getName()));
+                continue;
+            }
+
+            boolean changed = LLMConfig.setAdministrator(profile.getId(), enabled);
+            String key = changed
+                    ? (enabled ? "command.llm.whitelist.granted" : "command.llm.whitelist.revoked")
+                    : (enabled ? "command.llm.whitelist.already_granted" : "command.llm.whitelist.already_revoked");
+            source.sendSuccess(() -> Component.translatable(
+                    key, profile.getName(), profile.getId().toString()), false);
+
+            ServerPlayer online = source.getServer().getPlayerList().getPlayer(profile.getId());
+            if (online != null) {
+                LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> online),
+                        new S2CStatusResponsePacket(PermissionCheck.statusFor(online).toString(), false));
+            }
+            processed++;
+        }
+        return processed;
     }
 
     private static CompletableFuture<Suggestions> suggestProviders(

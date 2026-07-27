@@ -6,6 +6,7 @@ import net.minecraftforge.network.NetworkEvent;
 import net.minecraftforge.network.PacketDistributor;
 import vibe.liteming.llmjs.config.ProviderLoader;
 import vibe.liteming.llmjs.network.LLMNetwork;
+import vibe.liteming.llmjs.network.PermissionCheck;
 import vibe.liteming.llmjs.provider.ProviderManager;
 
 import java.util.function.Supplier;
@@ -29,10 +30,10 @@ public class C2SDeleteProviderPacket {
     public static void handle(C2SDeleteProviderPacket msg, Supplier<NetworkEvent.Context> ctx) {
         ctx.get().enqueueWork(() -> {
             ServerPlayer player = ctx.get().getSender();
-            if (player == null || !player.hasPermissions(2)) return;
+            if (player == null || !PermissionCheck.canAdminister(player)) return;
             if (ProviderLoader.deleteProvider(msg.name)) {
                 ProviderManager.INSTANCE.reload();
-                String statusJson = ProviderManager.INSTANCE.getStatusJson().toString();
+                String statusJson = PermissionCheck.statusFor(player).toString();
                 LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                         new S2CStatusResponsePacket(statusJson, false));
             }

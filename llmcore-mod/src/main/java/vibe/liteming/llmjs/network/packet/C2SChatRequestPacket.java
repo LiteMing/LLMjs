@@ -41,7 +41,7 @@ public class C2SChatRequestPacket {
         ctx.get().enqueueWork(() -> {
             ServerPlayer player = ctx.get().getSender();
             if (player == null) return;
-            if (!PermissionCheck.canUse(player)) {
+            if (!PermissionCheck.canAdminister(player)) {
                 LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                         new S2CChatResponsePacket(msg.requestId, false, "No permission", null));
                 return;

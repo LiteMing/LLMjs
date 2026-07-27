@@ -163,5 +163,13 @@
   "gui.llmjs.routing.effective_unavailable": "保存后的生效值：不可用",
   "gui.llmjs.routing.effective": "服务端生效值：提供商=%s 温度=%s 输出=%s 超时=%s 输入=%s 预留=%s",
   "gui.llmjs.routing.effective.tip": "只读显示服务端当前解析结果，已合并默认值、用途覆盖、提供商限制与上下文窗口限制。",
-  "gui.llmjs.routing.parameter_help": "留空表示继承；输入预算不超过提供商上下文窗口减去输出预留。"
+  "gui.llmjs.routing.parameter_help": "留空表示继承；输入预算不超过提供商上下文窗口减去输出预留。",
+
+  "command.llm.whitelist.usage": "用法：/llm whitelist <玩家> <true|false>。true 授予 Console 管理权限，false 撤销权限。",
+  "command.llm.whitelist.warning": "只有 OP4、单人服服主或服务端控制台可以修改此名单；UUID 白名单依赖正版在线模式身份认证。",
+  "command.llm.whitelist.granted": "已将 %1$s（%2$s）加入 Console 管理员白名单。",
+  "command.llm.whitelist.revoked": "已将 %1$s（%2$s）移出 Console 管理员白名单。",
+  "command.llm.whitelist.already_granted": "%1$s（%2$s）已经是 Console 管理员，未做修改。",
+  "command.llm.whitelist.already_revoked": "%1$s（%2$s）不在 Console 管理员白名单中，未做修改。",
+  "command.llm.whitelist.missing_uuid": "无法修改 %s：未解析到 UUID。"
 }

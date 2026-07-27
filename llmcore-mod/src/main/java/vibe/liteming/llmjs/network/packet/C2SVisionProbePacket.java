@@ -1,6 +1,7 @@
 package vibe.liteming.llmjs.network.packet;
 
 import vibe.liteming.llmjs.network.LLMNetwork;
+import vibe.liteming.llmjs.network.PermissionCheck;
 import vibe.liteming.llmjs.provider.ProviderManager;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
@@ -11,7 +12,7 @@ import java.util.function.Supplier;
 
 /**
  * Client -> Server: ask the server to send a tiny 1x1 PNG to a specific provider
- * and report whether that provider's model accepts image input. OP level 2+ only.
+ * and report whether that provider's model accepts image input. Console administrators only.
  * Reply is a {@link S2CVisionProbeResultPacket} addressed to the requesting player.
  */
 public class C2SVisionProbePacket {
@@ -32,7 +33,7 @@ public class C2SVisionProbePacket {
     public static void handle(C2SVisionProbePacket msg, Supplier<NetworkEvent.Context> ctx) {
         ctx.get().enqueueWork(() -> {
             ServerPlayer player = ctx.get().getSender();
-            if (player == null || !player.hasPermissions(2)) return;
+            if (player == null || !PermissionCheck.canAdminister(player)) return;
             ProviderManager.INSTANCE.testVision(msg.providerName).thenAccept(result -> {
                 LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                         new S2CVisionProbeResultPacket(msg.providerName,

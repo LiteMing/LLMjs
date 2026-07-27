@@ -2,7 +2,6 @@ package vibe.liteming.llmjs.network.packet;
 
 import vibe.liteming.llmjs.network.LLMNetwork;
 import vibe.liteming.llmjs.network.PermissionCheck;
-import vibe.liteming.llmjs.provider.ProviderManager;
 import vibe.liteming.llmjs.log.LLMLogger;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
@@ -36,7 +35,7 @@ public class C2SStatusRequestPacket {
         ctx.get().enqueueWork(() -> {
             ServerPlayer player = ctx.get().getSender();
             if (player == null || !PermissionCheck.canUse(player)) return;
-            String statusJson = ProviderManager.INSTANCE.getStatusJson().toString();
+            String statusJson = PermissionCheck.statusFor(player).toString();
             LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                     new S2CStatusResponsePacket(statusJson, msg.openConsole));
             if (msg.openConsole) {

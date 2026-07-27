@@ -3,6 +3,7 @@ package vibe.liteming.llmjs.network.packet;
 import vibe.liteming.llmcore.PriorityRoutingConfig;
 import vibe.liteming.llmcore.RoutingConfigStore;
 import vibe.liteming.llmjs.network.LLMNetwork;
+import vibe.liteming.llmjs.network.PermissionCheck;
 import vibe.liteming.llmjs.provider.ProviderManager;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.network.chat.Component;
@@ -43,7 +44,7 @@ public class C2SUpdateRoutingPacket {
     public static void handle(C2SUpdateRoutingPacket msg, Supplier<NetworkEvent.Context> ctx) {
         ctx.get().enqueueWork(() -> {
             ServerPlayer player = ctx.get().getSender();
-            if (player == null || !player.hasPermissions(2)) return;
+            if (player == null || !PermissionCheck.canAdminister(player)) return;
             PriorityRoutingConfig parsed;
             try {
                 parsed = RoutingConfigStore.parse(msg.routingJson);
@@ -58,9 +59,9 @@ public class C2SUpdateRoutingPacket {
             }
             // Broadcast refreshed status to every player who can see the console, so
             // all open Routing tabs reflect the new table.
-            String statusJson = ProviderManager.INSTANCE.getStatusJson().toString();
             for (var p : player.getServer().getPlayerList().getPlayers()) {
-                if (vibe.liteming.llmjs.network.PermissionCheck.canUse(p)) {
+                if (PermissionCheck.canUse(p)) {
+                    String statusJson = PermissionCheck.statusFor(p).toString();
                     LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> p),
                             new S2CStatusResponsePacket(statusJson, false));
                 }

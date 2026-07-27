@@ -163,5 +163,13 @@
   "gui.llmjs.routing.effective_unavailable": "Effective after save: unavailable",
   "gui.llmjs.routing.effective": "Effective (server): provider=%s T=%s out=%s sec=%s in=%s reserve=%s",
   "gui.llmjs.routing.effective.tip": "Read-only values currently resolved by the server after default, purpose, provider, and context-window limits are combined.",
-  "gui.llmjs.routing.parameter_help": "Blank = inherit. Input budget is capped by provider context minus output reserve."
+  "gui.llmjs.routing.parameter_help": "Blank = inherit. Input budget is capped by provider context minus output reserve.",
+
+  "command.llm.whitelist.usage": "Usage: /llm whitelist <player> <true|false>. true grants Console administration; false revokes it.",
+  "command.llm.whitelist.warning": "Only OP level 4, the integrated-server owner, or the server console can change this list. UUID whitelisting requires authenticated online-mode identities.",
+  "command.llm.whitelist.granted": "Added %1$s (%2$s) to the Console administrator whitelist.",
+  "command.llm.whitelist.revoked": "Removed %1$s (%2$s) from the Console administrator whitelist.",
+  "command.llm.whitelist.already_granted": "%1$s (%2$s) is already a Console administrator; no change was made.",
+  "command.llm.whitelist.already_revoked": "%1$s (%2$s) is not a whitelisted Console administrator; no change was made.",
+  "command.llm.whitelist.missing_uuid": "Cannot update %s because no UUID was resolved."
 }

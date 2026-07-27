@@ -1,5 +1,6 @@
 package vibe.liteming.llmjs.client.screen;
 
+import com.google.gson.JsonParser;
 import vibe.liteming.llmjs.client.ClientEventHandler;
 import vibe.liteming.llmjs.client.widget.LogPanel;
 import vibe.liteming.llmjs.client.widget.ProviderListPanel;
@@ -35,6 +36,7 @@ public class LLMConsoleScreen extends Screen {
     private final String initialStatusJson;
     private final @Nullable String initialTestHandoff;
     private @Nullable Screen returnScreen;
+    private boolean canAdminister;
     private Button logTab;
     private Button providersTab;
     private Button routingTab;
@@ -55,6 +57,7 @@ public class LLMConsoleScreen extends Screen {
         this.initialStatusJson = statusJson;
         this.initialTestHandoff = initialTestHandoff;
         this.returnScreen = returnScreen;
+        this.canAdminister = readAdminPermission(statusJson);
     }
 
     @Override
@@ -100,7 +103,8 @@ public class LLMConsoleScreen extends Screen {
         for (var w : setupPanel.getWidgets()) addRenderableWidget(w);
 
         testPanel.updateStatus(initialStatusJson);
-        if (initialTestHandoff != null && !initialTestHandoff.isBlank()) {
+        applyAccessState();
+        if (canAdminister && initialTestHandoff != null && !initialTestHandoff.isBlank()) {
             testPanel.loadHandoff(initialTestHandoff);
             switchTab(Tab.TEST);
         } else {
@@ -142,6 +146,7 @@ public class LLMConsoleScreen extends Screen {
     }
 
     private void switchTab(Tab tab) {
+        if (!canAdminister && tab != Tab.LOG) tab = Tab.LOG;
         activeTab = tab;
         logPanel.visible = (tab == Tab.LOG);
         providerPanel.visible = (tab == Tab.PROVIDERS);
@@ -258,12 +263,13 @@ public class LLMConsoleScreen extends Screen {
     }
 
     public void loadTestHandoff(String handoffJson) {
-        if (testPanel == null) return;
+        if (!canAdminister || testPanel == null) return;
         testPanel.loadHandoff(handoffJson);
         switchTab(Tab.TEST);
     }
 
     public void onStatusUpdate(String statusJson) {
+        canAdminister = readAdminPermission(statusJson);
         if (providerPanel != null) {
             providerPanel.updateStatus(statusJson);
             if (testPanel != null) {
@@ -273,6 +279,7 @@ public class LLMConsoleScreen extends Screen {
         if (routingPanel != null) {
             routingPanel.updateStatus(statusJson);
         }
+        applyAccessState();
     }
 
     public void onLogEntry(String logEntryJson) {
@@ -286,11 +293,30 @@ public class LLMConsoleScreen extends Screen {
     }
 
     public void openSetupFor(String name, String format, String url, String model, @Nullable String maskedKey) {
+        if (!canAdminister) return;
         switchTab(Tab.SETUP);
         if (setupPanel != null) setupPanel.prefill(name, format, url, model, maskedKey);
     }
 
     public void onVisionProbeResult(String providerName, boolean supported, String error, long latencyMs) {
         if (testPanel != null) testPanel.onVisionProbeResult(providerName, supported, error, latencyMs);
+    }
+
+    private void applyAccessState() {
+        if (providersTab == null) return;
+        providersTab.active = canAdminister;
+        routingTab.active = canAdminister;
+        testTab.active = canAdminister;
+        setupTab.active = canAdminister;
+        if (!canAdminister && logPanel != null) switchTab(Tab.LOG);
+    }
+
+    private static boolean readAdminPermission(String statusJson) {
+        try {
+            var root = JsonParser.parseString(statusJson).getAsJsonObject();
+            return root.has("canAdminister") && root.get("canAdminister").getAsBoolean();
+        } catch (Exception ignored) {
+            return false;
+        }
     }
 }

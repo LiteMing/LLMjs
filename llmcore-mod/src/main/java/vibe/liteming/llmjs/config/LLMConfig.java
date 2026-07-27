@@ -4,6 +4,10 @@ import net.minecraftforge.common.ForgeConfigSpec;
 import net.minecraftforge.fml.ModLoadingContext;
 import net.minecraftforge.fml.config.ModConfig;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
 public class LLMConfig {
     public static final ForgeConfigSpec.Builder BUILDER = new ForgeConfigSpec.Builder();
     public static final ForgeConfigSpec SPEC;
@@ -17,6 +21,7 @@ public class LLMConfig {
     public static final ForgeConfigSpec.IntValue LOG_BUFFER_SIZE;
     public static final ForgeConfigSpec.IntValue REQUIRE_OP_LEVEL;
     public static final ForgeConfigSpec.BooleanValue ALLOW_ALL_PLAYERS;
+    public static final ForgeConfigSpec.ConfigValue<List<? extends String>> ADMIN_UUID_WHITELIST;
 
     static {
         BUILDER.push("general");
@@ -30,8 +35,15 @@ public class LLMConfig {
         BUILDER.pop();
 
         BUILDER.push("permission");
-        REQUIRE_OP_LEVEL = BUILDER.comment("Minimum OP level required to use LLM features").defineInRange("require_op_level", 2, 0, 4);
-        ALLOW_ALL_PLAYERS = BUILDER.comment("Server-only: grant LLM request permission to ALL players.\nWARNING: may cause excessive LLM requests from unauthorized players.").define("allow_all_players", false);
+        REQUIRE_OP_LEVEL = BUILDER.comment("Minimum OP level required to view Console logs").defineInRange("require_op_level", 2, 0, 4);
+        ALLOW_ALL_PLAYERS = BUILDER.comment(
+                "Server-only: allow every player to view Console logs.",
+                "WARNING: logs contain complete LLM request and response content.")
+                .define("allow_all_players", false);
+        ADMIN_UUID_WHITELIST = BUILDER.comment(
+                "Player UUIDs allowed to manage providers, routing, and Console tests without OP level 4.",
+                "Use authenticated online-mode UUIDs. OP level 2 only grants log viewing by default.")
+                .defineListAllowEmpty("admin_uuid_whitelist", List.of(), LLMConfig::isUuid);
         BUILDER.pop();
 
         SPEC = BUILDER.build();
@@ -40,5 +52,33 @@ public class LLMConfig {
     public static void register() {
         // Keep the established filename while runtime ownership moves to llmcore.
         ModLoadingContext.get().registerConfig(ModConfig.Type.SERVER, SPEC, "llmjs-server.toml");
+    }
+
+    public static boolean setAdministrator(UUID playerId, boolean enabled) {
+        if (playerId == null) return false;
+        String expected = playerId.toString();
+        List<String> next = new ArrayList<>(ADMIN_UUID_WHITELIST.get());
+        boolean present = next.stream()
+                .anyMatch(value -> value != null && expected.equalsIgnoreCase(value.strip()));
+        if (enabled == present) return false;
+
+        if (enabled) {
+            next.add(expected);
+        } else {
+            next.removeIf(value -> value != null && expected.equalsIgnoreCase(value.strip()));
+        }
+        ADMIN_UUID_WHITELIST.set(List.copyOf(next));
+        SPEC.save();
+        return true;
+    }
+
+    private static boolean isUuid(Object value) {
+        if (!(value instanceof String text)) return false;
+        try {
+            UUID.fromString(text.strip());
+            return true;
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        }
     }
 }
