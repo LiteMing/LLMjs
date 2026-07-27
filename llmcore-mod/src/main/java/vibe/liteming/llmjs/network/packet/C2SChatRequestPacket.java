@@ -64,7 +64,7 @@ public class C2SChatRequestPacket {
                     return;
                 }
             }
-            ProviderManager.INSTANCE.executeConsoleTest(request).handle((resultJson, throwable) -> {
+            ProviderManager.INSTANCE.executeConsoleTest(request, player.getUUID()).handle((resultJson, throwable) -> {
                         String payload = throwable == null ? resultJson : ConsoleTestCodec.error(
                                 msg.requestId.toString(), "Test execution failed: " + rootMessage(throwable));
                         LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),

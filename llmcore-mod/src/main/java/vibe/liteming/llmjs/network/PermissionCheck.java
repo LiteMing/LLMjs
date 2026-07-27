@@ -5,6 +5,7 @@ import net.minecraft.commands.CommandSourceStack;
 import vibe.liteming.llmjs.config.LLMConfig;
 import vibe.liteming.llmjs.provider.ProviderManager;
 import vibe.liteming.llmjs.security.ConsoleTestGrantService;
+import vibe.liteming.llmjs.security.PersonalBudgetService;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.util.List;
@@ -56,8 +57,10 @@ public class PermissionCheck {
         Supplier<JsonObject> restrictedStatus = () -> grant
                 .map(value -> ProviderManager.INSTANCE.getTestStatusJson(value.request().purpose()))
                 .orElseGet(JsonObject::new);
-        return createStatusPayload(canView, canTest, canAdminister,
+        JsonObject result = createStatusPayload(canView, canTest, canAdminister,
                 ProviderManager.INSTANCE::getStatusJson, restrictedStatus);
+        result.add("personalBudget", PersonalBudgetService.INSTANCE.statusJson(player.getUUID()));
+        return result;
     }
 
     static JsonObject createStatusPayload(boolean canView, boolean canTest, boolean canAdminister,

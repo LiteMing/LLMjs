@@ -34,7 +34,7 @@ public class C2SVisionProbePacket {
         ctx.get().enqueueWork(() -> {
             ServerPlayer player = ctx.get().getSender();
             if (player == null || !PermissionCheck.canAdminister(player)) return;
-            ProviderManager.INSTANCE.testVision(msg.providerName).thenAccept(result -> {
+            ProviderManager.INSTANCE.testVision(msg.providerName, player.getUUID()).thenAccept(result -> {
                 LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                         new S2CVisionProbeResultPacket(msg.providerName,
                                 result.supported(), result.error() == null ? "" : result.error(),

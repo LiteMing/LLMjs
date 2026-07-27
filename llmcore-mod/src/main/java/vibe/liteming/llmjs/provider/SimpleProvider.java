@@ -79,4 +79,9 @@ public class SimpleProvider implements Provider {
         if (key == null || key.length() < 4) return "***";
         return key.substring(0, 4) + "***";
     }
+
+    @Override
+    public @Nullable Integer getMaxTokens() {
+        return defaultMaxTokens;
+    }
 }

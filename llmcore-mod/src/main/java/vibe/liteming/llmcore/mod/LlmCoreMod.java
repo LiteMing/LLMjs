@@ -4,6 +4,7 @@ import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
 import net.minecraftforge.event.server.ServerStoppedEvent;
+import net.minecraft.world.level.storage.LevelResource;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.network.PacketDistributor;
@@ -12,6 +13,7 @@ import org.slf4j.LoggerFactory;
 import vibe.liteming.llmcore.PurposeMeta;
 import vibe.liteming.llmcore.PurposeRegistry;
 import vibe.liteming.llmcore.LlmConsoleTestBridge;
+import vibe.liteming.llmcore.LlmRequestAccounting;
 import vibe.liteming.llmjs.command.LLMCommand;
 import vibe.liteming.llmjs.config.GlobalConfig;
 import vibe.liteming.llmjs.config.LLMConfig;
@@ -21,6 +23,7 @@ import vibe.liteming.llmjs.network.PermissionCheck;
 import vibe.liteming.llmjs.network.packet.S2CLogPacket;
 import vibe.liteming.llmjs.provider.ProviderManager;
 import vibe.liteming.llmjs.security.ConsoleTestGrantService;
+import vibe.liteming.llmjs.security.PersonalBudgetService;
 
 /**
  * Forge entry point for the standalone llmcore mod.
@@ -64,6 +67,9 @@ public final class LlmCoreMod {
         var serverConfigDir = gameRoot.resolve("serverconfig");
         GlobalConfig.init(gameRoot);
         ProviderManager.INSTANCE.init(serverConfigDir, gameRoot);
+        PersonalBudgetService.INSTANCE.open(server.getWorldPath(LevelResource.ROOT)
+                .resolve("llmcore/personal-budget.json"));
+        LlmRequestAccounting.install(PersonalBudgetService.INSTANCE);
         ConsoleTestGrantService.INSTANCE.clear();
         LlmConsoleTestBridge.install(ConsoleTestGrantService.INSTANCE::issue);
         LLMLogger.INSTANCE.resize(LLMConfig.LOG_BUFFER_SIZE.get());
@@ -81,6 +87,8 @@ public final class LlmCoreMod {
 
     @SubscribeEvent
     public void onServerStopped(ServerStoppedEvent event) {
+        LlmRequestAccounting.clear();
+        PersonalBudgetService.INSTANCE.close();
         LlmConsoleTestBridge.clear();
         ConsoleTestGrantService.INSTANCE.clear();
     }

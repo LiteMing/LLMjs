@@ -4,6 +4,7 @@ import vibe.liteming.llmjs.config.LLMConfig;
 import vibe.liteming.llmjs.format.ApiFormat;
 import vibe.liteming.llmjs.provider.Provider;
 import vibe.liteming.llmjs.provider.ProviderManager;
+import vibe.liteming.llmcore.LlmBillingContext;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.MinecraftServer;
 import org.jetbrains.annotations.Nullable;
@@ -14,6 +15,7 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.UUID;
 
 public class LLMRequest {
     private final String prompt;
@@ -29,6 +31,8 @@ public class LLMRequest {
     private int maxLength = 0;
     private @Nullable String truncatePattern;
     private boolean consumed = false;
+    private @Nullable UUID delegatedBillingPlayer;
+    private @Nullable LlmBillingContext billingContext;
 
     public LLMRequest(String prompt) {
         this.prompt = prompt;
@@ -79,6 +83,13 @@ public class LLMRequest {
     public LLMRequest onInvalid(Consumer<String> h) { this.onInvalid = h; return this; }
     public LLMRequest maxLength(int n) { this.maxLength = n; return this; }
     public LLMRequest truncateAt(String regex) { this.truncatePattern = regex; return this; }
+
+    /** Explicitly delegates this script request and all retries to one player's budget. */
+    public LLMRequest billTo(ServerPlayer player) {
+        if (player == null) throw new IllegalArgumentException("billTo requires a player");
+        this.delegatedBillingPlayer = player.getUUID();
+        return this;
+    }
 
     // Terminal operations
     public void tell(ServerPlayer player) {
@@ -137,8 +148,17 @@ public class LLMRequest {
         }
 
         int timeout = LLMConfig.TIMEOUT.get();
+        if (billingContext == null) {
+            int logicalCalls = Math.max(1, retries + 1);
+            billingContext = delegatedBillingPlayer == null
+                    ? ProviderManager.INSTANCE.createScriptBilling(
+                            messages, chain, temperature, maxTokens, timeout, logicalCalls)
+                    : ProviderManager.INSTANCE.createPlayerBilling(delegatedBillingPlayer,
+                            messages, chain, temperature, maxTokens, timeout, logicalCalls);
+        }
 
-        ProviderManager.INSTANCE.sendWithFallback(messages, chain, temperature, maxTokens, timeout)
+        ProviderManager.INSTANCE.sendWithFallback(
+                messages, chain, temperature, maxTokens, timeout, billingContext)
                 .thenAccept(response -> {
                     if (!response.isSuccess()) {
                         handler.accept(response);

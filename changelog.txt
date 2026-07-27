@@ -1,3 +1,10 @@
+LLMjs 2.4.0 / LLM Core 1.3.0 (Unreleased)
+========================================
+ - Added five-minute, request-bound delegated Console Test access for trusted mods without granting log, provider, routing, setup, or parameter-management permissions.
+ - Added world-scoped per-player token accounting and an optional common personal budget limit; exhausted players are rejected before provider access.
+ - Added `/llm budget` status and owner-only list, limit, and reset operations.
+ - Raised the llmjs runtime dependency to llm-core 1.3.0 so billing-aware requests cannot load against an older core.
+
 LLMjs 2.3.1 / LLM Core 1.1.1
 ================================
  - Test Result supports drag selection, right-click copy, and Ctrl/Cmd+C.

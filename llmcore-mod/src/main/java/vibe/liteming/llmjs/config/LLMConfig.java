@@ -22,6 +22,7 @@ public class LLMConfig {
     public static final ForgeConfigSpec.IntValue REQUIRE_OP_LEVEL;
     public static final ForgeConfigSpec.BooleanValue ALLOW_ALL_PLAYERS;
     public static final ForgeConfigSpec.ConfigValue<List<? extends String>> ADMIN_UUID_WHITELIST;
+    public static final ForgeConfigSpec.LongValue PERSONAL_BUDGET_LIMIT;
 
     static {
         BUILDER.push("general");
@@ -45,6 +46,11 @@ public class LLMConfig {
                 "Online-mode UUIDs are authenticated. Offline-mode identities require a trusted external account system.",
                 "OP level 2 only grants log viewing by default.")
                 .defineListAllowEmpty("admin_uuid_whitelist", List.of(), LLMConfig::isUuid);
+        PERSONAL_BUDGET_LIMIT = BUILDER.comment(
+                "Maximum cumulative input + output tokens charged to each player. 0 = unlimited.",
+                "Usage is stored per world by UUID. Attempts without provider usage metadata are charged",
+                "their full conservative reservation. Offline-mode UUIDs require a trusted account system.")
+                .defineInRange("personal_budget_limit", 0L, 0L, Long.MAX_VALUE);
         BUILDER.pop();
 
         SPEC = BUILDER.build();
@@ -71,6 +77,11 @@ public class LLMConfig {
         ADMIN_UUID_WHITELIST.set(List.copyOf(next));
         SPEC.save();
         return true;
+    }
+
+    public static void setPersonalBudgetLimit(long tokens) {
+        PERSONAL_BUDGET_LIMIT.set(Math.max(0L, tokens));
+        SPEC.save();
     }
 
     private static boolean isUuid(Object value) {

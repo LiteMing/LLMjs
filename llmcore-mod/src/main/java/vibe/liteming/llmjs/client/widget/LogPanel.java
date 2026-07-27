@@ -59,6 +59,9 @@ public class LogPanel extends AbstractWidget {
             String triggerSource,
             String audience,
             String inputKind,
+            String billingPrincipal,
+            String billingPrincipalId,
+            String causalRootRequestId,
             String finishReason,
             int contentLength) {}
 
@@ -137,6 +140,9 @@ public class LogPanel extends AbstractWidget {
             String triggerSource = obj.has("triggerSource") ? obj.get("triggerSource").getAsString() : "";
             String audience = obj.has("audience") ? obj.get("audience").getAsString() : "";
             String inputKind = obj.has("inputKind") ? obj.get("inputKind").getAsString() : "";
+            String billingPrincipal = obj.has("billingPrincipal") ? obj.get("billingPrincipal").getAsString() : "";
+            String billingPrincipalId = obj.has("billingPrincipalId") ? obj.get("billingPrincipalId").getAsString() : "";
+            String causalRootRequestId = obj.has("causalRootRequestId") ? obj.get("causalRootRequestId").getAsString() : "";
             String finishReason = obj.has("finishReason") ? obj.get("finishReason").getAsString() : "";
             int contentLength = obj.has("contentLength") ? obj.get("contentLength").getAsInt() : 0;
 
@@ -152,7 +158,8 @@ public class LogPanel extends AbstractWidget {
             String text = String.format("[%s] %s%s%s%s | %s | %dms | %s", level, src, tag, actor,
                     provider, status, latency, summary);
             entries.add(new LogDisplayEntry(text, color, purpose, requestBody, responseBody, error,
-                    responder, triggerSource, audience, inputKind, finishReason, contentLength));
+                    responder, triggerSource, audience, inputKind, billingPrincipal, billingPrincipalId,
+                    causalRootRequestId, finishReason, contentLength));
             while (entries.size() > MAX_ENTRIES) {
                 entries.remove(0);
                 if (selectionAnchor >= 0) selectionAnchor = Math.max(-1, selectionAnchor - 1);
@@ -495,6 +502,9 @@ public class LogPanel extends AbstractWidget {
         if (e.triggerSource != null && !e.triggerSource.isBlank()) addLineSeg(segs, unwrapped, "trigger: " + e.triggerSource);
         if (e.audience != null && !e.audience.isBlank()) addLineSeg(segs, unwrapped, "audience: " + e.audience);
         if (e.inputKind != null && !e.inputKind.isBlank()) addLineSeg(segs, unwrapped, "inputKind: " + e.inputKind);
+        if (e.billingPrincipal != null && !e.billingPrincipal.isBlank()) addLineSeg(segs, unwrapped, "billingPrincipal: " + e.billingPrincipal);
+        if (e.billingPrincipalId != null && !e.billingPrincipalId.isBlank()) addLineSeg(segs, unwrapped, "billingPrincipalId: " + e.billingPrincipalId);
+        if (e.causalRootRequestId != null && !e.causalRootRequestId.isBlank()) addLineSeg(segs, unwrapped, "causalRootRequestId: " + e.causalRootRequestId);
         if (e.finishReason != null && !e.finishReason.isBlank()) addLineSeg(segs, unwrapped, "finishReason: " + e.finishReason);
         addLineSeg(segs, unwrapped, "contentLength: " + e.contentLength);
         if (e.error != null && !e.error.isBlank()) addLineSeg(segs, unwrapped, "error: " + e.error);
@@ -707,6 +717,9 @@ public class LogPanel extends AbstractWidget {
             if (e.triggerSource != null && !e.triggerSource.isBlank()) sb.append("trigger: ").append(e.triggerSource).append('\n');
             if (e.audience != null && !e.audience.isBlank()) sb.append("audience: ").append(e.audience).append('\n');
             if (e.inputKind != null && !e.inputKind.isBlank()) sb.append("inputKind: ").append(e.inputKind).append('\n');
+            if (e.billingPrincipal != null && !e.billingPrincipal.isBlank()) sb.append("billingPrincipal: ").append(e.billingPrincipal).append('\n');
+            if (e.billingPrincipalId != null && !e.billingPrincipalId.isBlank()) sb.append("billingPrincipalId: ").append(e.billingPrincipalId).append('\n');
+            if (e.causalRootRequestId != null && !e.causalRootRequestId.isBlank()) sb.append("causalRootRequestId: ").append(e.causalRootRequestId).append('\n');
             if (e.finishReason != null && !e.finishReason.isBlank()) sb.append("finishReason: ").append(e.finishReason).append('\n');
             sb.append("contentLength: ").append(e.contentLength).append('\n');
             if (e.error != null && !e.error.isBlank()) sb.append("error: ").append(e.error).append('\n');

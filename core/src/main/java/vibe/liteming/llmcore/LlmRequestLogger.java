@@ -30,7 +30,21 @@ public final class LlmRequestLogger {
             String responderName,
             String triggerSource,
             String audience,
-            String inputKind) {
+            String inputKind,
+            String billingPrincipal,
+            String billingPrincipalId,
+            String causalRootRequestId) {
+        /** Binary-compatible full event shape used before principal attribution was added. */
+        public Event(String source, String purpose, String requestId, String provider, String model,
+                boolean success, long latencyMs, int promptTokens, int completionTokens, String summary,
+                String requestBody, String responseBody, String error, String finishReason, int contentLength,
+                String responsePreview, String responderEntityId, String responderName, String triggerSource,
+                String audience, String inputKind) {
+            this(source, purpose, requestId, provider, model, success, latencyMs, promptTokens, completionTokens,
+                    summary, requestBody, responseBody, error, finishReason, contentLength, responsePreview,
+                    responderEntityId, responderName, triggerSource, audience, inputKind, "", "", "");
+        }
+
         public Event(String source, String purpose, String requestId, String provider, String model,
                 boolean success, long latencyMs, int promptTokens, int completionTokens, String summary,
                 String requestBody, String responseBody, String error) {
@@ -44,7 +58,7 @@ public final class LlmRequestLogger {
                 String responsePreview) {
             this(source, purpose, requestId, provider, model, success, latencyMs, promptTokens, completionTokens,
                     summary, requestBody, responseBody, error, finishReason, contentLength, responsePreview,
-                    "", "", "", "", purpose);
+                    "", "", "", "", purpose, "", "", "");
         }
     }
 
@@ -98,7 +112,10 @@ public final class LlmRequestLogger {
                 request.context() == null ? "" : request.context().responderName(),
                 request.context() == null ? "" : request.context().triggerSource(),
                 request.context() == null ? "" : request.context().audience(),
-                request.context() == null ? "" : request.context().inputKind()));
+                request.context() == null ? "" : request.context().inputKind(),
+                request.billingContext().principalKind().name(),
+                request.billingContext().principalId(),
+                request.billingContext().causalRootRequestId()));
     }
 
     private static String preview(String value) {

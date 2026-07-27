@@ -26,7 +26,7 @@ side="BOTH"
 [[dependencies.llmjs]]
 modId="llmcore"
 mandatory=true
-versionRange="[1.2.0,2.0.0)"
+versionRange="[1.3.0,2.0.0)"
 ordering="AFTER"
 side="BOTH"
 

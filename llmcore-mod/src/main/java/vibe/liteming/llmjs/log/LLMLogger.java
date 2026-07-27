@@ -41,7 +41,10 @@ public class LLMLogger {
             String responderName,
             String triggerSource,
             String audience,
-            String inputKind
+            String inputKind,
+            String billingPrincipal,
+            String billingPrincipalId,
+            String causalRootRequestId
     ) {
         public JsonObject toJson() {
             JsonObject obj = new JsonObject();
@@ -65,6 +68,9 @@ public class LLMLogger {
             if (triggerSource != null && !triggerSource.isBlank()) obj.addProperty("triggerSource", triggerSource);
             if (audience != null && !audience.isBlank()) obj.addProperty("audience", audience);
             if (inputKind != null && !inputKind.isBlank()) obj.addProperty("inputKind", inputKind);
+            if (billingPrincipal != null && !billingPrincipal.isBlank()) obj.addProperty("billingPrincipal", billingPrincipal);
+            if (billingPrincipalId != null && !billingPrincipalId.isBlank()) obj.addProperty("billingPrincipalId", billingPrincipalId);
+            if (causalRootRequestId != null && !causalRootRequestId.isBlank()) obj.addProperty("causalRootRequestId", causalRootRequestId);
             if (requestBody != null && !requestBody.isBlank()) obj.addProperty("requestBody", requestBody);
             if (responseBody != null && !responseBody.isBlank()) obj.addProperty("responseBody", responseBody);
             return obj;
@@ -99,7 +105,8 @@ public class LLMLogger {
                 event.completionTokens(), event.error(), event.purpose(), event.requestId(),
                 event.source(), event.requestBody(), event.responseBody(), event.finishReason(),
                 event.contentLength(), event.responsePreview(), event.responderEntityId(), event.responderName(),
-                event.triggerSource(), event.audience(), event.inputKind());
+                event.triggerSource(), event.audience(), event.inputKind(), event.billingPrincipal(),
+                event.billingPrincipalId(), event.causalRootRequestId());
     }
 
     public void resize(int capacity) {
@@ -148,6 +155,19 @@ public class LLMLogger {
                     String requestBody, String responseBody, String finishReason, int contentLength,
                     String responsePreview, String responderEntityId, String responderName,
                     String triggerSource, String audience, String inputKind) {
+        log(level, provider, prompt, status, latencyMs, promptTokens, completionTokens, errorMessage,
+                purpose, requestId, source, requestBody, responseBody, finishReason, contentLength,
+                responsePreview, responderEntityId, responderName, triggerSource, audience, inputKind,
+                "", "", "");
+    }
+
+    public void log(Level level, String provider, String prompt, String status,
+                    long latencyMs, int promptTokens, int completionTokens,
+                    @Nullable String errorMessage, String purpose, String requestId, String source,
+                    String requestBody, String responseBody, String finishReason, int contentLength,
+                    String responsePreview, String responderEntityId, String responderName,
+                    String triggerSource, String audience, String inputKind, String billingPrincipal,
+                    String billingPrincipalId, String causalRootRequestId) {
         String summary = prompt == null ? "" : prompt;
         if (summary.length() > 100) summary = summary.substring(0, 100) + "...";
         LogEntry entry = new LogEntry(Instant.now(), level, provider == null ? "" : provider, summary,
@@ -160,7 +180,10 @@ public class LLMLogger {
                 responderName == null ? "" : responderName,
                 triggerSource == null ? "" : triggerSource,
                 audience == null ? "" : audience,
-                inputKind == null ? "" : inputKind);
+                inputKind == null ? "" : inputKind,
+                billingPrincipal == null ? "" : billingPrincipal,
+                billingPrincipalId == null ? "" : billingPrincipalId,
+                causalRootRequestId == null ? "" : causalRootRequestId);
 
         lock.writeLock().lock();
         try {

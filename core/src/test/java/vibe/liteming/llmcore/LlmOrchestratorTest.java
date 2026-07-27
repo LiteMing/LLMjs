@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -20,6 +21,7 @@ class LlmOrchestratorTest {
     @AfterEach
     void stopServer() {
         if (server != null) server.stop(0);
+        LlmRequestAccounting.clear();
     }
 
     @Test
@@ -131,6 +133,60 @@ class LlmOrchestratorTest {
         assertTrue(response.success());
         assertEquals("good", response.provider());
         assertEquals(List.of("bad:Bearer key-one", "good:Bearer key-good"), requests);
+    }
+
+    @Test
+    void fallbackAttemptsReserveAndSettleAgainstOneCausalRoot() throws Exception {
+        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/bad", exchange -> {
+            byte[] body = "{\"error\":{\"message\":\"temporary\"}}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(500, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.createContext("/good", exchange -> {
+            byte[] body = "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        int port = server.getAddress().getPort();
+        Map<String, ProviderSpec> specs = new LinkedHashMap<>();
+        specs.put("bad", new ProviderSpec("bad", "openai", "http://localhost:" + port + "/bad", "model",
+                null, 20, List.of(new ProviderSpec.Credential("bad", "key", 1))));
+        specs.put("good", new ProviderSpec("good", "openai", "http://localhost:" + port + "/good", "model",
+                null, 20, List.of(new ProviderSpec.Credential("good", "key", 1))));
+        List<String> roots = new ArrayList<>();
+        AtomicInteger settled = new AtomicInteger();
+        AtomicInteger ids = new AtomicInteger();
+        LlmRequestAccounting.install(new LlmRequestAccounting.Policy() {
+            @Override
+            public LlmRequestAccounting.Reservation reserve(
+                    LlmRequest request, LlmRequestAccounting.AttemptEstimate estimate) {
+                roots.add(request.billingContext().causalRootRequestId());
+                return LlmRequestAccounting.Reservation.allow(
+                        "reservation-" + ids.incrementAndGet(), estimate.totalTokens());
+            }
+
+            @Override
+            public void settle(LlmRequest request, LlmRequestAccounting.Reservation reservation,
+                    LlmRequestAccounting.AttemptUsage usage) {
+                settled.incrementAndGet();
+            }
+        });
+        LlmBillingContext billing = LlmBillingContext.system(
+                LlmBillingContext.PrincipalKind.SCRIPT_SYSTEM, "shared-root", 2, 1_000L);
+        LlmRequest request = new LlmRequest(List.of(new LlmMessage("user", "hi")),
+                List.of("bad", "good"), null, 20, 5, LlmRequestContext.chat(),
+                LlmRouteOptions.empty(), billing);
+
+        LlmResponse response = new LlmOrchestrator(specs).send(request).join();
+
+        assertTrue(response.success());
+        assertEquals(List.of("shared-root", "shared-root"), roots);
+        assertEquals(2, settled.get());
     }
 
     @Test

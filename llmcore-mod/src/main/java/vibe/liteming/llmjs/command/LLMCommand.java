@@ -8,9 +8,11 @@ import vibe.liteming.llmjs.network.PermissionCheck;
 import vibe.liteming.llmjs.network.packet.S2CLogHistoryPacket;
 import vibe.liteming.llmjs.network.packet.S2CStatusResponsePacket;
 import vibe.liteming.llmjs.provider.ProviderManager;
+import vibe.liteming.llmjs.security.PersonalBudgetService;
 import com.mojang.authlib.GameProfile;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.BoolArgumentType;
+import com.mojang.brigadier.arguments.LongArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.mojang.brigadier.suggestion.Suggestions;
@@ -68,6 +70,21 @@ public class LLMCommand {
                                                 ctx.getSource(),
                                                 GameProfileArgument.getGameProfiles(ctx, "player"),
                                                 BoolArgumentType.getBool(ctx, "enabled"))))))
+                .then(Commands.literal("budget")
+                        .executes(ctx -> showOwnBudget(ctx.getSource()))
+                        .then(Commands.literal("list")
+                                .requires(PermissionCheck::canManageAdministrators)
+                                .executes(ctx -> listBudgets(ctx.getSource())))
+                        .then(Commands.literal("limit")
+                                .requires(PermissionCheck::canManageAdministrators)
+                                .then(Commands.argument("tokens", LongArgumentType.longArg(0L))
+                                        .executes(ctx -> setBudgetLimit(ctx.getSource(),
+                                                LongArgumentType.getLong(ctx, "tokens")))))
+                        .then(Commands.literal("reset")
+                                .requires(PermissionCheck::canManageAdministrators)
+                                .then(Commands.argument("player", GameProfileArgument.gameProfile())
+                                        .executes(ctx -> resetBudgets(ctx.getSource(),
+                                                GameProfileArgument.getGameProfiles(ctx, "player"))))))
         );
     }
 
@@ -121,7 +138,8 @@ public class LLMCommand {
     }
 
     private static void testSingle(CommandSourceStack source, String name) {
-        ProviderManager.INSTANCE.testProvider(name).thenAccept(status -> {
+        ServerPlayer player = source.getPlayer();
+        ProviderManager.INSTANCE.testProvider(name, player == null ? null : player.getUUID()).thenAccept(status -> {
             if (status.connected()) {
                 source.sendSuccess(() -> Component.literal("[LLM Core] " + name + ": OK (" + status.latencyMs() + "ms)"), false);
             } else {
@@ -201,6 +219,69 @@ public class LLMCommand {
                 .map(profile -> profile.getId().toString())
                 .collect(Collectors.joining(","));
         return enabled + ":" + targets;
+    }
+
+    private static int showOwnBudget(CommandSourceStack source) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) return listBudgets(source);
+        sendBudgetStatus(source, player.getGameProfile(),
+                PersonalBudgetService.INSTANCE.status(player.getUUID()));
+        return 1;
+    }
+
+    private static int listBudgets(CommandSourceStack source) {
+        if (!PersonalBudgetService.INSTANCE.storageAvailable()) {
+            source.sendFailure(Component.translatable("command.llm.budget.storage_unavailable"));
+            return 0;
+        }
+        List<PersonalBudgetService.Status> entries = PersonalBudgetService.INSTANCE.list();
+        source.sendSuccess(() -> Component.translatable("command.llm.budget.list_header", entries.size()), false);
+        for (PersonalBudgetService.Status status : entries) {
+            GameProfile profile = source.getServer().getProfileCache()
+                    .get(status.playerId()).orElse(new GameProfile(status.playerId(), status.playerId().toString()));
+            sendBudgetStatus(source, profile, status);
+        }
+        return entries.size();
+    }
+
+    private static int setBudgetLimit(CommandSourceStack source, long tokens) {
+        LLMConfig.setPersonalBudgetLimit(tokens);
+        String key = tokens == 0L ? "command.llm.budget.limit_unlimited" : "command.llm.budget.limit_set";
+        source.sendSuccess(() -> Component.translatable(key, tokens), true);
+        return 1;
+    }
+
+    private static int resetBudgets(CommandSourceStack source, Collection<GameProfile> profiles) {
+        int changed = 0;
+        for (GameProfile profile : profiles) {
+            if (profile.getId() == null) continue;
+            if (!PersonalBudgetService.INSTANCE.storageAvailable()) {
+                source.sendFailure(Component.translatable("command.llm.budget.storage_unavailable"));
+                return changed;
+            }
+            boolean reset = PersonalBudgetService.INSTANCE.reset(profile.getId());
+            String key = reset ? "command.llm.budget.reset" : "command.llm.budget.reset_empty";
+            source.sendSuccess(() -> Component.translatable(
+                    key, profile.getName(), profile.getId().toString()), true);
+            if (reset) changed++;
+        }
+        return changed;
+    }
+
+    private static void sendBudgetStatus(CommandSourceStack source, GameProfile profile,
+            PersonalBudgetService.Status status) {
+        Component limit = status.limitTokens() <= 0L
+                ? Component.translatable("command.llm.budget.unlimited")
+                : Component.literal(Long.toString(status.limitTokens()));
+        Component state = !status.storageAvailable()
+                ? Component.translatable("command.llm.budget.state_storage_unavailable")
+                : status.exhausted()
+                        ? Component.translatable("command.llm.budget.state_exhausted")
+                        : Component.translatable("command.llm.budget.state_available");
+        source.sendSuccess(() -> Component.translatable("command.llm.budget.status",
+                profile.getName(), status.playerId().toString(), status.totalTokens(), limit,
+                status.promptTokens(), status.completionTokens(), status.estimatedTokens(),
+                status.reservedTokens(), state), false);
     }
 
     private static CompletableFuture<Suggestions> suggestProviders(

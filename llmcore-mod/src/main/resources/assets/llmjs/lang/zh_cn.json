@@ -174,5 +174,16 @@
   "command.llm.whitelist.missing_uuid": "无法修改 %s：未解析到 UUID。",
   "command.llm.whitelist.offline_warning": "警告：服务器处于离线模式。除非可信的外部账号系统能够阻止冒名登录，否则玩家名与离线 UUID 均可被伪造；LLM Core 无法验证该账号系统。",
   "command.llm.whitelist.offline_confirm": "本次尚未修改。请在 %s 秒内重复输入完全相同的命令，以确认这一项操作。",
-  "command.llm.whitelist.offline_confirmed": "已确认离线模式风险；现在仅执行本次白名单修改。"
+  "command.llm.whitelist.offline_confirmed": "已确认离线模式风险；现在仅执行本次白名单修改。",
+  "command.llm.budget.list_header": "个人 Token 用量记录：%s 项",
+  "command.llm.budget.status": "%1$s（%2$s）：已结算=%3$s / 上限=%4$s；输入=%5$s，输出=%6$s，估算=%7$s，在途预留=%8$s；状态=%9$s",
+  "command.llm.budget.limit_set": "已把个人预算上限设为每位玩家 %s Token；当前已达到或超过上限的玩家将无法发起新的 LLM 请求。",
+  "command.llm.budget.limit_unlimited": "已关闭个人预算上限；Token 用量仍会继续记录。",
+  "command.llm.budget.reset": "已重置 %1$s（%2$s）的个人 Token 用量。",
+  "command.llm.budget.reset_empty": "%1$s（%2$s）没有可重置的个人 Token 用量。",
+  "command.llm.budget.storage_unavailable": "个人 Token 用量存储不可用，未修改任何预算记录。",
+  "command.llm.budget.unlimited": "无限制",
+  "command.llm.budget.state_available": "可用",
+  "command.llm.budget.state_exhausted": "已耗尽",
+  "command.llm.budget.state_storage_unavailable": "存储不可用"
 }

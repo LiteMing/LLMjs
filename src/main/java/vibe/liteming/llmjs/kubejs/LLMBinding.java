@@ -37,17 +37,19 @@ public class LLMBinding {
 
     // Builder form with options: LLM.chat("prompt", {provider: "x"}) -> LLMRequest
     public LLMRequest chat(String prompt, Map<String, Object> options) {
-        return new LLMRequest(prompt,
+        LLMRequest request = new LLMRequest(prompt,
                 getStr(options, "system"),
                 getStr(options, "provider"),
                 getDbl(options, "temperature"),
                 getInt(options, "maxTokens"),
                 getStrList(options, "fallback"));
+        ServerPlayer billingPlayer = getBillingPlayer(options);
+        return billingPlayer == null ? request : request.billTo(billingPlayer);
     }
 
     // Callback form: LLM.chat("prompt", result => {})
     public void chat(String prompt, Consumer<LLMResponse> callback) {
-        executeDirect(prompt, null, null, null, null, null, callback);
+        executeDirect(prompt, null, null, null, null, null, null, callback);
     }
 
     // Callback form with options: LLM.chat("prompt", {provider: "x"}, result => {})
@@ -58,13 +60,14 @@ public class LLMBinding {
                 getDbl(options, "temperature"),
                 getInt(options, "maxTokens"),
                 getStrList(options, "fallback"),
+                getBillingPlayer(options),
                 callback);
     }
 
     // === chatDetailed() ===
 
     public void chatDetailed(String prompt, Consumer<LLMResponse> callback) {
-        executeDirect(prompt, null, null, null, null, null, callback);
+        executeDirect(prompt, null, null, null, null, null, null, callback);
     }
 
     public void chatDetailed(String prompt, Map<String, Object> options, Consumer<LLMResponse> callback) {
@@ -74,6 +77,7 @@ public class LLMBinding {
                 getDbl(options, "temperature"),
                 getInt(options, "maxTokens"),
                 getStrList(options, "fallback"),
+                getBillingPlayer(options),
                 callback);
     }
 
@@ -97,6 +101,8 @@ public class LLMBinding {
         String provider = getStr(options, "provider");
         Double temp = getDbl(options, "temperature");
         Integer maxTokens = getInt(options, "maxTokens");
+        ServerPlayer billingPlayer = getBillingPlayer(options);
+        UUID billingPlayerId = billingPlayer == null ? null : billingPlayer.getUUID();
 
         // Check for schema
         Object schemaObj = options.get("schema");
@@ -104,9 +110,9 @@ public class LLMBinding {
             @SuppressWarnings("unchecked")
             Map<String, Object> schemaMap = (Map<String, Object>) schemaObj;
             JsonObject schema = mapToJson(schemaMap);
-            SchemaMode.chatWithSchema(prompt, schema, provider, temp, maxTokens, callback);
+            SchemaMode.chatWithSchema(prompt, schema, provider, temp, maxTokens, callback, billingPlayerId);
         } else {
-            JsonMode.chatJson(prompt, provider, temp, maxTokens, callback);
+            JsonMode.chatJson(prompt, provider, temp, maxTokens, callback, billingPlayerId);
         }
     }
 
@@ -118,11 +124,13 @@ public class LLMBinding {
     public void fill(Map<String, Object> template, String description,
                      Map<String, Object> options, Consumer<Object> callback) {
         JsonObject templateJson = mapToJson(template);
+        ServerPlayer billingPlayer = getBillingPlayer(options);
         FillMode.fill(templateJson, description,
                 getStr(options, "provider"),
                 getDbl(options, "temperature"),
                 getInt(options, "maxTokens"),
-                callback);
+                callback,
+                billingPlayer == null ? null : billingPlayer.getUUID());
     }
 
     // === Regex Presets ===
@@ -250,10 +258,17 @@ public class LLMBinding {
             chain = defaultP != null ? List.of(defaultP.getName()) : List.of();
         }
 
-        ProviderManager.INSTANCE.sendWithFallback(messages, chain,
-                getDbl(options, "temperature"),
-                getInt(options, "maxTokens"),
-                LLMConfig.TIMEOUT.get()).thenAccept(callback);
+        Double temperature = getDbl(options, "temperature");
+        Integer maxTokens = getInt(options, "maxTokens");
+        int timeout = LLMConfig.TIMEOUT.get();
+        ServerPlayer billingPlayer = getBillingPlayer(options);
+        var billing = billingPlayer == null
+                ? ProviderManager.INSTANCE.createScriptBilling(
+                        messages, chain, temperature, maxTokens, timeout, 1)
+                : ProviderManager.INSTANCE.createPlayerBilling(
+                        billingPlayer.getUUID(), messages, chain, temperature, maxTokens, timeout, 1);
+        ProviderManager.INSTANCE.sendWithFallback(
+                messages, chain, temperature, maxTokens, timeout, billing).thenAccept(callback);
     }
 
     public void actionbar(ServerPlayer player, String message) {
@@ -282,7 +297,8 @@ public class LLMBinding {
 
     private void executeDirect(String prompt, @Nullable String system, @Nullable String provider,
                                @Nullable Double temperature, @Nullable Integer maxTokens,
-                               @Nullable List<String> fallback, Consumer<LLMResponse> callback) {
+                               @Nullable List<String> fallback, @Nullable ServerPlayer billingPlayer,
+                               Consumer<LLMResponse> callback) {
         List<ApiFormat.Message> messages = new ArrayList<>();
         if (system != null && !system.isEmpty()) {
             messages.add(new ApiFormat.Message("system", system));
@@ -300,8 +316,19 @@ public class LLMBinding {
         }
 
         int timeout = LLMConfig.TIMEOUT.get();
-        ProviderManager.INSTANCE.sendWithFallback(messages, chain, temperature, maxTokens, timeout)
+        var billing = billingPlayer == null
+                ? ProviderManager.INSTANCE.createScriptBilling(
+                        messages, chain, temperature, maxTokens, timeout, 1)
+                : ProviderManager.INSTANCE.createPlayerBilling(
+                        billingPlayer.getUUID(), messages, chain, temperature, maxTokens, timeout, 1);
+        ProviderManager.INSTANCE.sendWithFallback(
+                messages, chain, temperature, maxTokens, timeout, billing)
                 .thenAccept(callback);
+    }
+
+    private static @Nullable ServerPlayer getBillingPlayer(Map<String, Object> options) {
+        Object value = options == null ? null : options.get("billingPlayer");
+        return value instanceof ServerPlayer player ? player : null;
     }
 
     private static @Nullable String getStr(Map<String, Object> map, String key) {

@@ -2,6 +2,8 @@ package vibe.liteming.llmjs.provider;
 
 import org.jetbrains.annotations.Nullable;
 import vibe.liteming.llmcore.LlmMessage;
+import vibe.liteming.llmcore.LlmBillingContext;
+import vibe.liteming.llmcore.LlmCallBudget;
 import vibe.liteming.llmcore.LlmOrchestrator;
 import vibe.liteming.llmcore.LlmRequest;
 import vibe.liteming.llmcore.LlmRequestContext;
@@ -11,6 +13,7 @@ import vibe.liteming.llmjs.format.MessagePart;
 import vibe.liteming.llmjs.pipeline.LLMResponse;
 
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 final class CoreProviderAdapter implements Provider {
@@ -45,7 +48,27 @@ final class CoreProviderAdapter implements Provider {
     @Override
     public CompletableFuture<LLMResponse> sendAsync(List<ApiFormat.Message> messages,
             @Nullable Double temperature, @Nullable Integer maxTokens, int timeoutSeconds) {
-        List<LlmMessage> coreMessages = messages.stream()
+        return sendAsync(messages, temperature, maxTokens, timeoutSeconds, null);
+    }
+
+    CompletableFuture<LLMResponse> sendAsync(List<ApiFormat.Message> messages,
+            @Nullable Double temperature, @Nullable Integer maxTokens, int timeoutSeconds,
+            @Nullable LlmBillingContext inheritedBilling) {
+        List<LlmMessage> coreMessages = toCoreMessages(messages);
+        LlmRequest request = new LlmRequest(coreMessages, List.of(spec.name()), temperature, maxTokens,
+                timeoutSeconds, LlmRequestContext.chat());
+        LlmBillingContext billing = inheritedBilling;
+        if (billing == null) {
+            LlmCallBudget worstCase = orchestrator.estimateWorstCaseBudget(request);
+            billing = LlmBillingContext.system(LlmBillingContext.PrincipalKind.SCRIPT_SYSTEM,
+                    UUID.randomUUID().toString(), Math.max(1, worstCase.maxCalls()),
+                    Math.max(1L, worstCase.maxTokens()));
+        }
+        return orchestrator.send(request.withBillingContext(billing)).thenApply(CoreProviderAdapter::toLegacyResponse);
+    }
+
+    static List<LlmMessage> toCoreMessages(List<ApiFormat.Message> messages) {
+        return messages.stream()
                 .map(message -> new LlmMessage(message.role(), message.parts().stream().map(part -> {
                     if (part instanceof MessagePart.ImagePart image) {
                         return (LlmMessage.Part) new LlmMessage.ImagePart(image.mimeType(), image.base64Data(),
@@ -54,14 +77,13 @@ final class CoreProviderAdapter implements Provider {
                     return (LlmMessage.Part) new LlmMessage.TextPart(part.asText());
                 }).toList()))
                 .toList();
-        LlmRequest request = new LlmRequest(coreMessages, List.of(spec.name()), temperature, maxTokens,
-                timeoutSeconds, LlmRequestContext.chat());
-        return orchestrator.send(request).thenApply(CoreProviderAdapter::toLegacyResponse);
     }
 
     @Override
     public CompletableFuture<LLMResponse> testConnection(int timeoutSeconds) {
-        return orchestrator.testProvider(spec.name(), timeoutSeconds).thenApply(CoreProviderAdapter::toLegacyResponse);
+        return orchestrator.testProvider(spec.name(), timeoutSeconds,
+                LlmBillingContext.PrincipalKind.SCRIPT_SYSTEM, "", UUID.randomUUID().toString())
+                .thenApply(CoreProviderAdapter::toLegacyResponse);
     }
 
     @Override
@@ -72,6 +94,11 @@ final class CoreProviderAdapter implements Provider {
     @Override
     public boolean isConfigured() {
         return spec.credentials().stream().anyMatch(ProviderSpec.Credential::isConfigured);
+    }
+
+    @Override
+    public @Nullable Integer getMaxTokens() {
+        return spec.maxTokens();
     }
 
     @Override

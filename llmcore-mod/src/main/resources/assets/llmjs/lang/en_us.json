@@ -174,5 +174,16 @@
   "command.llm.whitelist.missing_uuid": "Cannot update %s because no UUID was resolved.",
   "command.llm.whitelist.offline_warning": "WARNING: This server uses offline mode. Player names and offline UUIDs can be spoofed unless a trusted external account system prevents it; LLM Core cannot verify that system.",
   "command.llm.whitelist.offline_confirm": "No change was made. Repeat the same command within %s seconds to confirm this one operation.",
-  "command.llm.whitelist.offline_confirmed": "Offline-mode warning acknowledged. This single whitelist change is now being applied."
+  "command.llm.whitelist.offline_confirmed": "Offline-mode warning acknowledged. This single whitelist change is now being applied.",
+  "command.llm.budget.list_header": "Personal token usage records: %s",
+  "command.llm.budget.status": "%1$s (%2$s): settled=%3$s / limit=%4$s; input=%5$s, output=%6$s, estimated=%7$s, reserved=%8$s; state=%9$s",
+  "command.llm.budget.limit_set": "Personal budget limit set to %s tokens per player. Players already at or above it are now blocked from new LLM requests.",
+  "command.llm.budget.limit_unlimited": "Personal budget limit disabled; usage recording remains enabled.",
+  "command.llm.budget.reset": "Reset personal token usage for %1$s (%2$s).",
+  "command.llm.budget.reset_empty": "%1$s (%2$s) has no personal token usage to reset.",
+  "command.llm.budget.storage_unavailable": "Personal token usage storage is unavailable. No budget records were changed.",
+  "command.llm.budget.unlimited": "unlimited",
+  "command.llm.budget.state_available": "available",
+  "command.llm.budget.state_exhausted": "exhausted",
+  "command.llm.budget.state_storage_unavailable": "storage unavailable"
 }

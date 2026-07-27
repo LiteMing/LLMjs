@@ -10,12 +10,21 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
+import java.util.UUID;
+import vibe.liteming.llmcore.LlmBillingContext;
 
 public class SchemaMode {
 
     public static void chatWithSchema(String prompt, JsonObject schema,
                                        @Nullable String provider, @Nullable Double temperature,
                                        @Nullable Integer maxTokens, Consumer<Object> callback) {
+        chatWithSchema(prompt, schema, provider, temperature, maxTokens, callback, null);
+    }
+
+    public static void chatWithSchema(String prompt, JsonObject schema,
+                                       @Nullable String provider, @Nullable Double temperature,
+                                       @Nullable Integer maxTokens, Consumer<Object> callback,
+                                       @Nullable UUID billingPlayerId) {
         String schemaDesc = buildSchemaDescription(schema);
         String fullPrompt = prompt + "\n\nRespond with a JSON object matching this schema:\n" + schemaDesc
                 + "\n\nRespond with ONLY the JSON object. No markdown, no explanation.";
@@ -26,8 +35,14 @@ public class SchemaMode {
 
         String providerName = provider != null ? provider : LLMConfig.DEFAULT_PROVIDER.get();
         int timeout = LLMConfig.TIMEOUT.get();
+        LlmBillingContext billing = billingPlayerId == null
+                ? ProviderManager.INSTANCE.createScriptBilling(
+                        messages, List.of(providerName), temperature, maxTokens, timeout, 1)
+                : ProviderManager.INSTANCE.createPlayerBilling(billingPlayerId,
+                        messages, List.of(providerName), temperature, maxTokens, timeout, 1);
 
-        ProviderManager.INSTANCE.sendWithFallback(messages, List.of(providerName), temperature, maxTokens, timeout)
+        ProviderManager.INSTANCE.sendWithFallback(
+                messages, List.of(providerName), temperature, maxTokens, timeout, billing)
                 .thenAccept(response -> {
                     if (!response.isSuccess()) { callback.accept(null); return; }
                     String content = JsonMode.cleanJsonResponse(response.getContent());

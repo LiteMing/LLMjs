@@ -22,6 +22,10 @@ public interface Provider {
     boolean isConfigured();
     String getMaskedKey();
 
+    default @Nullable Integer getMaxTokens() {
+        return null;
+    }
+
     default String getUrl() {
         return "";
     }

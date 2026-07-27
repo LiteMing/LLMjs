@@ -10,6 +10,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.UUID;
+import net.minecraft.server.level.ServerPlayer;
 
 public class ChatSession {
     private final String providerName;
@@ -18,6 +20,7 @@ public class ChatSession {
     private int maxTokens = 1000;
     private final List<ApiFormat.Message> history = Collections.synchronizedList(new ArrayList<>());
     private int maxHistory = 20;
+    private @Nullable UUID delegatedBillingPlayer;
 
     public ChatSession(String providerName) {
         this.providerName = providerName;
@@ -27,6 +30,11 @@ public class ChatSession {
     public ChatSession temperature(double t) { this.temperature = t; return this; }
     public ChatSession maxTokens(int t) { this.maxTokens = t; return this; }
     public ChatSession maxHistory(int n) { this.maxHistory = n; return this; }
+    public ChatSession billTo(ServerPlayer player) {
+        if (player == null) throw new IllegalArgumentException("billTo requires a player");
+        delegatedBillingPlayer = player.getUUID();
+        return this;
+    }
 
     public void chat(String message, Consumer<LLMResponse> callback) {
         List<ApiFormat.Message> messages = new ArrayList<>();
@@ -37,7 +45,13 @@ public class ChatSession {
         messages.add(new ApiFormat.Message("user", message));
 
         int timeout = LLMConfig.TIMEOUT.get();
-        ProviderManager.INSTANCE.sendWithFallback(messages, List.of(providerName), temperature, maxTokens, timeout)
+        var billing = delegatedBillingPlayer == null
+                ? ProviderManager.INSTANCE.createScriptBilling(
+                        messages, List.of(providerName), temperature, maxTokens, timeout, 1)
+                : ProviderManager.INSTANCE.createPlayerBilling(delegatedBillingPlayer,
+                        messages, List.of(providerName), temperature, maxTokens, timeout, 1);
+        ProviderManager.INSTANCE.sendWithFallback(
+                messages, List.of(providerName), temperature, maxTokens, timeout, billing)
                 .thenAccept(response -> {
                     if (response.isSuccess()) {
                         synchronized (history) {

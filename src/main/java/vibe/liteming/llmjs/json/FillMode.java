@@ -8,12 +8,21 @@ import org.jetbrains.annotations.Nullable;
 
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.UUID;
+import vibe.liteming.llmcore.LlmBillingContext;
 
 public class FillMode {
 
     public static void fill(JsonObject template, String description,
                             @Nullable String provider, @Nullable Double temperature,
                             @Nullable Integer maxTokens, Consumer<Object> callback) {
+        fill(template, description, provider, temperature, maxTokens, callback, null);
+    }
+
+    public static void fill(JsonObject template, String description,
+                            @Nullable String provider, @Nullable Double temperature,
+                            @Nullable Integer maxTokens, Consumer<Object> callback,
+                            @Nullable UUID billingPlayerId) {
         List<String> keys = new ArrayList<>();
         for (Map.Entry<String, JsonElement> entry : template.entrySet()) {
             keys.add(entry.getKey());
@@ -32,8 +41,14 @@ public class FillMode {
 
         String providerName = provider != null ? provider : LLMConfig.DEFAULT_PROVIDER.get();
         int timeout = LLMConfig.TIMEOUT.get();
+        LlmBillingContext billing = billingPlayerId == null
+                ? ProviderManager.INSTANCE.createScriptBilling(
+                        messages, List.of(providerName), temperature, maxTokens, timeout, 1)
+                : ProviderManager.INSTANCE.createPlayerBilling(billingPlayerId,
+                        messages, List.of(providerName), temperature, maxTokens, timeout, 1);
 
-        ProviderManager.INSTANCE.sendWithFallback(messages, List.of(providerName), temperature, maxTokens, timeout)
+        ProviderManager.INSTANCE.sendWithFallback(
+                messages, List.of(providerName), temperature, maxTokens, timeout, billing)
                 .thenAccept(response -> {
                     if (!response.isSuccess()) { callback.accept(null); return; }
                     String content = response.getContent().trim();

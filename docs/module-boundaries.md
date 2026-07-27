@@ -54,3 +54,34 @@ On a dedicated server with `online-mode=false`, every change prints a spoofing
 warning and requires the same operation to be repeated within 30 seconds. The
 confirmation is single-use and is bound to the executor, target UUIDs, and
 requested `true`/`false` state.
+
+## Personal token budgets
+
+`llmcore-mod` records cumulative input, output, and conservatively estimated
+tokens per player UUID in `<world>/llmcore/personal-budget.json`. The global
+`personal_budget_limit` is `0` by default, which leaves requests unlimited while
+usage recording remains active. A positive limit includes in-flight reservations
+and rejects an over-budget attempt before its provider HTTP call.
+
+Billing is independent from diagnostic context. Every provider-bound
+`LlmRequest` must carry an explicit `LlmBillingContext` with a typed principal,
+causal root, maximum provider calls, and maximum tokens for that root. Code must
+never infer billing from `audience`, observer, responder, or `triggerSource`.
+Legacy request constructors remain linkable but produce `UNSPECIFIED`; the
+installed server policy rejects those requests before provider access.
+
+Interactive Console requests use the invoking player's UUID. KubeJS requests
+default to `SCRIPT_SYSTEM`; a script can delegate explicitly only with a real
+`ServerPlayer` through `billingPlayer` or a builder/session `billTo(player)`.
+Provider fallback and automatic repair reuse the original causal root. Provider-
+reported usage is authoritative; attempts without usage metadata settle their
+full conservative reservation and retain that amount under `estimatedTokens`.
+
+The ledger is world-scoped and atomically replaced after each update. Malformed
+data or a runtime persistence failure makes the ledger unavailable. With a
+positive limit, player-attributed requests then fail closed before provider
+access; system principals remain governed by their causal-chain ceilings.
+`/llm budget` shows the caller's own aggregate; only owner-level administrators
+can list/reset records or change the common per-player limit. On offline-mode
+servers these UUIDs are not authenticated by Minecraft, so a personal budget can
+only be trusted when an external account system prevents identity spoofing.
