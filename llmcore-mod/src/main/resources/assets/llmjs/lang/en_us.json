@@ -166,10 +166,13 @@
   "gui.llmjs.routing.parameter_help": "Blank = inherit. Input budget is capped by provider context minus output reserve.",
 
   "command.llm.whitelist.usage": "Usage: /llm whitelist <player> <true|false>. true grants Console administration; false revokes it.",
-  "command.llm.whitelist.warning": "Only OP level 4, the integrated-server owner, or the server console can change this list. UUID whitelisting requires authenticated online-mode identities.",
+  "command.llm.whitelist.warning": "Only OP level 4, the integrated-server owner, or the server console can change this list. Offline-mode changes require a second confirmation.",
   "command.llm.whitelist.granted": "Added %1$s (%2$s) to the Console administrator whitelist.",
   "command.llm.whitelist.revoked": "Removed %1$s (%2$s) from the Console administrator whitelist.",
   "command.llm.whitelist.already_granted": "%1$s (%2$s) is already a Console administrator; no change was made.",
   "command.llm.whitelist.already_revoked": "%1$s (%2$s) is not a whitelisted Console administrator; no change was made.",
-  "command.llm.whitelist.missing_uuid": "Cannot update %s because no UUID was resolved."
+  "command.llm.whitelist.missing_uuid": "Cannot update %s because no UUID was resolved.",
+  "command.llm.whitelist.offline_warning": "WARNING: This server uses offline mode. Player names and offline UUIDs can be spoofed unless a trusted external account system prevents it; LLM Core cannot verify that system.",
+  "command.llm.whitelist.offline_confirm": "No change was made. Repeat the same command within %s seconds to confirm this one operation.",
+  "command.llm.whitelist.offline_confirmed": "Offline-mode warning acknowledged. This single whitelist change is now being applied."
 }

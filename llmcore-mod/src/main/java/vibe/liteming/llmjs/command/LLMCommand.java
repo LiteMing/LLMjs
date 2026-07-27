@@ -25,10 +25,15 @@ import net.minecraftforge.network.PacketDistributor;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 public class LLMCommand {
+    private static final long OFFLINE_CONFIRMATION_WINDOW_MS = 30_000L;
+    private static final WhitelistConfirmationGuard WHITELIST_CONFIRMATIONS =
+            new WhitelistConfirmationGuard(OFFLINE_CONFIRMATION_WINDOW_MS);
 
     public static void register(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("llm")
@@ -149,14 +154,30 @@ public class LLMCommand {
     }
 
     private static int setWhitelist(CommandSourceStack source, Collection<GameProfile> profiles, boolean enabled) {
-        int processed = 0;
         for (GameProfile profile : profiles) {
             if (profile.getId() == null) {
                 source.sendFailure(Component.translatable(
                         "command.llm.whitelist.missing_uuid", profile.getName()));
-                continue;
+                return 0;
             }
+        }
 
+        if (source.getServer().isDedicatedServer() && !source.getServer().usesAuthentication()) {
+            source.sendFailure(Component.translatable("command.llm.whitelist.offline_warning"));
+            String actor = source.getPlayer() == null
+                    ? "server-console"
+                    : "player:" + source.getPlayer().getUUID();
+            String operation = whitelistOperation(profiles, enabled);
+            if (!WHITELIST_CONFIRMATIONS.confirmOrArm(actor, operation, System.currentTimeMillis())) {
+                source.sendSuccess(() -> Component.translatable(
+                        "command.llm.whitelist.offline_confirm", OFFLINE_CONFIRMATION_WINDOW_MS / 1000), false);
+                return 0;
+            }
+            source.sendSuccess(() -> Component.translatable("command.llm.whitelist.offline_confirmed"), false);
+        }
+
+        int processed = 0;
+        for (GameProfile profile : profiles) {
             boolean changed = LLMConfig.setAdministrator(profile.getId(), enabled);
             String key = changed
                     ? (enabled ? "command.llm.whitelist.granted" : "command.llm.whitelist.revoked")
@@ -172,6 +193,14 @@ public class LLMCommand {
             processed++;
         }
         return processed;
+    }
+
+    private static String whitelistOperation(Collection<GameProfile> profiles, boolean enabled) {
+        String targets = profiles.stream()
+                .sorted(Comparator.comparing(profile -> profile.getId().toString()))
+                .map(profile -> profile.getId().toString())
+                .collect(Collectors.joining(","));
+        return enabled + ":" + targets;
     }
 
     private static CompletableFuture<Suggestions> suggestProviders(

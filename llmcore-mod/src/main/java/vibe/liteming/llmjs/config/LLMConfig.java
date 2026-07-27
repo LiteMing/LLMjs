@@ -42,7 +42,8 @@ public class LLMConfig {
                 .define("allow_all_players", false);
         ADMIN_UUID_WHITELIST = BUILDER.comment(
                 "Player UUIDs allowed to manage providers, routing, and Console tests without OP level 4.",
-                "Use authenticated online-mode UUIDs. OP level 2 only grants log viewing by default.")
+                "Online-mode UUIDs are authenticated. Offline-mode identities require a trusted external account system.",
+                "OP level 2 only grants log viewing by default.")
                 .defineListAllowEmpty("admin_uuid_whitelist", List.of(), LLMConfig::isUuid);
         BUILDER.pop();
 

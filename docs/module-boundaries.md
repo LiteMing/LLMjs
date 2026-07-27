@@ -36,9 +36,14 @@ Administrator access is granted to OP level 4, the integrated-server owner, or
 UUIDs listed in `admin_uuid_whitelist`. Administrators can use every Console tab
 and the `status`, `test`, `reload`, and `setkey` commands. The server validates
 the administrator role for every management packet; client-side tab state is
-only a usability measure. UUID whitelisting assumes authenticated online-mode
-identities and must not be treated as secure on an offline-mode server.
+only a usability measure. Online-mode UUIDs are authenticated by Minecraft.
+On an offline-mode server, LLM Core cannot validate any external account system
+and the server owner remains responsible for preventing name/UUID spoofing.
 
 OP level 4, the integrated-server owner, and the dedicated-server console can
 change the administrator list with `/llm whitelist <player> <true|false>`.
 Whitelisted administrators cannot delegate this permission to other players.
+On a dedicated server with `online-mode=false`, every change prints a spoofing
+warning and requires the same operation to be repeated within 30 seconds. The
+confirmation is single-use and is bound to the executor, target UUIDs, and
+requested `true`/`false` state.

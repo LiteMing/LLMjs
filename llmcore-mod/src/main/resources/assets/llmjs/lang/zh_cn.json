@@ -166,10 +166,13 @@
   "gui.llmjs.routing.parameter_help": "留空表示继承；输入预算不超过提供商上下文窗口减去输出预留。",
 
   "command.llm.whitelist.usage": "用法：/llm whitelist <玩家> <true|false>。true 授予 Console 管理权限，false 撤销权限。",
-  "command.llm.whitelist.warning": "只有 OP4、单人服服主或服务端控制台可以修改此名单；UUID 白名单依赖正版在线模式身份认证。",
+  "command.llm.whitelist.warning": "只有 OP4、单人服服主或服务端控制台可以修改此名单；离线模式下每次修改都需要二次确认。",
   "command.llm.whitelist.granted": "已将 %1$s（%2$s）加入 Console 管理员白名单。",
   "command.llm.whitelist.revoked": "已将 %1$s（%2$s）移出 Console 管理员白名单。",
   "command.llm.whitelist.already_granted": "%1$s（%2$s）已经是 Console 管理员，未做修改。",
   "command.llm.whitelist.already_revoked": "%1$s（%2$s）不在 Console 管理员白名单中，未做修改。",
-  "command.llm.whitelist.missing_uuid": "无法修改 %s：未解析到 UUID。"
+  "command.llm.whitelist.missing_uuid": "无法修改 %s：未解析到 UUID。",
+  "command.llm.whitelist.offline_warning": "警告：服务器处于离线模式。除非可信的外部账号系统能够阻止冒名登录，否则玩家名与离线 UUID 均可被伪造；LLM Core 无法验证该账号系统。",
+  "command.llm.whitelist.offline_confirm": "本次尚未修改。请在 %s 秒内重复输入完全相同的命令，以确认这一项操作。",
+  "command.llm.whitelist.offline_confirmed": "已确认离线模式风险；现在仅执行本次白名单修改。"
 }
