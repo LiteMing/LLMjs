@@ -34,11 +34,11 @@ public class C2SStatusRequestPacket {
     public static void handle(C2SStatusRequestPacket msg, Supplier<NetworkEvent.Context> ctx) {
         ctx.get().enqueueWork(() -> {
             ServerPlayer player = ctx.get().getSender();
-            if (player == null || !PermissionCheck.canUse(player)) return;
+            if (player == null || (!PermissionCheck.canUse(player) && !PermissionCheck.canTest(player))) return;
             String statusJson = PermissionCheck.statusFor(player).toString();
             LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                     new S2CStatusResponsePacket(statusJson, msg.openConsole));
-            if (msg.openConsole) {
+            if (msg.openConsole && PermissionCheck.canUse(player)) {
                 List<String> history = new ArrayList<>();
                 for (LLMLogger.LogEntry entry : LLMLogger.INSTANCE.getRecentEntries(200)) {
                     history.add(entry.toJson().toString());

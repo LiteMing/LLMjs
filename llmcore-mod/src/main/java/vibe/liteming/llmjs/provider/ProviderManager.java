@@ -154,6 +154,28 @@ public class ProviderManager {
         return result;
     }
 
+    /** Minimal status needed to render one immutable delegated Test handoff. */
+    public JsonObject getTestStatusJson(String purpose) {
+        JsonObject result = new JsonObject();
+        JsonArray purposes = new JsonArray();
+        String normalized = purpose == null ? "" : purpose.trim();
+        PurposeMeta meta = PurposeRegistry.snapshot().stream()
+                .filter(candidate -> candidate.id().equals(normalized))
+                .findFirst().orElse(null);
+        if (meta != null) {
+            JsonObject item = new JsonObject();
+            item.addProperty("id", meta.id());
+            item.addProperty("displayName", meta.displayName());
+            List<String> chain = routingConfig.resolveChain(meta.id(), new ArrayList<>(orchestrator.getProviderNames()));
+            String effectiveProvider = chain.isEmpty() ? "" : chain.get(0);
+            item.add("effective", effectiveParametersJson(
+                    orchestrator.resolveParameters(meta.id(), effectiveProvider)));
+            purposes.add(item);
+        }
+        result.add("purposes", purposes);
+        return result;
+    }
+
     private static JsonObject effectiveParametersJson(LlmResolvedParameters parameters) {
         JsonObject json = new JsonObject();
         json.addProperty("provider", parameters.provider());

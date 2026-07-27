@@ -5,6 +5,7 @@ import vibe.liteming.llmjs.network.PermissionCheck;
 import vibe.liteming.llmjs.provider.ProviderManager;
 import vibe.liteming.llmjs.test.ConsoleTestCodec;
 import vibe.liteming.llmjs.test.ConsoleTestRequest;
+import vibe.liteming.llmjs.security.ConsoleTestGrantService;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.network.NetworkEvent;
@@ -41,22 +42,27 @@ public class C2SChatRequestPacket {
         ctx.get().enqueueWork(() -> {
             ServerPlayer player = ctx.get().getSender();
             if (player == null) return;
-            if (!PermissionCheck.canAdminister(player)) {
-                LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
-                        new S2CChatResponsePacket(msg.requestId, false, "No permission", null));
-                return;
-            }
             ConsoleTestRequest request;
-            try {
-                request = ConsoleTestCodec.parseRequest(msg.requestJson, true);
-                if (!msg.requestId.equals(request.requestUuid())) {
-                    throw new IllegalArgumentException("packet/request requestId mismatch");
+            if (PermissionCheck.canAdminister(player)) {
+                try {
+                    request = ConsoleTestCodec.parseRequest(msg.requestJson, true);
+                    if (!msg.requestId.equals(request.requestUuid())) {
+                        throw new IllegalArgumentException("packet/request requestId mismatch");
+                    }
+                } catch (IllegalArgumentException e) {
+                    LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                            new S2CChatResponsePacket(msg.requestId,
+                                    ConsoleTestCodec.error(msg.requestId.toString(), e.getMessage())));
+                    return;
                 }
-            } catch (IllegalArgumentException e) {
-                LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
-                        new S2CChatResponsePacket(msg.requestId,
-                                ConsoleTestCodec.error(msg.requestId.toString(), e.getMessage())));
-                return;
+            } else {
+                request = ConsoleTestGrantService.INSTANCE
+                        .authorizedRequest(player.getUUID(), msg.requestId).orElse(null);
+                if (request == null) {
+                    LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                            new S2CChatResponsePacket(msg.requestId, false, "No Test permission", null));
+                    return;
+                }
             }
             ProviderManager.INSTANCE.executeConsoleTest(request).handle((resultJson, throwable) -> {
                         String payload = throwable == null ? resultJson : ConsoleTestCodec.error(

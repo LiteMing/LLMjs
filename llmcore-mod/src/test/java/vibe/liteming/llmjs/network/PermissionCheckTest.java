@@ -34,15 +34,17 @@ class PermissionCheckTest {
     void viewerStatusDoesNotResolveOrExposeProviderData() {
         AtomicBoolean invoked = new AtomicBoolean(false);
 
-        JsonObject status = PermissionCheck.createStatusPayload(false, () -> {
+        JsonObject status = PermissionCheck.createStatusPayload(true, false, false, () -> {
             invoked.set(true);
             JsonObject full = new JsonObject();
             full.addProperty("maskedKey", "sk-...last");
             return full;
-        });
+        }, JsonObject::new);
 
         assertFalse(invoked.get());
-        assertEquals(1, status.size());
+        assertEquals(3, status.size());
+        assertTrue(status.get("canView").getAsBoolean());
+        assertFalse(status.get("canTest").getAsBoolean());
         assertFalse(status.get("canAdminister").getAsBoolean());
         assertFalse(status.has("maskedKey"));
         assertFalse(status.has("providers"));
@@ -50,13 +52,36 @@ class PermissionCheckTest {
 
     @Test
     void administratorStatusIncludesFullPayloadAndPermissionFlag() {
-        JsonObject status = PermissionCheck.createStatusPayload(true, () -> {
+        JsonObject status = PermissionCheck.createStatusPayload(true, true, true, () -> {
             JsonObject full = new JsonObject();
             full.addProperty("count", 2);
             return full;
-        });
+        }, JsonObject::new);
 
         assertEquals(2, status.get("count").getAsInt());
+        assertTrue(status.get("canView").getAsBoolean());
+        assertTrue(status.get("canTest").getAsBoolean());
         assertTrue(status.get("canAdminister").getAsBoolean());
+    }
+
+    @Test
+    void delegatedTestStatusUsesRestrictedPayloadOnly() {
+        AtomicBoolean fullInvoked = new AtomicBoolean(false);
+        JsonObject status = PermissionCheck.createStatusPayload(false, true, false, () -> {
+            fullInvoked.set(true);
+            return new JsonObject();
+        }, () -> {
+            JsonObject restricted = new JsonObject();
+            restricted.addProperty("purpose", "CHAT");
+            return restricted;
+        });
+
+        assertFalse(fullInvoked.get());
+        assertEquals("CHAT", status.get("purpose").getAsString());
+        assertFalse(status.get("canView").getAsBoolean());
+        assertTrue(status.get("canTest").getAsBoolean());
+        assertFalse(status.get("canAdminister").getAsBoolean());
+        assertFalse(status.has("providers"));
+        assertFalse(status.has("routing"));
     }
 }

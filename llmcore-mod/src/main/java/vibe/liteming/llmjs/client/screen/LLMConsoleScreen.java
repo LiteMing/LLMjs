@@ -36,6 +36,8 @@ public class LLMConsoleScreen extends Screen {
     private final String initialStatusJson;
     private final @Nullable String initialTestHandoff;
     private @Nullable Screen returnScreen;
+    private boolean canView;
+    private boolean canTest;
     private boolean canAdminister;
     private Button logTab;
     private Button providersTab;
@@ -57,7 +59,7 @@ public class LLMConsoleScreen extends Screen {
         this.initialStatusJson = statusJson;
         this.initialTestHandoff = initialTestHandoff;
         this.returnScreen = returnScreen;
-        this.canAdminister = readAdminPermission(statusJson);
+        readPermissions(statusJson);
     }
 
     @Override
@@ -104,7 +106,7 @@ public class LLMConsoleScreen extends Screen {
 
         testPanel.updateStatus(initialStatusJson);
         applyAccessState();
-        if (canAdminister && initialTestHandoff != null && !initialTestHandoff.isBlank()) {
+        if (canTest && initialTestHandoff != null && !initialTestHandoff.isBlank()) {
             testPanel.loadHandoff(initialTestHandoff);
             switchTab(Tab.TEST);
         } else {
@@ -146,7 +148,11 @@ public class LLMConsoleScreen extends Screen {
     }
 
     private void switchTab(Tab tab) {
-        if (!canAdminister && tab != Tab.LOG) tab = Tab.LOG;
+        if ((tab == Tab.LOG && !canView)
+                || (tab == Tab.TEST && !canTest)
+                || ((tab == Tab.PROVIDERS || tab == Tab.ROUTING || tab == Tab.SETUP) && !canAdminister)) {
+            tab = canTest ? Tab.TEST : Tab.LOG;
+        }
         activeTab = tab;
         logPanel.visible = (tab == Tab.LOG);
         providerPanel.visible = (tab == Tab.PROVIDERS);
@@ -263,13 +269,13 @@ public class LLMConsoleScreen extends Screen {
     }
 
     public void loadTestHandoff(String handoffJson) {
-        if (!canAdminister || testPanel == null) return;
+        if (!canTest || testPanel == null) return;
         testPanel.loadHandoff(handoffJson);
         switchTab(Tab.TEST);
     }
 
     public void onStatusUpdate(String statusJson) {
-        canAdminister = readAdminPermission(statusJson);
+        readPermissions(statusJson);
         if (providerPanel != null) {
             providerPanel.updateStatus(statusJson);
             if (testPanel != null) {
@@ -304,19 +310,25 @@ public class LLMConsoleScreen extends Screen {
 
     private void applyAccessState() {
         if (providersTab == null) return;
+        logTab.active = canView;
         providersTab.active = canAdminister;
         routingTab.active = canAdminister;
-        testTab.active = canAdminister;
+        testTab.active = canTest;
         setupTab.active = canAdminister;
-        if (!canAdminister && logPanel != null) switchTab(Tab.LOG);
+        if (testPanel != null) testPanel.setRestricted(!canAdminister);
+        if (!canAdminister && logPanel != null) switchTab(canTest ? Tab.TEST : Tab.LOG);
     }
 
-    private static boolean readAdminPermission(String statusJson) {
+    private void readPermissions(String statusJson) {
         try {
             var root = JsonParser.parseString(statusJson).getAsJsonObject();
-            return root.has("canAdminister") && root.get("canAdminister").getAsBoolean();
+            canAdminister = root.has("canAdminister") && root.get("canAdminister").getAsBoolean();
+            canTest = canAdminister || (root.has("canTest") && root.get("canTest").getAsBoolean());
+            canView = canAdminister || (root.has("canView") && root.get("canView").getAsBoolean());
         } catch (Exception ignored) {
-            return false;
+            canView = false;
+            canTest = false;
+            canAdminister = false;
         }
     }
 }

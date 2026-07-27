@@ -25,12 +25,19 @@ KubeJS dependencies in `llmcore`.
 
 ## Console permissions
 
-Console access is split into viewer and administrator roles. The existing
+Console access is split into viewer, delegated Test, and administrator roles. The existing
 `allow_all_players` and `require_op_level` settings grant viewer access, which
 only exposes the Log tab and live/recent traffic. Provider metadata, URLs,
 masked keys, routing, setup, and test operations are not sent to viewers.
 Logs include complete LLM request and response content, so viewer access should
 only be granted to trusted players.
+
+Trusted server mods can issue a five-minute delegated Test grant through
+`LlmConsoleTestBridge`. A grant is bound to one player UUID, request UUID, and
+the complete server-approved handoff. Delegated users receive only that
+purpose's effective read-only summary. The server executes its stored request,
+not client-edited provider, purpose, routing, prompt, or parameter fields; the
+Console disables those controls and does not expose logs or management tabs.
 
 Administrator access is granted to OP level 4, the integrated-server owner, or
 UUIDs listed in `admin_uuid_whitelist`. Administrators can use every Console tab

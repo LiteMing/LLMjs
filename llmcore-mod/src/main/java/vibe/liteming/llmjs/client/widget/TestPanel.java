@@ -70,6 +70,7 @@ public class TestPanel {
     private @Nullable ConsoleTestRequest loadedHandoff;
     private boolean waiting;
     private boolean visible = true;
+    private boolean restricted;
     private ConsoleTestRequest.RoutingMode routingMode = ConsoleTestRequest.RoutingMode.PURPOSE;
     private @Nullable String visionResultText;
     private int visionResultColor = 0xAAAAAA;
@@ -230,6 +231,31 @@ public class TestPanel {
         return visible;
     }
 
+    /** Restricted handoffs can only execute the immutable server-authorized draft. */
+    public void setRestricted(boolean value) {
+        restricted = value;
+        updateRestrictedControls();
+    }
+
+    private void updateRestrictedControls() {
+        purposeInput.setEditable(!restricted);
+        providerInput.setEditable(!restricted);
+        promptInput.setEditable(!restricted);
+        temperatureInput.setEditable(!restricted);
+        maxOutputInput.setEditable(!restricted);
+        timeoutInput.setEditable(!restricted);
+        inputBudgetInput.setEditable(!restricted);
+        outputReserveInput.setEditable(!restricted);
+        routingModeButton.active = !restricted;
+        visionProbeButton.active = !restricted;
+        simpleButton.active = !restricted;
+        prevTemplateBtn.active = !restricted;
+        nextTemplateBtn.active = !restricted;
+        saveTemplateBtn.active = !restricted;
+        saveRouteButton.active = !restricted;
+        sendButton.active = !restricted || loadedHandoff != null;
+    }
+
     public void updateStatus(String statusJson) {
         List<String> providers = new ArrayList<>();
         List<String> purposes = new ArrayList<>();
@@ -282,6 +308,7 @@ public class TestPanel {
     }
 
     public boolean handleTabComplete(int keyCode) {
+        if (restricted) return false;
         if (keyCode != 258) return false;
         if (providerInput.isFocused() && !providerNames.isEmpty()) {
             providerCycleIndex = cycleMatch(providerInput, providerNames, providerCycleIndex);
@@ -320,6 +347,7 @@ public class TestPanel {
             promptInput.setValue(lastText(request));
             setResponseText(string("test.status.draft", request.requestId(), request.messages().size(),
                     request.generationType()));
+            updateRestrictedControls();
         } catch (IllegalArgumentException e) {
             setResponseText(string("common.error", e.getMessage()));
         }
@@ -337,6 +365,7 @@ public class TestPanel {
     }
 
     private void enterSimpleMode() {
+        if (restricted) return;
         loadedHandoff = null;
         activeRequestId = null;
         purposeInput.setValue("DEBUG_TEST");
@@ -346,7 +375,7 @@ public class TestPanel {
     }
 
     private void sendTest() {
-        if (waiting) return;
+        if (waiting || (restricted && loadedHandoff == null)) return;
         try {
             ConsoleTestRequest request = buildRequest();
             String requestJson = ConsoleTestCodec.toJson(request);
@@ -360,6 +389,7 @@ public class TestPanel {
     }
 
     private ConsoleTestRequest buildRequest() {
+        if (restricted && loadedHandoff != null) return loadedHandoff;
         UUID requestId = loadedHandoff == null ? UUID.randomUUID() : loadedHandoff.requestUuid();
         List<ConsoleTestRequest.MessageEntry> messages = loadedHandoff == null
                 ? List.of(ConsoleTestRequest.MessageEntry.text("simple.prompt", "console", "user",

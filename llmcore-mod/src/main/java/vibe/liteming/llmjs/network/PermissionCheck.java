@@ -4,6 +4,7 @@ import com.google.gson.JsonObject;
 import net.minecraft.commands.CommandSourceStack;
 import vibe.liteming.llmjs.config.LLMConfig;
 import vibe.liteming.llmjs.provider.ProviderManager;
+import vibe.liteming.llmjs.security.ConsoleTestGrantService;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.util.List;
@@ -24,6 +25,12 @@ public class PermissionCheck {
                 || isWhitelisted(player.getUUID(), LLMConfig.ADMIN_UUID_WHITELIST.get());
     }
 
+    /** Delegated Test permission never grants provider, routing, setup, or log access. */
+    public static boolean canTest(ServerPlayer player) {
+        return player != null && (canAdminister(player)
+                || ConsoleTestGrantService.INSTANCE.hasActiveGrant(player.getUUID()));
+    }
+
     public static boolean canAdminister(CommandSourceStack source) {
         ServerPlayer player = source.getPlayer();
         return player == null ? source.hasPermission(4) : canAdminister(player);
@@ -42,11 +49,24 @@ public class PermissionCheck {
     }
 
     public static JsonObject statusFor(ServerPlayer player) {
-        return createStatusPayload(canAdminister(player), ProviderManager.INSTANCE::getStatusJson);
+        boolean canAdminister = canAdminister(player);
+        boolean canView = canUse(player);
+        var grant = ConsoleTestGrantService.INSTANCE.activeGrant(player.getUUID());
+        boolean canTest = canAdminister || grant.isPresent();
+        Supplier<JsonObject> restrictedStatus = () -> grant
+                .map(value -> ProviderManager.INSTANCE.getTestStatusJson(value.request().purpose()))
+                .orElseGet(JsonObject::new);
+        return createStatusPayload(canView, canTest, canAdminister,
+                ProviderManager.INSTANCE::getStatusJson, restrictedStatus);
     }
 
-    static JsonObject createStatusPayload(boolean canAdminister, Supplier<JsonObject> fullStatus) {
-        JsonObject result = canAdminister ? fullStatus.get() : new JsonObject();
+    static JsonObject createStatusPayload(boolean canView, boolean canTest, boolean canAdminister,
+            Supplier<JsonObject> fullStatus, Supplier<JsonObject> restrictedTestStatus) {
+        JsonObject result = canAdminister
+                ? fullStatus.get()
+                : canTest ? restrictedTestStatus.get() : new JsonObject();
+        result.addProperty("canView", canView);
+        result.addProperty("canTest", canTest);
         result.addProperty("canAdminister", canAdminister);
         return result;
     }
