@@ -1,6 +1,5 @@
 package vibe.liteming.llmjs.client.screen;
 
-import com.google.gson.JsonObject;
 import vibe.liteming.llmjs.client.ClientEventHandler;
 import vibe.liteming.llmjs.client.widget.LogPanel;
 import vibe.liteming.llmjs.client.widget.ProviderListPanel;
@@ -36,7 +35,6 @@ public class LLMConsoleScreen extends Screen {
     private final String initialStatusJson;
     private final @Nullable String initialTestHandoff;
     private @Nullable Screen returnScreen;
-    private boolean takeoverTipShown;
     private Button logTab;
     private Button providersTab;
     private Button routingTab;
@@ -102,7 +100,6 @@ public class LLMConsoleScreen extends Screen {
         for (var w : setupPanel.getWidgets()) addRenderableWidget(w);
 
         testPanel.updateStatus(initialStatusJson);
-        maybeShowTakeoverTip();
         if (initialTestHandoff != null && !initialTestHandoff.isBlank()) {
             testPanel.loadHandoff(initialTestHandoff);
             switchTab(Tab.TEST);
@@ -142,36 +139,6 @@ public class LLMConsoleScreen extends Screen {
         testPanel.setBounds(panelX, panelY, panelW, panelH);
         setupPanel.setBounds(panelX, panelY, panelW, panelH);
         switchTab(activeTab);
-    }
-
-    private void maybeShowTakeoverTip() {
-        if (takeoverTipShown || logPanel == null) return;
-        boolean linked = false;
-        try {
-            linked = net.minecraftforge.fml.ModList.get().isLoaded("creaturechat");
-            if (!linked && providerPanel != null) {
-                for (String name : providerPanel.getProviderNames()) {
-                    if (name != null && (name.startsWith("dialogue_") || name.startsWith("creaturechat_")
-                            || "dialogue_primary".equals(name))) {
-                        linked = true;
-                        break;
-                    }
-                }
-            }
-        } catch (Exception ignored) {}
-        if (!linked) return;
-        takeoverTipShown = true;
-        JsonObject tip = new JsonObject();
-        tip.addProperty("level", "INFO");
-        tip.addProperty("provider", "system");
-        tip.addProperty("status", "info");
-        tip.addProperty("latencyMs", 0);
-        tip.addProperty("requestSummary", string("notice.creaturechat_linked"));
-        tip.addProperty("purpose", "NOTICE");
-        tip.addProperty("source", "llmjs");
-        tip.addProperty("requestBody", "");
-        tip.addProperty("responseBody", "");
-        logPanel.addEntry(tip.toString());
     }
 
     private void switchTab(Tab tab) {
@@ -302,7 +269,6 @@ public class LLMConsoleScreen extends Screen {
             if (testPanel != null) {
                 testPanel.updateStatus(statusJson);
             }
-            maybeShowTakeoverTip();
         }
         if (routingPanel != null) {
             routingPanel.updateStatus(statusJson);
@@ -315,10 +281,7 @@ public class LLMConsoleScreen extends Screen {
 
     public void onLogHistory(List<String> entries) {
         if (logPanel != null) {
-            // History replaces buffer; re-show tip after so it is not wiped by setHistory
-            takeoverTipShown = false;
             logPanel.setHistory(entries);
-            maybeShowTakeoverTip();
         }
     }
 

@@ -32,8 +32,6 @@
   "gui.llmjs.parameter.output_reserve": "输出预留",
   "gui.llmjs.parameter.output_reserve.tip": "输入 0..1,000,000 个输出预留 Token；留空表示继承。非法值会阻止发送/保存并显示错误。",
 
-  "gui.llmjs.notice.creaturechat_linked": "已连接 CreatureChat。请在 /llm console 配置 URL、密钥、模型与路由；即使控制台关闭，CreatureChat 请求也会记录在“日志”页。",
-
   "gui.llmjs.test.purpose": "用途",
   "gui.llmjs.test.purpose.tip": "用于解析提供商链与生成限制的已注册请求用途。按 Tab 可轮换匹配的用途。",
   "gui.llmjs.test.chain": "提供商",

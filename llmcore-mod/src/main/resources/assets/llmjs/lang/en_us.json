@@ -32,8 +32,6 @@
   "gui.llmjs.parameter.output_reserve": "Output reserve",
   "gui.llmjs.parameter.output_reserve.tip": "Enter 0..1,000,000 reserved output tokens. Leave blank to inherit; invalid values block Send/Save and show an error.",
 
-  "gui.llmjs.notice.creaturechat_linked": "CreatureChat is linked. Configure URL, key, model, and routing in /llm console. CreatureChat requests are recorded in this Log tab even while the console is closed.",
-
   "gui.llmjs.test.purpose": "Purpose",
   "gui.llmjs.test.purpose.tip": "Registered request purpose used to resolve its provider chain and generation limits. Press Tab to cycle matching purposes.",
   "gui.llmjs.test.chain": "Provider",
