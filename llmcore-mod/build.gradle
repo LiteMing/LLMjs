@@ -25,8 +25,24 @@ tasks.withType(JavaCompile).configureEach {
 minecraft {
     mappings channel: 'official', version: '1.20.1'
     runs {
-        client { workingDirectory project.file('run') }
-        server { workingDirectory project.file('run') }
+        client {
+            workingDirectory project.file('run')
+            mods {
+                llmcore {
+                    source sourceSets.main
+                    source project(':core').sourceSets.main
+                }
+            }
+        }
+        server {
+            workingDirectory project.file('run')
+            mods {
+                llmcore {
+                    source sourceSets.main
+                    source project(':core').sourceSets.main
+                }
+            }
+        }
     }
 }
 
@@ -35,6 +51,12 @@ dependencies {
     // Compile against the plain-Java core subproject; its classes are baked into
     // this jar via the `from(...)` below — no runtime dependency on the core jar.
     implementation project(':core')
+    testImplementation platform('org.junit:junit-bom:5.10.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+test {
+    useJUnitPlatform()
 }
 
 // Pull core's compiled classes (and only classes — gson stays as a runtime
@@ -46,6 +68,89 @@ jar {
     finalizedBy 'reobfJar'
 }
 
+def devJar = tasks.register('devJar', Jar) {
+    group = 'build'
+    description = 'Builds an unobfuscated llmcore jar for sibling-project development runs.'
+    archiveClassifier = 'dev'
+    dependsOn project(':core').tasks.named('classes')
+    from sourceSets.main.output
+    from project(':core').sourceSets.main.output
+}
+
+configurations {
+    developmentRuntime {
+        canBeConsumed = true
+        canBeResolved = false
+    }
+}
+
+artifacts {
+    developmentRuntime devJar
+}
+
 tasks.named('build').configure {
     dependsOn 'reobfJar'
+}
+
+tasks.register('verifyRuntimeSourceBoundary') {
+    group = 'verification'
+    description = 'Ensures llmcore remains independent of KubeJS and its support libraries.'
+    inputs.files(sourceSets.main.allJava)
+
+    doLast {
+        List<String> forbiddenNamespaces = [
+                'dev.latvian.',
+                'dev.architectury.'
+        ]
+        List<String> violations = []
+        sourceSets.main.allJava.files.each { file ->
+            String source = file.getText('UTF-8')
+            forbiddenNamespaces.each { namespace ->
+                if (source.contains(namespace)) {
+                    violations.add("${project.relativePath(file)} -> ${namespace}")
+                }
+            }
+        }
+        if (!violations.isEmpty()) {
+            throw new GradleException("llmcore runtime depends on adapter-only namespaces:\n"
+                    + violations.sort().join('\n'))
+        }
+    }
+}
+
+tasks.register('verifyRuntimeJarBoundary') {
+    group = 'verification'
+    description = 'Checks that llmcore owns the runtime and Console implementation.'
+    dependsOn 'reobfJar'
+
+    doLast {
+        File artifact = tasks.named('jar').get().archiveFile.get().asFile
+        List<String> entries = []
+        zipTree(artifact).visit { details ->
+            if (!details.directory) entries.add(details.path)
+        }
+
+        List<String> required = [
+                'vibe/liteming/llmcore/LlmOrchestrator.class',
+                'vibe/liteming/llmcore/mod/LlmCoreMod.class',
+                'vibe/liteming/llmjs/client/screen/LLMConsoleScreen.class',
+                'vibe/liteming/llmjs/command/LLMCommand.class',
+                'vibe/liteming/llmjs/log/LLMLogger.class',
+                'vibe/liteming/llmjs/network/LLMNetwork.class',
+                'vibe/liteming/llmjs/provider/ProviderManager.class'
+        ]
+        List<String> missing = required.findAll { !entries.contains(it) }
+        List<String> adapterLeakage = entries.findAll { path ->
+            path.startsWith('vibe/liteming/llmjs/kubejs/')
+                    || path.startsWith('vibe/liteming/llmjs/json/')
+                    || path.startsWith('vibe/liteming/llmjs/session/')
+        }
+        if (!missing.isEmpty() || !adapterLeakage.isEmpty()) {
+            throw new GradleException("Invalid llmcore jar ownership. Missing: ${missing}; adapter leakage: ${adapterLeakage}")
+        }
+    }
+}
+
+tasks.named('check').configure {
+    dependsOn 'verifyRuntimeSourceBoundary', 'verifyRuntimeJarBoundary'
 }

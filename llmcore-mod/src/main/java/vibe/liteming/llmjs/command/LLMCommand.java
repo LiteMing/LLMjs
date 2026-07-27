@@ -74,7 +74,7 @@ public class LLMCommand {
     }
 
     private static int showStatus(CommandSourceStack source) {
-        source.sendSuccess(() -> Component.literal("[LLMjs] Provider status:"), false);
+        source.sendSuccess(() -> Component.literal("[LLM Core] Provider status:"), false);
         for (String name : ProviderManager.INSTANCE.getProviderNames()) {
             var provider = ProviderManager.INSTANCE.getProvider(name);
             var cached = ProviderManager.INSTANCE.getCachedStatus(name);
@@ -89,7 +89,7 @@ public class LLMCommand {
 
     private static int testProvider(CommandSourceStack source, String providerName) {
         if ("*".equals(providerName)) {
-            source.sendSuccess(() -> Component.literal("[LLMjs] Testing all providers..."), false);
+            source.sendSuccess(() -> Component.literal("[LLM Core] Testing all providers..."), false);
             for (String name : ProviderManager.INSTANCE.getProviderNames()) {
                 testSingle(source, name);
             }
@@ -102,26 +102,26 @@ public class LLMCommand {
     private static void testSingle(CommandSourceStack source, String name) {
         ProviderManager.INSTANCE.testProvider(name).thenAccept(status -> {
             if (status.connected()) {
-                source.sendSuccess(() -> Component.literal("[LLMjs] " + name + ": OK (" + status.latencyMs() + "ms)"), false);
+                source.sendSuccess(() -> Component.literal("[LLM Core] " + name + ": OK (" + status.latencyMs() + "ms)"), false);
             } else {
-                source.sendFailure(Component.literal("[LLMjs] " + name + ": FAILED - " + status.lastError()));
+                source.sendFailure(Component.literal("[LLM Core] " + name + ": FAILED - " + status.lastError()));
             }
         });
     }
 
     private static int reloadConfig(CommandSourceStack source) {
         ProviderManager.INSTANCE.reload();
-        source.sendSuccess(() -> Component.literal("[LLMjs] Configuration reloaded"), false);
+        source.sendSuccess(() -> Component.literal("[LLM Core] Configuration reloaded"), false);
         return 1;
     }
 
     private static int setKey(CommandSourceStack source, String providerName, String apiKey) {
         if (ProviderLoader.setKey(providerName, apiKey)) {
             ProviderManager.INSTANCE.reload();
-            source.sendSuccess(() -> Component.literal("[LLMjs] Key set for '" + providerName + "', config reloaded"), false);
+            source.sendSuccess(() -> Component.literal("[LLM Core] Key set for '" + providerName + "', config reloaded"), false);
             return 1;
         } else {
-            source.sendFailure(Component.literal("[LLMjs] Failed to write key. Check server logs."));
+            source.sendFailure(Component.literal("[LLM Core] Failed to write key. Check server logs."));
             return 0;
         }
     }

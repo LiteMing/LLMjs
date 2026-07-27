@@ -29,6 +29,8 @@ minecraft {
             workingDirectory project.file('run')
             property 'forge.logging.markers', 'REGISTRIES'
             property 'forge.logging.console.level', 'debug'
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
             mods {
                 llmjs {
                     source sourceSets.main
@@ -39,6 +41,8 @@ minecraft {
             workingDirectory project.file('run')
             property 'forge.logging.markers', 'REGISTRIES'
             property 'forge.logging.console.level', 'debug'
+            property 'mixin.env.remapRefMap', 'true'
+            property 'mixin.env.refMapRemappingFile', "${projectDir}/build/createSrgToMcp/output.srg"
             mods {
                 llmjs {
                     source sourceSets.main
@@ -56,7 +60,7 @@ repositories {
 }
 
 dependencies {
-    implementation project(':core')
+    implementation project(path: ':llmcore-mod', configuration: 'developmentRuntime')
     minecraft 'net.minecraftforge:forge:1.20.1-47.2.0'
     implementation fg.deobf("curse.maven:kubejs-238086:5853326")
     implementation fg.deobf("curse.maven:architectury-api-419699:5137938")
@@ -73,21 +77,60 @@ test {
 }
 
 evaluationDependsOn(':core')
+evaluationDependsOn(':llmcore-mod')
 
 // Production jars must be reobfuscated for Forge runtime (SRG names).
 // Without reobfJar, Commands.literal/etc resolve as NoSuchMethodError in packs.
 //
-// llm-core is NO LONGER embedded into the llmjs jar: it ships as its own Forge
-// mod (the :llmcore-mod sibling project -> llmcore-x.y.z.jar) that llmjs
-// declares as an optional dependency. This keeps exactly one copy of
-// vibe.liteming.llmcore.* on the runtime classpath when llmjs and CreatureChat
-// are both installed, eliminating the split-package collisions that previously
-// forced CreatureChat to shadow-relocate. Compile-time visibility of the core
-// API is still provided by `implementation project(':core')` above.
+// llmjs is now the KubeJS adapter. Runtime services and the Console ship from
+// :llmcore-mod; project dependencies provide compile-time visibility only and
+// are not embedded in the llmjs production jar.
 jar {
     finalizedBy 'reobfJar'
 }
 
 tasks.named('build').configure {
     dependsOn 'reobfJar'
+}
+
+def runtimeOwnedPrefixes = [
+        'vibe/liteming/llmjs/api/',
+        'vibe/liteming/llmjs/client/',
+        'vibe/liteming/llmjs/command/',
+        'vibe/liteming/llmjs/compat/',
+        'vibe/liteming/llmjs/config/',
+        'vibe/liteming/llmjs/format/',
+        'vibe/liteming/llmjs/http/',
+        'vibe/liteming/llmjs/log/',
+        'vibe/liteming/llmjs/network/',
+        'vibe/liteming/llmjs/provider/',
+        'vibe/liteming/llmjs/test/',
+        'vibe/liteming/llmjs/vision/'
+]
+
+tasks.register('verifyAdapterJarBoundary') {
+    group = 'verification'
+    description = 'Ensures llmjs only ships its KubeJS-facing adapter classes.'
+    dependsOn 'reobfJar'
+
+    doLast {
+        File artifact = tasks.named('jar').get().archiveFile.get().asFile
+        List<String> entries = []
+        zipTree(artifact).visit { details ->
+            if (!details.directory) entries.add(details.path)
+        }
+
+        List<String> violations = entries.findAll { path ->
+            runtimeOwnedPrefixes.any { path.startsWith(it) }
+                    || path.startsWith('vibe/liteming/llmjs/pipeline/')
+        }
+        if (!violations.isEmpty()) {
+            throw new GradleException("llmjs jar contains llmcore-owned runtime classes:\n"
+                    + violations.sort().join('\n'))
+        }
+    }
+}
+
+tasks.named('check').configure {
+    dependsOn 'verifyAdapterJarBoundary'
 }

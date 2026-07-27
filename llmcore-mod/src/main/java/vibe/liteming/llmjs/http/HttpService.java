@@ -1,6 +1,6 @@
 package vibe.liteming.llmjs.http;
 
-import vibe.liteming.llmjs.LLMjs;
+import vibe.liteming.llmcore.mod.LlmCoreMod;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -48,7 +48,7 @@ public class HttpService {
                 })
                 .exceptionally(ex -> {
                     long latency = System.currentTimeMillis() - startTime;
-                    LLMjs.LOGGER.error("HTTP request failed: {}", url, ex);
+                    LlmCoreMod.LOGGER.error("HTTP request failed: {}", url, ex);
                     return new HttpResult(-1, "Request failed: " + ex.getMessage(), latency);
                 });
     }

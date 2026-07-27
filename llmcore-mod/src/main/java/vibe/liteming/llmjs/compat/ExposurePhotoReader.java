@@ -1,6 +1,6 @@
 package vibe.liteming.llmjs.compat;
 
-import vibe.liteming.llmjs.LLMjs;
+import vibe.liteming.llmcore.mod.LlmCoreMod;
 import vibe.liteming.llmjs.vision.VisionImage;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.nbt.NbtIo;
@@ -70,13 +70,13 @@ public final class ExposurePhotoReader {
         if (!isExposurePhoto(stack)) return Optional.empty();
         String exposureId = getExposureId(stack);
         if (exposureId == null || exposureId.isBlank()) {
-            LLMjs.LOGGER.warn("Exposure photo in {} has no exposure id", hand);
+            LlmCoreMod.LOGGER.warn("Exposure photo in {} has no exposure id", hand);
             return Optional.empty();
         }
         byte[] pngBytes = readPhotoPng(player.server, exposureId);
         if (pngBytes == null || pngBytes.length == 0) return Optional.empty();
         if (pngBytes.length > maxBytes) {
-            LLMjs.LOGGER.warn("Exposure photo '{}' is too large: {} > {}", exposureId, pngBytes.length, maxBytes);
+            LlmCoreMod.LOGGER.warn("Exposure photo '{}' is too large: {} > {}", exposureId, pngBytes.length, maxBytes);
             return Optional.empty();
         }
         String base64 = Base64.getEncoder().encodeToString(pngBytes);
@@ -102,7 +102,7 @@ public final class ExposurePhotoReader {
             PhotoPixels disk = readDiskPixels(server, exposureId).orElse(null);
             if (disk != null) return encodePng(disk);
         } catch (Exception e) {
-            LLMjs.LOGGER.error("Failed to read Exposure photo '{}'", exposureId, e);
+            LlmCoreMod.LOGGER.error("Failed to read Exposure photo '{}'", exposureId, e);
         }
         return null;
     }
@@ -136,7 +136,7 @@ public final class ExposurePhotoReader {
                 return Optional.of(new PhotoPixels(width, height, pixels));
             }
         } catch (Exception e) {
-            LLMjs.LOGGER.debug("Exposure in-memory cache read failed for '{}': {}", exposureId, e.getMessage());
+            LlmCoreMod.LOGGER.debug("Exposure in-memory cache read failed for '{}': {}", exposureId, e.getMessage());
         }
         return Optional.empty();
     }
@@ -156,7 +156,7 @@ public final class ExposurePhotoReader {
                 return Optional.of(new PhotoPixels(width, height, pixels));
             }
         } catch (Exception e) {
-            LLMjs.LOGGER.warn("Exposure .dat read failed for '{}': {}", exposureId, e.getMessage());
+            LlmCoreMod.LOGGER.warn("Exposure .dat read failed for '{}': {}", exposureId, e.getMessage());
         }
         return Optional.empty();
     }

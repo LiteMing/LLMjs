@@ -1,7 +1,7 @@
 package vibe.liteming.llmjs.config;
 
 import com.google.gson.*;
-import vibe.liteming.llmjs.LLMjs;
+import vibe.liteming.llmcore.mod.LlmCoreMod;
 
 import java.io.IOException;
 import java.nio.file.*;
@@ -31,14 +31,14 @@ public class GlobalConfig {
 
             if (!Files.exists(providersFile)) {
                 Files.writeString(providersFile, getDefaultProviders());
-                LLMjs.LOGGER.info("Created global config/llmjs/providers.json");
+                LlmCoreMod.LOGGER.info("Created global config/llmjs/providers.json");
             }
             if (!Files.exists(templatesFile)) {
                 Files.writeString(templatesFile, getDefaultTemplates());
-                LLMjs.LOGGER.info("Created global config/llmjs/templates.json");
+                LlmCoreMod.LOGGER.info("Created global config/llmjs/templates.json");
             }
         } catch (IOException e) {
-            LLMjs.LOGGER.error("Failed to create global config directory", e);
+            LlmCoreMod.LOGGER.error("Failed to create global config directory", e);
         }
     }
 
@@ -66,7 +66,7 @@ public class GlobalConfig {
                 }
             }
         } catch (Exception e) {
-            LLMjs.LOGGER.error("Failed to load templates.json", e);
+            LlmCoreMod.LOGGER.error("Failed to load templates.json", e);
         }
         return templates;
     }
@@ -84,7 +84,7 @@ public class GlobalConfig {
             }
             Files.writeString(file, GSON.toJson(arr));
         } catch (Exception e) {
-            LLMjs.LOGGER.error("Failed to save templates.json", e);
+            LlmCoreMod.LOGGER.error("Failed to save templates.json", e);
         }
     }
 

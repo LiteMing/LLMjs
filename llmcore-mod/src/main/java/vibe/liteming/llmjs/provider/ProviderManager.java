@@ -14,7 +14,7 @@ import vibe.liteming.llmcore.ProviderSpec;
 import vibe.liteming.llmcore.PurposeMeta;
 import vibe.liteming.llmcore.PurposeRegistry;
 import vibe.liteming.llmcore.RoutingConfigStore;
-import vibe.liteming.llmjs.LLMjs;
+import vibe.liteming.llmcore.mod.LlmCoreMod;
 import vibe.liteming.llmjs.config.GlobalConfig;
 import vibe.liteming.llmjs.config.LLMConfig;
 import vibe.liteming.llmjs.config.ProviderLoader;
@@ -77,7 +77,7 @@ public class ProviderManager {
             if ("raw".equals(provider.getType())) newProviders.put(name, provider);
         });
         this.providers = new ConcurrentHashMap<>(newProviders);
-        LLMjs.LOGGER.info("Loaded {} providers", providers.size());
+        LlmCoreMod.LOGGER.info("Loaded {} providers", providers.size());
         // Load/reload the shared priority-routing table and push it into the orchestrator.
         this.routingConfig = RoutingConfigStore.load(getRoutingFile());
         this.orchestrator.setRoutingConfig(routingConfig);
@@ -105,7 +105,7 @@ public class ProviderManager {
         if (file == null) return false;
         boolean ok = RoutingConfigStore.save(file, this.routingConfig);
         if (!ok) {
-            LLMjs.LOGGER.warn("Failed to persist routing.json (in-memory still updated)");
+            LlmCoreMod.LOGGER.warn("Failed to persist routing.json (in-memory still updated)");
         }
         return ok;
     }

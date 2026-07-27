@@ -38,6 +38,7 @@ public class LLMConfig {
     }
 
     public static void register() {
-        ModLoadingContext.get().registerConfig(ModConfig.Type.SERVER, SPEC);
+        // Keep the established filename while runtime ownership moves to llmcore.
+        ModLoadingContext.get().registerConfig(ModConfig.Type.SERVER, SPEC, "llmjs-server.toml");
     }
 }

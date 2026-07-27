@@ -18,7 +18,7 @@ import java.util.List;
 import java.util.UUID;
 
 @OnlyIn(Dist.CLIENT)
-@Mod.EventBusSubscriber(modid = "llmjs", value = Dist.CLIENT)
+@Mod.EventBusSubscriber(modid = "llmcore", value = Dist.CLIENT)
 public class ClientEventHandler {
 
     private static final int MAX_CLIENT_BUFFER = 300;

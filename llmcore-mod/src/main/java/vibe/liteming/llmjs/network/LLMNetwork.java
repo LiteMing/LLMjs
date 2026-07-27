@@ -1,6 +1,6 @@
 package vibe.liteming.llmjs.network;
 
-import vibe.liteming.llmjs.LLMjs;
+import vibe.liteming.llmcore.mod.LlmCoreMod;
 import vibe.liteming.llmjs.network.packet.*;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraftforge.network.NetworkDirection;
@@ -10,7 +10,7 @@ import net.minecraftforge.network.simple.SimpleChannel;
 public class LLMNetwork {
     private static final String PROTOCOL_VERSION = "4";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
-            new ResourceLocation(LLMjs.MODID, "main"),
+            new ResourceLocation(LlmCoreMod.MODID, "main"),
             () -> PROTOCOL_VERSION,
             PROTOCOL_VERSION::equals,
             PROTOCOL_VERSION::equals

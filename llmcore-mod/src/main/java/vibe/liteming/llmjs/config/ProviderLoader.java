@@ -1,7 +1,7 @@
 package vibe.liteming.llmjs.config;
 
 import com.google.gson.*;
-import vibe.liteming.llmjs.LLMjs;
+import vibe.liteming.llmcore.mod.LlmCoreMod;
 import vibe.liteming.llmjs.provider.Provider;
 import vibe.liteming.llmjs.provider.RawProvider;
 import vibe.liteming.llmjs.provider.SimpleProvider;
@@ -32,14 +32,14 @@ public class ProviderLoader {
             Files.createDirectories(serverConfigDir);
             if (!Files.exists(serverRawFile)) {
                 Files.writeString(serverRawFile, GSON.toJson(new JsonObject()));
-                LLMjs.LOGGER.info("Created default providers_raw.json");
+                LlmCoreMod.LOGGER.info("Created default providers_raw.json");
             }
             if (!Files.exists(secretFile)) {
                 Files.writeString(secretFile, getDefaultSecret());
-                LLMjs.LOGGER.info("Created llmjs.secret - fill in your API keys here");
+                LlmCoreMod.LOGGER.info("Created llmjs.secret - fill in your API keys here");
             }
         } catch (IOException e) {
-            LLMjs.LOGGER.error("Failed to create config files", e);
+            LlmCoreMod.LOGGER.error("Failed to create config files", e);
         }
 
         // Load secrets: the ONLY source for keys
@@ -49,14 +49,14 @@ public class ProviderLoader {
         Path globalFile = GlobalConfig.getGlobalProvidersFile();
         if (globalFile != null && Files.exists(globalFile)) {
             loadSimpleProviders(globalFile, providers, secrets);
-            LLMjs.LOGGER.debug("Loaded global providers from config/llmjs/providers.json");
+            LlmCoreMod.LOGGER.debug("Loaded global providers from config/llmjs/providers.json");
         }
 
         // Layer 2: server providers override global (same name = replace)
         Path serverFile = serverConfigDir.resolve("providers.json");
         if (Files.exists(serverFile)) {
             loadSimpleProviders(serverFile, providers, secrets);
-            LLMjs.LOGGER.debug("Loaded server provider overrides from serverconfig/llmjs/providers.json");
+            LlmCoreMod.LOGGER.debug("Loaded server provider overrides from serverconfig/llmjs/providers.json");
         }
 
         // RAW providers (server-level only, advanced usage)
@@ -79,7 +79,7 @@ public class ProviderLoader {
                 return root.has("providers") ? root.getAsJsonObject("providers") : root;
             }
         } catch (Exception e) {
-            LLMjs.LOGGER.error("Failed to load llmjs.secret", e);
+            LlmCoreMod.LOGGER.error("Failed to load llmjs.secret", e);
         }
         return new JsonObject();
     }
@@ -125,10 +125,10 @@ public class ProviderLoader {
                 SimpleProvider provider = new SimpleProvider(entry.getKey(), format, url, key, model, temp, maxTokens);
                 if (provider.isValid()) {
                     providers.put(entry.getKey(), provider);
-                    LLMjs.LOGGER.info("Loaded custom provider '{}' from llmjs.secret", entry.getKey());
+                    LlmCoreMod.LOGGER.info("Loaded custom provider '{}' from llmjs.secret", entry.getKey());
                 }
             } catch (Exception e) {
-                LLMjs.LOGGER.warn("Failed to load secret provider '{}': {}", entry.getKey(), e.getMessage());
+                LlmCoreMod.LOGGER.warn("Failed to load secret provider '{}': {}", entry.getKey(), e.getMessage());
             }
         }
     }
@@ -196,7 +196,7 @@ public class ProviderLoader {
             Files.writeString(secretFile, GSON.toJson(root));
             return true;
         } catch (Exception e) {
-            LLMjs.LOGGER.error("Failed to write llmjs.secret for '{}'", name, e);
+            LlmCoreMod.LOGGER.error("Failed to write llmjs.secret for '{}'", name, e);
             return false;
         }
     }
@@ -224,11 +224,11 @@ public class ProviderLoader {
                     SimpleProvider provider = new SimpleProvider(entry.getKey(), format, url, key, model, temp, maxTokens);
                     if (provider.isValid()) providers.put(entry.getKey(), provider);
                 } catch (Exception e) {
-                    LLMjs.LOGGER.warn("Failed to load provider '{}': {}", entry.getKey(), e.getMessage());
+                    LlmCoreMod.LOGGER.warn("Failed to load provider '{}': {}", entry.getKey(), e.getMessage());
                 }
             }
         } catch (Exception e) {
-            LLMjs.LOGGER.error("Failed to load {}", file, e);
+            LlmCoreMod.LOGGER.error("Failed to load {}", file, e);
         }
     }
 
@@ -255,11 +255,11 @@ public class ProviderLoader {
                     RawProvider provider = new RawProvider(entry.getKey(), url, method, headers, bodyTemplate, responsePath, key, model);
                     if (provider.isValid()) providers.put(entry.getKey(), provider);
                 } catch (Exception e) {
-                    LLMjs.LOGGER.warn("Failed to load raw provider '{}': {}", entry.getKey(), e.getMessage());
+                    LlmCoreMod.LOGGER.warn("Failed to load raw provider '{}': {}", entry.getKey(), e.getMessage());
                 }
             }
         } catch (Exception e) {
-            LLMjs.LOGGER.error("Failed to load {}", file, e);
+            LlmCoreMod.LOGGER.error("Failed to load {}", file, e);
         }
     }
 
