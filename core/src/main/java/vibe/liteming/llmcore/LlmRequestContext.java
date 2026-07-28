@@ -15,6 +15,7 @@ public record LlmRequestContext(
         String responderEntityId,
         String responderName,
         String triggerSource,
+        String addressee,
         String audience,
         String inputKind) {
 
@@ -22,7 +23,16 @@ public record LlmRequestContext(
     public LlmRequestContext(String requestId, String purpose, String entityId, String entityType,
             String customName, String sessionId, String explicitRoute, boolean structured) {
         this(requestId, purpose, entityId, entityType, customName, sessionId, explicitRoute, structured,
-                entityId, customName, "", "", purpose);
+                entityId, customName, "", "", "", purpose);
+    }
+
+    /** Backward-compatible diagnostic shape used before addressee became independent. */
+    public LlmRequestContext(String requestId, String purpose, String entityId, String entityType,
+            String customName, String sessionId, String explicitRoute, boolean structured,
+            String responderEntityId, String responderName, String triggerSource,
+            String audience, String inputKind) {
+        this(requestId, purpose, entityId, entityType, customName, sessionId, explicitRoute, structured,
+                responderEntityId, responderName, triggerSource, "", audience, inputKind);
     }
 
     public LlmRequestContext {
@@ -36,13 +46,14 @@ public record LlmRequestContext(
         responderEntityId = clean(responderEntityId);
         responderName = clean(responderName);
         triggerSource = clean(triggerSource);
+        addressee = clean(addressee);
         audience = clean(audience);
         inputKind = clean(inputKind).isEmpty() ? purpose : clean(inputKind);
     }
 
     public static LlmRequestContext chat() {
         return new LlmRequestContext("", "CHAT", "", "", "", "", "", false,
-                "", "", "", "", "player");
+                "", "", "", "", "", "player");
     }
 
     private static String clean(String value) {

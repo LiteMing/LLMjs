@@ -42,6 +42,19 @@ class LLMLoggerTest {
         assertEquals("request-c", logger.getRecentEntries()[0].requestId());
     }
 
+    @Test
+    void serializesAddresseeSeparatelyFromTriggerAndAudience() {
+        logger.log(LLMLogger.Level.INFO, "provider", "summary", "success",
+                1L, 2, 3, null, "CHAT", "request", "test", "request", "response",
+                "stop", 8, "preview", "npc", "Reimu", "player-event",
+                "PLAYER:alex", "PUBLIC", "chat", "PLAYER", "player-id", "root");
+
+        var json = logger.getRecentEntries()[0].toJson();
+        assertEquals("player-event", json.get("triggerSource").getAsString());
+        assertEquals("PLAYER:alex", json.get("addressee").getAsString());
+        assertEquals("PUBLIC", json.get("audience").getAsString());
+    }
+
     private void log(String requestId) {
         logger.logExternal("test", "CHAT", requestId, "provider", true,
                 1L, 2, 3, "summary", "request", "response", null);

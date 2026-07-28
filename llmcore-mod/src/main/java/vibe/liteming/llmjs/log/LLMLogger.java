@@ -40,6 +40,7 @@ public class LLMLogger {
             String responderEntityId,
             String responderName,
             String triggerSource,
+            String addressee,
             String audience,
             String inputKind,
             String billingPrincipal,
@@ -66,6 +67,7 @@ public class LLMLogger {
             if (responderEntityId != null && !responderEntityId.isBlank()) obj.addProperty("responderEntityId", responderEntityId);
             if (responderName != null && !responderName.isBlank()) obj.addProperty("responderName", responderName);
             if (triggerSource != null && !triggerSource.isBlank()) obj.addProperty("triggerSource", triggerSource);
+            if (addressee != null && !addressee.isBlank()) obj.addProperty("addressee", addressee);
             if (audience != null && !audience.isBlank()) obj.addProperty("audience", audience);
             if (inputKind != null && !inputKind.isBlank()) obj.addProperty("inputKind", inputKind);
             if (billingPrincipal != null && !billingPrincipal.isBlank()) obj.addProperty("billingPrincipal", billingPrincipal);
@@ -105,7 +107,7 @@ public class LLMLogger {
                 event.completionTokens(), event.error(), event.purpose(), event.requestId(),
                 event.source(), event.requestBody(), event.responseBody(), event.finishReason(),
                 event.contentLength(), event.responsePreview(), event.responderEntityId(), event.responderName(),
-                event.triggerSource(), event.audience(), event.inputKind(), event.billingPrincipal(),
+                event.triggerSource(), event.addressee(), event.audience(), event.inputKind(), event.billingPrincipal(),
                 event.billingPrincipalId(), event.causalRootRequestId());
     }
 
@@ -208,6 +210,19 @@ public class LLMLogger {
                     String responsePreview, String responderEntityId, String responderName,
                     String triggerSource, String audience, String inputKind, String billingPrincipal,
                     String billingPrincipalId, String causalRootRequestId) {
+        log(level, provider, prompt, status, latencyMs, promptTokens, completionTokens,
+                errorMessage, purpose, requestId, source, requestBody, responseBody, finishReason,
+                contentLength, responsePreview, responderEntityId, responderName, triggerSource,
+                "", audience, inputKind, billingPrincipal, billingPrincipalId, causalRootRequestId);
+    }
+
+    public void log(Level level, String provider, String prompt, String status,
+                    long latencyMs, int promptTokens, int completionTokens,
+                    @Nullable String errorMessage, String purpose, String requestId, String source,
+                    String requestBody, String responseBody, String finishReason, int contentLength,
+                    String responsePreview, String responderEntityId, String responderName,
+                    String triggerSource, String addressee, String audience, String inputKind,
+                    String billingPrincipal, String billingPrincipalId, String causalRootRequestId) {
         String summary = prompt == null ? "" : prompt;
         if (summary.length() > 100) summary = summary.substring(0, 100) + "...";
         LogEntry entry = new LogEntry(Instant.now(), level, provider == null ? "" : provider, summary,
@@ -219,6 +234,7 @@ public class LLMLogger {
                 responderEntityId == null ? "" : responderEntityId,
                 responderName == null ? "" : responderName,
                 triggerSource == null ? "" : triggerSource,
+                addressee == null ? "" : addressee,
                 audience == null ? "" : audience,
                 inputKind == null ? "" : inputKind,
                 billingPrincipal == null ? "" : billingPrincipal,

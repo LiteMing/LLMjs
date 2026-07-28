@@ -19,7 +19,7 @@ class LlmRequestLoggerTest {
                     "a78cc4bd-861b-45dc-87ec-4699aab476e5", "root-request", 1, 100L);
             LlmRequest request = LlmRequest.routed(List.of(new LlmMessage("user", "hello")),
                     new LlmRequestContext("request", "CHAT", "", "", "", "", "", false,
-                            "", "", "player", "operator", "chat"), billing);
+                            "", "", "player", "PLAYER:alex", "operator", "chat"), billing);
             LlmResponse response = new LlmResponse(true, "answer", "", "provider", "model", "credential",
                     4, 2, 1L, List.of());
 
@@ -28,6 +28,9 @@ class LlmRequestLoggerTest {
             assertEquals("PLAYER", captured.get().billingPrincipal());
             assertEquals("a78cc4bd-861b-45dc-87ec-4699aab476e5", captured.get().billingPrincipalId());
             assertEquals("root-request", captured.get().causalRootRequestId());
+            assertEquals("player", captured.get().triggerSource());
+            assertEquals("PLAYER:alex", captured.get().addressee());
+            assertEquals("operator", captured.get().audience());
         } finally {
             LlmRequestLogger.removeListener(listener);
         }

@@ -67,6 +67,7 @@ public class LogPanel extends AbstractWidget {
             String error,
             String responder,
             String triggerSource,
+            String addressee,
             String audience,
             String inputKind,
             String billingPrincipal,
@@ -153,6 +154,7 @@ public class LogPanel extends AbstractWidget {
             String responderId = obj.has("responderEntityId") ? obj.get("responderEntityId").getAsString() : "";
             String responder = responderName.isBlank() ? responderId : responderName;
             String triggerSource = obj.has("triggerSource") ? obj.get("triggerSource").getAsString() : "";
+            String addressee = obj.has("addressee") ? obj.get("addressee").getAsString() : "";
             String audience = obj.has("audience") ? obj.get("audience").getAsString() : "";
             String inputKind = obj.has("inputKind") ? obj.get("inputKind").getAsString() : "";
             String billingPrincipal = obj.has("billingPrincipal") ? obj.get("billingPrincipal").getAsString() : "";
@@ -173,7 +175,7 @@ public class LogPanel extends AbstractWidget {
             String text = String.format("[%s] %s%s%s%s | %s | %dms | %s", level, src, tag, actor,
                     provider, status, latency, summary);
             entries.add(new LogDisplayEntry(text, color, requestId, purpose, requestBody, responseBody, error,
-                    responder, triggerSource, audience, inputKind, billingPrincipal, billingPrincipalId,
+                    responder, triggerSource, addressee, audience, inputKind, billingPrincipal, billingPrincipalId,
                     causalRootRequestId, finishReason, contentLength));
             while (entries.size() > MAX_ENTRIES) {
                 entries.remove(0);
@@ -523,6 +525,7 @@ public class LogPanel extends AbstractWidget {
         if (e.purpose != null && !e.purpose.isBlank()) addLineSeg(segs, unwrapped, "purpose: " + e.purpose);
         if (e.responder != null && !e.responder.isBlank()) addLineSeg(segs, unwrapped, "responder: " + e.responder);
         if (e.triggerSource != null && !e.triggerSource.isBlank()) addLineSeg(segs, unwrapped, "trigger: " + e.triggerSource);
+        if (e.addressee != null && !e.addressee.isBlank()) addLineSeg(segs, unwrapped, "addressee: " + e.addressee);
         if (e.audience != null && !e.audience.isBlank()) addLineSeg(segs, unwrapped, "audience: " + e.audience);
         if (e.inputKind != null && !e.inputKind.isBlank()) addLineSeg(segs, unwrapped, "inputKind: " + e.inputKind);
         if (e.billingPrincipal != null && !e.billingPrincipal.isBlank()) addLineSeg(segs, unwrapped, "billingPrincipal: " + e.billingPrincipal);
@@ -750,6 +753,7 @@ public class LogPanel extends AbstractWidget {
             if (e.purpose != null && !e.purpose.isBlank()) sb.append("purpose: ").append(e.purpose).append('\n');
             if (e.responder != null && !e.responder.isBlank()) sb.append("responder: ").append(e.responder).append('\n');
             if (e.triggerSource != null && !e.triggerSource.isBlank()) sb.append("trigger: ").append(e.triggerSource).append('\n');
+            if (e.addressee != null && !e.addressee.isBlank()) sb.append("addressee: ").append(e.addressee).append('\n');
             if (e.audience != null && !e.audience.isBlank()) sb.append("audience: ").append(e.audience).append('\n');
             if (e.inputKind != null && !e.inputKind.isBlank()) sb.append("inputKind: ").append(e.inputKind).append('\n');
             if (e.billingPrincipal != null && !e.billingPrincipal.isBlank()) sb.append("billingPrincipal: ").append(e.billingPrincipal).append('\n');
