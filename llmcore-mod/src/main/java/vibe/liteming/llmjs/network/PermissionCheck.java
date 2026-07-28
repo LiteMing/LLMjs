@@ -62,7 +62,10 @@ public class PermissionCheck {
                 .orElseGet(JsonObject::new);
         JsonObject result = createStatusPayload(canView, canTest, canAdminister, canManageBudgets,
                 ProviderManager.INSTANCE::getStatusJson, restrictedStatus);
-        result.addProperty("personalBudgetDefault", LLMConfig.PERSONAL_BUDGET_DEFAULT.get());
+        PersonalBudgetService.DefaultLimitStatus defaultLimit =
+                PersonalBudgetService.INSTANCE.defaultLimitStatus();
+        result.addProperty("personalBudgetDefault", defaultLimit.limitTokens());
+        result.addProperty("budgetDefaultFallback", defaultLimit.fallback());
         result.addProperty("budgetDefaultConfirmationRequired",
                 canManageBudgets && !LLMConfig.PERSONAL_BUDGET_DEFAULT_CONFIRMED.get());
         result.add("personalBudget", PersonalBudgetService.INSTANCE.statusJson(player.getUUID()));

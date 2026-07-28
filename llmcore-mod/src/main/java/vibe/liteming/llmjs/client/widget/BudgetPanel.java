@@ -41,6 +41,7 @@ public final class BudgetPanel extends AbstractWidget {
     private boolean canViewAll;
     private boolean canManage;
     private boolean confirmationRequired;
+    private boolean defaultFallback;
 
     public BudgetPanel(int x, int y, int width, int height, String statusJson) {
         super(x, y, width, height, text("tab.budget"));
@@ -64,6 +65,7 @@ public final class BudgetPanel extends AbstractWidget {
             canViewAll = bool(root, "canViewBudgets");
             canManage = bool(root, "canManageBudgets");
             confirmationRequired = bool(root, "budgetDefaultConfirmationRequired");
+            defaultFallback = bool(root, "budgetDefaultFallback");
             defaultLimit = number(root, "personalBudgetDefault", -1L);
             if (root.has("personalBudget") && root.get("personalBudget").isJsonObject()) {
                 own = player(root.getAsJsonObject("personalBudget"), "", "");
@@ -90,6 +92,7 @@ public final class BudgetPanel extends AbstractWidget {
             canViewAll = false;
             canManage = false;
             confirmationRequired = false;
+            defaultFallback = false;
         }
         updateScrollRange(buildLines().size());
     }
@@ -124,7 +127,10 @@ public final class BudgetPanel extends AbstractWidget {
         List<DisplayLine> lines = new ArrayList<>();
         lines.add(new DisplayLine(string("budget.title"), 0xFFFFFF));
         lines.add(new DisplayLine(string("budget.default", limitText(defaultLimit)),
-                confirmationRequired ? 0xFF5555 : 0xAAAAAA));
+                confirmationRequired || defaultFallback ? 0xFF5555 : 0xAAAAAA));
+        if (defaultFallback) {
+            lines.add(new DisplayLine(string("budget.default.fallback"), 0xFF5555));
+        }
         if (confirmationRequired) {
             lines.add(new DisplayLine(string("budget.confirm.required"), 0xFFFF55));
         }

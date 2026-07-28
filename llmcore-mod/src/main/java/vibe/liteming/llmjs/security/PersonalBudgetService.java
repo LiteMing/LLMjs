@@ -40,6 +40,9 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
             long totalTokens, long requestCount) {
     }
 
+    public record DefaultLimitStatus(long limitTokens, boolean fallback) {
+    }
+
     private static final class PrincipalTotals {
         private long promptTokens;
         private long completionTokens;
@@ -80,6 +83,7 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
     private final Map<UUID, Long> reservedByPlayer = new HashMap<>();
     private final Map<LlmBillingContext.PrincipalKind, PrincipalTotals> usageByPrincipal = new HashMap<>();
     private volatile PersonalBudgetLedger ledger;
+    private boolean defaultLimitFallback;
 
     PersonalBudgetService(LongSupplier defaultLimitSupplier) {
         this(defaultLimitSupplier, System::currentTimeMillis, DEFAULT_PENDING_TTL_MS);
@@ -98,6 +102,7 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
         pendingById.clear();
         reservedByPlayer.clear();
         usageByPrincipal.clear();
+        defaultLimitFallback = false;
     }
 
     public synchronized void close() {
@@ -116,6 +121,7 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
         pendingById.clear();
         reservedByPlayer.clear();
         usageByPrincipal.clear();
+        defaultLimitFallback = false;
     }
 
     @Override
@@ -311,6 +317,11 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
         return active != null && active.isWritable();
     }
 
+    public synchronized DefaultLimitStatus defaultLimitStatus() {
+        long limit = defaultLimit();
+        return new DefaultLimitStatus(limit, defaultLimitFallback);
+    }
+
     public synchronized boolean reset(UUID playerId) {
         PersonalBudgetLedger active = ledger;
         if (active == null || playerId == null) return false;
@@ -380,10 +391,31 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
     private long defaultLimit() {
         try {
             long value = defaultLimitSupplier.getAsLong();
-            return value < -1L ? 0L : value;
-        } catch (RuntimeException ignored) {
+            if (value < -1L) {
+                enterDefaultLimitFallback("invalid value " + value);
+                return 0L;
+            }
+            leaveDefaultLimitFallback();
+            return value;
+        } catch (RuntimeException failure) {
+            enterDefaultLimitFallback(failure.toString());
             return 0L;
         }
+    }
+
+    private void enterDefaultLimitFallback(String reason) {
+        if (!defaultLimitFallback) {
+            LlmCoreMod.LOGGER.error(
+                    "Failed to resolve personal budget default; player LLM access is disabled: {}", reason);
+        }
+        defaultLimitFallback = true;
+    }
+
+    private void leaveDefaultLimitFallback() {
+        if (defaultLimitFallback) {
+            LlmCoreMod.LOGGER.info("Personal budget default configuration recovered");
+        }
+        defaultLimitFallback = false;
     }
 
     private long now() {

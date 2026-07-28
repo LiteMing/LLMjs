@@ -13,6 +13,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -73,6 +74,24 @@ class PersonalBudgetServiceTest {
 
         serverDefault.set(-1L);
         assertTrue(service.reserve(playerRequest(player, "inherit-unlimited", 1, 100L), estimate(1, 1)).allowed());
+    }
+
+    @Test
+    void defaultLimitFailureIsVisibleAndRecovers(@TempDir Path root) {
+        AtomicBoolean failing = new AtomicBoolean(true);
+        PersonalBudgetService service = service(root, () -> {
+            if (failing.get()) throw new IllegalStateException("broken config");
+            return -1L;
+        });
+
+        PersonalBudgetService.DefaultLimitStatus fallback = service.defaultLimitStatus();
+        assertEquals(0L, fallback.limitTokens());
+        assertTrue(fallback.fallback());
+
+        failing.set(false);
+        PersonalBudgetService.DefaultLimitStatus recovered = service.defaultLimitStatus();
+        assertEquals(-1L, recovered.limitTokens());
+        assertFalse(recovered.fallback());
     }
 
     @Test

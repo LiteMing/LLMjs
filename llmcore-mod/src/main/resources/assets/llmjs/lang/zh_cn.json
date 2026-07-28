@@ -23,6 +23,7 @@
   "gui.llmjs.budget.confirm.warning": "玩家预算默认无限——请检查并确认",
   "gui.llmjs.budget.title": "Token 用量与授权",
   "gui.llmjs.budget.default": "服务器默认：%s",
+  "gui.llmjs.budget.default.fallback": "默认预算配置读取失败；继承默认值的玩家调用已禁用。",
   "gui.llmjs.budget.confirm.required": "仍需服主明确确认。",
   "gui.llmjs.budget.principals": "按计费主体统计的本次运行用量",
   "gui.llmjs.budget.principal.row": "%1$s：%2$s Token / %3$s 次请求 / %4$s%% 为估算",

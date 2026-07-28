@@ -23,6 +23,7 @@
   "gui.llmjs.budget.confirm.warning": "PLAYER BUDGET DEFAULT: UNLIMITED — REVIEW AND CONFIRM",
   "gui.llmjs.budget.title": "Token usage and authorization",
   "gui.llmjs.budget.default": "Server default: %s",
+  "gui.llmjs.budget.default.fallback": "Default budget configuration failed to load; inherited player access is disabled.",
   "gui.llmjs.budget.confirm.required": "Owner confirmation is still required.",
   "gui.llmjs.budget.principals": "Runtime totals by billing principal",
   "gui.llmjs.budget.principal.row": "%1$s: %2$s tokens / %3$s requests / %4$s%% estimated",
