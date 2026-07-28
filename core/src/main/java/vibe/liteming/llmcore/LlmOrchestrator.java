@@ -191,6 +191,10 @@ public final class LlmOrchestrator {
                             response.completionTokens(), response.latencyMs(), attempts, "", "",
                             response.finishReason()));
                 }
+                if (response.denyCode() != LlmRequestAccounting.DenyCode.NONE) {
+                    return CompletableFuture.completedFuture(
+                            LlmResponse.failure(response.error(), attempts, response.denyCode()));
+                }
                 return attemptStreaming(request, chain, index + 1, attempts, onDelta);
             });
         }
@@ -209,7 +213,8 @@ public final class LlmOrchestrator {
             attempts.add(new LlmResponse.Attempt(providerName, credential.spec.id(), result.success, result.error,
                     result.latencyMs, result.finishReason));
             if (result.policyRejected) {
-                return CompletableFuture.completedFuture(LlmResponse.failure(result.error, attempts));
+                return CompletableFuture.completedFuture(
+                        LlmResponse.failure(result.error, attempts, result.denyCode));
             }
             if (result.success) {
                 credential.consecutiveFailures.set(0);
@@ -296,7 +301,8 @@ public final class LlmOrchestrator {
                     attempts.add(new LlmResponse.Attempt(providerName, credential.spec.id(), result.success,
                             result.error, result.latencyMs, result.finishReason));
                     if (result.policyRejected) {
-                        return CompletableFuture.completedFuture(LlmResponse.failure(result.error, attempts));
+                        return CompletableFuture.completedFuture(
+                                LlmResponse.failure(result.error, attempts, result.denyCode));
                     }
                     if (result.success) {
                         credential.consecutiveFailures.set(0);
@@ -342,7 +348,8 @@ public final class LlmOrchestrator {
                     attempts.add(new LlmResponse.Attempt(provider.spec.name(), credential.spec.id(), result.success,
                             result.error, result.latencyMs, result.finishReason));
                     if (result.policyRejected) {
-                        return CompletableFuture.completedFuture(LlmResponse.failure(result.error, attempts));
+                        return CompletableFuture.completedFuture(
+                                LlmResponse.failure(result.error, attempts, result.denyCode));
                     }
                     if (result.success) {
                         credential.consecutiveFailures.set(0);
@@ -381,6 +388,17 @@ public final class LlmOrchestrator {
         return new LlmRequestAccounting.AttemptUsage(0L, 0L, reservation.reservedTokens());
     }
 
+    private static void finishAccounting(LlmRequest request,
+            LlmRequestAccounting.Reservation reservation, boolean success,
+            int promptTokens, int completionTokens) {
+        if (!success) {
+            LlmRequestAccounting.release(request, reservation);
+            return;
+        }
+        LlmRequestAccounting.settle(request, reservation,
+                attemptUsage(reservation, promptTokens, completionTokens));
+    }
+
     private CompletableFuture<SingleResult> sendSingle(LlmRequest request, ProviderSpec provider,
             ProviderSpec.Credential credential) {
         String format = provider.format();
@@ -396,7 +414,8 @@ public final class LlmOrchestrator {
         LlmRequestAccounting.Reservation reservation = LlmRequestAccounting.reserve(request,
                 attemptEstimate(request, provider, parameters));
         if (!reservation.allowed()) {
-            return CompletableFuture.completedFuture(SingleResult.policyFailure(reservation.reason()));
+            return CompletableFuture.completedFuture(
+                    SingleResult.policyFailure(reservation.denyCode(), reservation.reason()));
         }
         long startedAt = System.currentTimeMillis();
         CompletableFuture<SingleResult> execution;
@@ -408,14 +427,13 @@ public final class LlmOrchestrator {
             execution = CompletableFuture.completedFuture(SingleResult.failure(
                     rootMessage(failure), 0, System.currentTimeMillis() - startedAt, requestBody, ""));
         }
+        execution.whenComplete((result, throwable) -> finishAccounting(request, reservation,
+                throwable == null && result != null && result.success,
+                result == null ? 0 : result.promptTokens,
+                result == null ? 0 : result.completionTokens));
         return execution.handle((result, throwable) -> throwable == null ? result
-                        : SingleResult.failure(rootMessage(throwable), 0,
-                                System.currentTimeMillis() - startedAt, requestBody, ""))
-                .thenApply(result -> {
-                    LlmRequestAccounting.settle(request, reservation,
-                            attemptUsage(reservation, result.promptTokens, result.completionTokens));
-                    return result;
-                });
+                : SingleResult.failure(rootMessage(throwable), 0,
+                        System.currentTimeMillis() - startedAt, requestBody, ""));
     }
 
     private CompletableFuture<StreamResult> sendSingleStreaming(LlmRequest request, ProviderSpec provider,
@@ -434,7 +452,8 @@ public final class LlmOrchestrator {
         LlmRequestAccounting.Reservation reservation = LlmRequestAccounting.reserve(request,
                 attemptEstimate(request, provider, parameters));
         if (!reservation.allowed()) {
-            return CompletableFuture.completedFuture(StreamResult.policyFailure(reservation.reason()));
+            return CompletableFuture.completedFuture(
+                    StreamResult.policyFailure(reservation.denyCode(), reservation.reason()));
         }
         long startedAt = System.currentTimeMillis();
         CompletableFuture<StreamResult> execution;
@@ -524,14 +543,13 @@ public final class LlmOrchestrator {
             execution = CompletableFuture.completedFuture(StreamResult.failure(
                     rootMessage(failure), 0, System.currentTimeMillis() - startedAt, false, requestBody, ""));
         }
+        execution.whenComplete((result, throwable) -> finishAccounting(request, reservation,
+                throwable == null && result != null && result.success,
+                result == null ? 0 : result.promptTokens,
+                result == null ? 0 : result.completionTokens));
         return execution.handle((result, throwable) -> throwable == null ? result
-                        : StreamResult.failure(rootMessage(throwable), 0,
-                                System.currentTimeMillis() - startedAt, false, requestBody, ""))
-                .thenApply(result -> {
-                    LlmRequestAccounting.settle(request, reservation,
-                            attemptUsage(reservation, result.promptTokens, result.completionTokens));
-                    return result;
-                });
+                : StreamResult.failure(rootMessage(throwable), 0,
+                        System.currentTimeMillis() - startedAt, false, requestBody, ""));
     }
 
     /** Human-readable body for console logs (avoids dumping every SSE line). */
@@ -845,11 +863,11 @@ public final class LlmOrchestrator {
 
     private record SingleResult(boolean success, String content, String error, int httpStatus,
             int promptTokens, int completionTokens, long latencyMs, String requestBody, String responseBody,
-            String finishReason, boolean policyRejected) {
+            String finishReason, boolean policyRejected, LlmRequestAccounting.DenyCode denyCode) {
         private static SingleResult success(String content, int promptTokens, int completionTokens, long latencyMs,
                 String requestBody, String responseBody, String finishReason) {
             return new SingleResult(true, content, "", 200, promptTokens, completionTokens, latencyMs,
-                    requestBody, responseBody, finishReason, false);
+                    requestBody, responseBody, finishReason, false, LlmRequestAccounting.DenyCode.NONE);
         }
 
         private static SingleResult failure(String error, int httpStatus, long latencyMs) {
@@ -859,24 +877,24 @@ public final class LlmOrchestrator {
         private static SingleResult failure(String error, int httpStatus, long latencyMs, String requestBody,
                 String responseBody) {
             return new SingleResult(false, "", error, httpStatus, 0, 0, latencyMs, requestBody, responseBody,
-                    "error", false);
+                    "error", false, LlmRequestAccounting.DenyCode.NONE);
         }
 
-        private static SingleResult policyFailure(String error) {
+        private static SingleResult policyFailure(LlmRequestAccounting.DenyCode denyCode, String error) {
             return new SingleResult(false, "", "Billing denied: " + error,
-                    0, 0, 0, 0L, "", "", "error", true);
+                    0, 0, 0, 0L, "", "", "error", true, denyCode);
         }
     }
 
     private record StreamResult(boolean success, String content, String error, int httpStatus,
             int promptTokens, int completionTokens, long latencyMs,
             boolean emittedContent, String requestBody, String responseBody, String finishReason,
-            boolean policyRejected) {
+            boolean policyRejected, LlmRequestAccounting.DenyCode denyCode) {
         private static StreamResult success(String content, int promptTokens, int completionTokens,
                 long latencyMs, String requestBody, String responseBody, String finishReason) {
             return new StreamResult(true, content, "", 200, promptTokens, completionTokens,
                     latencyMs, true, requestBody, responseBody,
-                    finishReason, false);
+                    finishReason, false, LlmRequestAccounting.DenyCode.NONE);
         }
 
         private static StreamResult failure(String error, int status, long latencyMs, boolean emitted) {
@@ -886,18 +904,19 @@ public final class LlmOrchestrator {
         private static StreamResult failure(String error, int status, long latencyMs, boolean emitted,
                 String requestBody, String responseBody) {
             return new StreamResult(false, "", error, status, 0, 0, latencyMs, emitted,
-                    requestBody, responseBody, "error", false);
+                    requestBody, responseBody, "error", false, LlmRequestAccounting.DenyCode.NONE);
         }
 
         private static StreamResult failure(String error, int status, long latencyMs, boolean emitted,
                 String requestBody, String responseBody, String finishReason) {
             return new StreamResult(false, "", error, status, 0, 0, latencyMs, emitted, requestBody, responseBody,
-                    finishReason == null ? "error" : finishReason, false);
+                    finishReason == null ? "error" : finishReason, false,
+                    LlmRequestAccounting.DenyCode.NONE);
         }
 
-        private static StreamResult policyFailure(String error) {
+        private static StreamResult policyFailure(LlmRequestAccounting.DenyCode denyCode, String error) {
             return new StreamResult(false, "", "Billing denied: " + error, 0, 0, 0, 0L, false,
-                    "", "", "error", true);
+                    "", "", "error", true, denyCode);
         }
     }
 

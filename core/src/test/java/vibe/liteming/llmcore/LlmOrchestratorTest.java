@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LlmOrchestratorTest {
@@ -161,6 +162,8 @@ class LlmOrchestratorTest {
         List<String> roots = new ArrayList<>();
         AtomicInteger settled = new AtomicInteger();
         AtomicInteger ids = new AtomicInteger();
+        List<LlmRequestAccounting.AttemptUsage> settlements =
+                java.util.Collections.synchronizedList(new ArrayList<>());
         LlmRequestAccounting.install(new LlmRequestAccounting.Policy() {
             @Override
             public LlmRequestAccounting.Reservation reserve(
@@ -174,6 +177,7 @@ class LlmOrchestratorTest {
             public void settle(LlmRequest request, LlmRequestAccounting.Reservation reservation,
                     LlmRequestAccounting.AttemptUsage usage) {
                 settled.incrementAndGet();
+                settlements.add(usage);
             }
         });
         LlmBillingContext billing = LlmBillingContext.system(
@@ -187,6 +191,8 @@ class LlmOrchestratorTest {
         assertTrue(response.success());
         assertEquals(List.of("shared-root", "shared-root"), roots);
         assertEquals(2, settled.get());
+        assertNull(settlements.get(0));
+        assertTrue(settlements.get(1).estimatedTokens() > 0L);
     }
 
     @Test

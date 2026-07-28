@@ -22,7 +22,8 @@ public class LLMConfig {
     public static final ForgeConfigSpec.IntValue REQUIRE_OP_LEVEL;
     public static final ForgeConfigSpec.BooleanValue ALLOW_ALL_PLAYERS;
     public static final ForgeConfigSpec.ConfigValue<List<? extends String>> ADMIN_UUID_WHITELIST;
-    public static final ForgeConfigSpec.LongValue PERSONAL_BUDGET_LIMIT;
+    public static final ForgeConfigSpec.LongValue PERSONAL_BUDGET_DEFAULT;
+    public static final ForgeConfigSpec.BooleanValue PERSONAL_BUDGET_DEFAULT_CONFIRMED;
 
     static {
         BUILDER.push("general");
@@ -46,11 +47,16 @@ public class LLMConfig {
                 "Online-mode UUIDs are authenticated. Offline-mode identities require a trusted external account system.",
                 "OP level 2 only grants log viewing by default.")
                 .defineListAllowEmpty("admin_uuid_whitelist", List.of(), LLMConfig::isUuid);
-        PERSONAL_BUDGET_LIMIT = BUILDER.comment(
-                "Maximum cumulative input + output tokens charged to each player. 0 = unlimited.",
+        PERSONAL_BUDGET_DEFAULT = BUILDER.comment(
+                "Default cumulative input + output token limit for players without an override.",
+                "-1 = unlimited, 0 = disabled, positive values are finite token quotas.",
                 "Usage is stored per world by UUID. Attempts without provider usage metadata are charged",
                 "their full conservative reservation. Offline-mode UUIDs require a trusted account system.")
-                .defineInRange("personal_budget_limit", 0L, 0L, Long.MAX_VALUE);
+                .defineInRange("personal_budget_default", -1L, -1L, Long.MAX_VALUE);
+        PERSONAL_BUDGET_DEFAULT_CONFIRMED = BUILDER.comment(
+                "Whether an owner has acknowledged the default personal budget policy in the Console.",
+                "New servers intentionally start unlimited but show a prominent warning until confirmed.")
+                .define("personal_budget_default_confirmed", false);
         BUILDER.pop();
 
         SPEC = BUILDER.build();
@@ -79,8 +85,14 @@ public class LLMConfig {
         return true;
     }
 
-    public static void setPersonalBudgetLimit(long tokens) {
-        PERSONAL_BUDGET_LIMIT.set(Math.max(0L, tokens));
+    public static void setPersonalBudgetDefault(long tokens) {
+        PERSONAL_BUDGET_DEFAULT.set(Math.max(-1L, tokens));
+        PERSONAL_BUDGET_DEFAULT_CONFIRMED.set(true);
+        SPEC.save();
+    }
+
+    public static void confirmPersonalBudgetDefault() {
+        PERSONAL_BUDGET_DEFAULT_CONFIRMED.set(true);
         SPEC.save();
     }
 

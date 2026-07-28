@@ -57,11 +57,15 @@ requested `true`/`false` state.
 
 ## Personal token budgets
 
-`llmcore-mod` records cumulative input, output, and conservatively estimated
-tokens per player UUID in `<world>/llmcore/personal-budget.json`. The global
-`personal_budget_limit` is `0` by default, which leaves requests unlimited while
-usage recording remains active. A positive limit includes in-flight reservations
-and rejects an over-budget attempt before its provider HTTP call.
+`llmcore-mod` records cumulative input, output, conservatively estimated tokens,
+and optional player-specific limits by UUID in
+`<world>/llmcore/personal-budget.json`. A player limit has four states: omitted
+inherits the server default, `-1` is explicitly unlimited, `0` disables personal
+LLM access, and a positive value is a finite token quota. The server default uses
+the same `-1` / `0` / positive vocabulary and starts at `-1`; a new server shows
+a prominent Console warning until an owner explicitly confirms or changes it.
+Finite limits include in-flight reservations and reject an over-budget attempt
+before its provider HTTP call.
 
 Billing is independent from diagnostic context. Every provider-bound
 `LlmRequest` must carry an explicit `LlmBillingContext` with a typed principal,
@@ -74,14 +78,25 @@ Interactive Console requests use the invoking player's UUID. KubeJS requests
 default to `SCRIPT_SYSTEM`; a script can delegate explicitly only with a real
 `ServerPlayer` through `billingPlayer` or a builder/session `billTo(player)`.
 Provider fallback and automatic repair reuse the original causal root. Provider-
-reported usage is authoritative; attempts without usage metadata settle their
-full conservative reservation and retain that amount under `estimatedTokens`.
+reported usage is authoritative. A successful response without usage metadata
+settles its full conservative reservation under `estimatedTokens`; a failed,
+cancelled, or not-started attempt releases its player reservation without a
+second charge. Stale pending reservations have a final TTL recovery path, and a
+late settlement after recovery is idempotently ignored.
 
 The ledger is world-scoped and atomically replaced after each update. Malformed
-data or a runtime persistence failure makes the ledger unavailable. With a
-positive limit, player-attributed requests then fail closed before provider
-access; system principals remain governed by their causal-chain ceilings.
-`/llm budget` shows the caller's own aggregate; only owner-level administrators
-can list/reset records or change the common per-player limit. On offline-mode
-servers these UUIDs are not authenticated by Minecraft, so a personal budget can
-only be trusted when an external account system prevents identity spoofing.
+data or a runtime persistence failure makes the ledger unavailable. Every
+player-attributed request then fails closed, even when the server default is
+unlimited, because the unreadable file may contain a disabling override. System
+principals remain governed by their causal-chain ceilings. `/llm budget` shows
+the caller's own aggregate; only owner-level administrators can list/reset usage,
+change the server default, confirm it, or set a player's inherit/unlimited/
+disabled/finite override. On offline-mode servers these UUIDs are not
+authenticated by Minecraft, so a personal budget can only be trusted when an
+external account system prevents identity spoofing.
+
+The Console Budget tab is a read-only projection of this ledger plus in-memory
+settlement totals grouped by `PLAYER`, `SERVER_AMBIENT`,
+`SERVER_MAINTENANCE`, and `SCRIPT_SYSTEM`. It shows request count, average tokens,
+in-flight reservations, effective limit/source, and the estimated-token share;
+it does not create another persistence file or time-series source.

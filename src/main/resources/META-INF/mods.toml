@@ -4,10 +4,10 @@ license="MIT"
 
 [[mods]]
 modId="llmjs"
-version="2.4.0"
+version="2.5.0"
 displayName="LLMjs"
 description='''
-LLMjs v2.4.0 - Optional KubeJS bindings for the shared LLM Core runtime.
+LLMjs v2.5.0 - Optional KubeJS bindings for the shared LLM Core runtime.
 Provider management, routing, tests, traffic inspection, and the administrator Console are supplied by llmcore.
 '''
 logoFile="logo.png"
@@ -26,7 +26,7 @@ side="BOTH"
 [[dependencies.llmjs]]
 modId="llmcore"
 mandatory=true
-versionRange="[1.3.0,2.0.0)"
+versionRange="[1.4.0,2.0.0)"
 ordering="AFTER"
 side="BOTH"
 

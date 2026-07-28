@@ -1,5 +1,6 @@
 package vibe.liteming.llmjs.network;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import net.minecraft.commands.CommandSourceStack;
 import vibe.liteming.llmjs.config.LLMConfig;
@@ -51,6 +52,7 @@ public class PermissionCheck {
 
     public static JsonObject statusFor(ServerPlayer player) {
         boolean canAdminister = canAdminister(player);
+        boolean canManageBudgets = canManageAdministrators(player);
         boolean canView = canUse(player);
         var grant = ConsoleTestGrantService.INSTANCE.activeGrant(player.getUUID());
         boolean canTest = canAdminister || grant.isPresent();
@@ -59,7 +61,24 @@ public class PermissionCheck {
                 .orElseGet(JsonObject::new);
         JsonObject result = createStatusPayload(canView, canTest, canAdminister,
                 ProviderManager.INSTANCE::getStatusJson, restrictedStatus);
+        result.addProperty("canManageBudgets", canManageBudgets);
+        result.addProperty("personalBudgetDefault", LLMConfig.PERSONAL_BUDGET_DEFAULT.get());
+        result.addProperty("budgetDefaultConfirmationRequired",
+                canManageBudgets && !LLMConfig.PERSONAL_BUDGET_DEFAULT_CONFIRMED.get());
         result.add("personalBudget", PersonalBudgetService.INSTANCE.statusJson(player.getUUID()));
+        if (canManageBudgets) {
+            JsonArray players = new JsonArray();
+            for (PersonalBudgetService.Status status : PersonalBudgetService.INSTANCE.list()) {
+                JsonObject entry = PersonalBudgetService.INSTANCE.statusJson(status.playerId());
+                entry.addProperty("playerId", status.playerId().toString());
+                String name = player.getServer().getProfileCache().get(status.playerId())
+                        .map(profile -> profile.getName()).orElse("");
+                entry.addProperty("playerName", name);
+                players.add(entry);
+            }
+            result.add("personalBudgets", players);
+            result.add("principalUsage", PersonalBudgetService.INSTANCE.principalUsageJson());
+        }
         return result;
     }
 

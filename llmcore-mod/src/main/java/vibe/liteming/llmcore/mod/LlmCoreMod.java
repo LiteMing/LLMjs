@@ -70,6 +70,16 @@ public final class LlmCoreMod {
         PersonalBudgetService.INSTANCE.open(server.getWorldPath(LevelResource.ROOT)
                 .resolve("llmcore/personal-budget.json"));
         LlmRequestAccounting.install(PersonalBudgetService.INSTANCE);
+        if (!LlmRequestAccounting.isInstalled()) {
+            LOGGER.error("LLM billing policy failed to install; PLAYER requests will be denied");
+        }
+        if (!PersonalBudgetService.INSTANCE.storageAvailable()) {
+            LOGGER.error("Personal budget ledger is unavailable; PLAYER requests will be denied");
+        }
+        if (!LLMConfig.PERSONAL_BUDGET_DEFAULT_CONFIRMED.get()) {
+            LOGGER.warn("Personal budget default is unlimited and has not been acknowledged; "
+                    + "open /llm console or run /llm budget confirm-default");
+        }
         ConsoleTestGrantService.INSTANCE.clear();
         LlmConsoleTestBridge.install(ConsoleTestGrantService.INSTANCE::issue);
         LLMLogger.INSTANCE.resize(LLMConfig.LOG_BUFFER_SIZE.get());

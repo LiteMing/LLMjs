@@ -283,25 +283,39 @@ public class ProviderManager {
             if (!rawReservation.allowed()) {
                 String error = "Billing denied: " + rawReservation.reason();
                 attempts.add(new LLMResponse.AttemptRecord(providerName, false, error, 0));
-                return CompletableFuture.completedFuture(LLMResponse.error(error).withAttempts(attempts));
+                return CompletableFuture.completedFuture(LLMResponse.denied(
+                        rawReservation.denyCode(), error).withAttempts(attempts));
             }
-            execution = provider.sendAsync(messages, temperature, maxTokens, timeoutSeconds);
+            try {
+                execution = provider.sendAsync(messages, temperature, maxTokens, timeoutSeconds);
+            } catch (RuntimeException failure) {
+                execution = CompletableFuture.completedFuture(LLMResponse.error(
+                        "Provider request failed to start: "
+                                + (failure.getMessage() == null
+                                        ? failure.getClass().getSimpleName() : failure.getMessage())));
+            }
         }
         LlmRequest settledRequest = rawAccountingRequest;
         LlmRequestAccounting.Reservation settledReservation = rawReservation;
+        if (settledReservation != null) {
+            execution.whenComplete((response, throwable) -> {
+                if (throwable != null || response == null || !response.isSuccess()) {
+                    LlmRequestAccounting.release(settledRequest, settledReservation);
+                    return;
+                }
+                long estimated = response.getPromptTokens() > 0 || response.getCompletionTokens() > 0
+                        ? 0L : settledReservation.reservedTokens();
+                LlmRequestAccounting.settle(settledRequest, settledReservation,
+                        new LlmRequestAccounting.AttemptUsage(response.getPromptTokens(),
+                                response.getCompletionTokens(), estimated));
+            });
+        }
         return execution.handle((response, throwable) -> throwable == null
                 ? response
                 : LLMResponse.error("Provider request failed: "
                         + (throwable.getMessage() == null ? throwable.getClass().getSimpleName()
                                 : throwable.getMessage())))
                 .thenCompose(response -> {
-            if (settledReservation != null) {
-                long estimated = response.getPromptTokens() > 0 || response.getCompletionTokens() > 0
-                        ? 0L : settledReservation.reservedTokens();
-                LlmRequestAccounting.settle(settledRequest, settledReservation,
-                        new LlmRequestAccounting.AttemptUsage(response.getPromptTokens(),
-                                response.getCompletionTokens(), estimated));
-            }
             attempts.add(new LLMResponse.AttemptRecord(providerName, response.isSuccess(), response.getError(),
                     response.getLatencyMs()));
             if (!coreRouted) {
@@ -315,7 +329,7 @@ public class ProviderManager {
             if (response.isSuccess()) {
                 return CompletableFuture.completedFuture(response.withAttempts(attempts));
             }
-            if (response.getError() != null && response.getError().startsWith("Billing denied: ")) {
+            if (response.getDenyCode() != LlmRequestAccounting.DenyCode.NONE) {
                 return CompletableFuture.completedFuture(response.withAttempts(attempts));
             }
             return sendWithFallbackRecursive(messages, chain, index + 1, temperature, maxTokens, timeoutSeconds,

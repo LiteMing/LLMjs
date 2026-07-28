@@ -25,8 +25,16 @@ class RoutingPanelLayoutTest {
     }
 
     @Test
-    void narrowPanelStacksActiveAndAvailableSections() {
-        assertEquals(true, RoutingPanel.usesStackedProviderLayout(359));
-        assertEquals(false, RoutingPanel.usesStackedProviderLayout(360));
+    void mediumPanelStacksUntilBothSidesCanShowTwoColumns() {
+        assertEquals(true, RoutingPanel.usesStackedProviderLayout(590));
+        assertEquals(false, RoutingPanel.usesStackedProviderLayout(591));
+    }
+
+    @Test
+    void fourAvailableProvidersFitTheFullWidthWhenMediumLayoutStacks() {
+        int fullWidthColumns = RoutingPanel.providerColumnCount(520, 110);
+
+        assertEquals(4, fullWidthColumns);
+        assertEquals(1, RoutingPanel.providerRows(4, fullWidthColumns));
     }
 }

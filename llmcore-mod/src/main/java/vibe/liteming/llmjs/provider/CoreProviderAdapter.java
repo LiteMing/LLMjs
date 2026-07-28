@@ -115,7 +115,7 @@ final class CoreProviderAdapter implements Provider {
 
     static LLMResponse toLegacyResponse(vibe.liteming.llmcore.LlmResponse response) {
         if (!response.success()) {
-            return LLMResponse.error(response.error()).withAttempts(response.attempts().stream()
+            return LLMResponse.denied(response.denyCode(), response.error()).withAttempts(response.attempts().stream()
                     .map(attempt -> new LLMResponse.AttemptRecord(attempt.provider(), attempt.success(),
                             attempt.error(), attempt.latencyMs()))
                     .toList());

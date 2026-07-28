@@ -15,7 +15,8 @@ public record LlmResponse(
         List<Attempt> attempts,
         String requestBody,
         String responseBody,
-        String finishReason) {
+        String finishReason,
+        LlmRequestAccounting.DenyCode denyCode) {
 
     public LlmResponse {
         content = content == null ? "" : content;
@@ -27,12 +28,21 @@ public record LlmResponse(
         requestBody = requestBody == null ? "" : requestBody;
         responseBody = responseBody == null ? "" : responseBody;
         finishReason = finishReason == null ? "" : finishReason;
+        denyCode = denyCode == null ? LlmRequestAccounting.DenyCode.NONE : denyCode;
+    }
+
+    /** Binary-compatible full response shape used before structured denial codes. */
+    public LlmResponse(boolean success, String content, String error, String provider, String model,
+            String credentialId, int promptTokens, int completionTokens, long latencyMs, List<Attempt> attempts,
+            String requestBody, String responseBody, String finishReason) {
+        this(success, content, error, provider, model, credentialId, promptTokens, completionTokens, latencyMs,
+                attempts, requestBody, responseBody, finishReason, LlmRequestAccounting.DenyCode.NONE);
     }
 
     public LlmResponse(boolean success, String content, String error, String provider, String model,
             String credentialId, int promptTokens, int completionTokens, long latencyMs, List<Attempt> attempts) {
         this(success, content, error, provider, model, credentialId, promptTokens, completionTokens, latencyMs,
-                attempts, "", "", "");
+                attempts, "", "", "", LlmRequestAccounting.DenyCode.NONE);
     }
 
     /** Backward-compatible body-carrying constructor used by older callers. */
@@ -40,16 +50,22 @@ public record LlmResponse(
             String credentialId, int promptTokens, int completionTokens, long latencyMs, List<Attempt> attempts,
             String requestBody, String responseBody) {
         this(success, content, error, provider, model, credentialId, promptTokens, completionTokens, latencyMs,
-                attempts, requestBody, responseBody, "");
+                attempts, requestBody, responseBody, "", LlmRequestAccounting.DenyCode.NONE);
     }
 
     public static LlmResponse failure(String error, List<Attempt> attempts) {
-        return new LlmResponse(false, "", error, "", "", "", 0, 0, 0L, attempts, "", "", "error");
+        return failure(error, attempts, LlmRequestAccounting.DenyCode.NONE);
+    }
+
+    public static LlmResponse failure(String error, List<Attempt> attempts,
+            LlmRequestAccounting.DenyCode denyCode) {
+        return new LlmResponse(false, "", error, "", "", "", 0, 0, 0L, attempts,
+                "", "", "error", denyCode);
     }
 
     public LlmResponse withBodies(String request, String response) {
         return new LlmResponse(success, content, error, provider, model, credentialId, promptTokens,
-                completionTokens, latencyMs, attempts, request, response, finishReason);
+                completionTokens, latencyMs, attempts, request, response, finishReason, denyCode);
     }
 
     public record Attempt(String provider, String credentialId, boolean success, String error, long latencyMs,

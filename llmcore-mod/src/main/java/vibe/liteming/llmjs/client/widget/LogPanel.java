@@ -1,5 +1,7 @@
 package vibe.liteming.llmjs.client.widget;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import net.minecraft.client.Minecraft;
@@ -31,6 +33,10 @@ public class LogPanel extends AbstractWidget {
     private static final int LINE_HEIGHT = 12;
     private static final int MAX_ENTRIES = 300;
     private static final int DELETE_WIDTH = 14;
+    private static final Gson PRETTY_JSON = new GsonBuilder()
+            .setPrettyPrinting()
+            .disableHtmlEscaping()
+            .create();
 
     // Detail (raw JSON) area character-level selection.
     // Each point is (logicalLine, charOffset) into unwrappedDetailLines.
@@ -509,9 +515,21 @@ public class LogPanel extends AbstractWidget {
         addLineSeg(segs, unwrapped, "contentLength: " + e.contentLength);
         if (e.error != null && !e.error.isBlank()) addLineSeg(segs, unwrapped, "error: " + e.error);
         addLineSeg(segs, unwrapped, "--- REQUEST ---");
-        addBodySegs(segs, unwrapped, e.requestBody == null || e.requestBody.isBlank() ? "(empty)" : e.requestBody);
+        addBodySegs(segs, unwrapped, formatBodyForDisplay(e.requestBody));
         addLineSeg(segs, unwrapped, "--- RESPONSE ---");
-        addBodySegs(segs, unwrapped, e.responseBody == null || e.responseBody.isBlank() ? "(empty)" : e.responseBody);
+        addBodySegs(segs, unwrapped, formatBodyForDisplay(e.responseBody));
+    }
+
+    /** Pretty-print structured payloads for the long-text reader without mutating the stored raw entry. */
+    static String formatBodyForDisplay(String body) {
+        if (body == null || body.isBlank()) return "(empty)";
+        String trimmed = body.trim();
+        if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) return body;
+        try {
+            return PRETTY_JSON.toJson(JsonParser.parseString(trimmed));
+        } catch (Exception ignored) {
+            return body;
+        }
     }
 
     private void addLineSeg(List<DetailSeg> segs, List<String> unwrapped, String line) {

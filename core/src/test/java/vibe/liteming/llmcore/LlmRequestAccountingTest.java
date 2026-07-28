@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LlmRequestAccountingTest {
     @AfterEach
@@ -23,7 +24,9 @@ class LlmRequestAccountingTest {
             @Override
             public LlmRequestAccounting.Reservation reserve(
                     LlmRequest request, LlmRequestAccounting.AttemptEstimate estimate) {
-                return LlmRequestAccounting.Reservation.deny("personal budget exhausted");
+                return LlmRequestAccounting.Reservation.deny(
+                        LlmRequestAccounting.DenyCode.BUDGET_EXHAUSTED,
+                        "personal budget exhausted");
             }
 
             @Override
@@ -44,7 +47,34 @@ class LlmRequestAccountingTest {
 
         assertFalse(response.success());
         assertEquals("Billing denied: personal budget exhausted", response.error());
+        assertEquals(LlmRequestAccounting.DenyCode.BUDGET_EXHAUSTED, response.denyCode());
         assertEquals(0, settled.get());
+
+        LlmResponse streamed = new LlmOrchestrator(Map.of("test", spec))
+                .sendStreaming(request, ignored -> { }).join();
+        assertFalse(streamed.success());
+        assertEquals(LlmRequestAccounting.DenyCode.BUDGET_EXHAUSTED, streamed.denyCode());
+        assertEquals(0, settled.get());
+    }
+
+    @Test
+    void missingPolicyFailsClosedForPlayerButKeepsExplicitSystemRequestsAvailable() {
+        LlmRequestAccounting.clear();
+        LlmRequest player = request(LlmBillingContext.player(
+                "a78cc4bd-861b-45dc-87ec-4699aab476e5", "player-root", 1, 100L));
+        LlmRequest system = request(LlmBillingContext.system(
+                LlmBillingContext.PrincipalKind.SERVER_MAINTENANCE, "system-root", 1, 100L));
+
+        LlmRequestAccounting.Reservation denied = LlmRequestAccounting.reserve(player,
+                new LlmRequestAccounting.AttemptEstimate("test", 1, 1));
+
+        assertFalse(denied.allowed());
+        assertEquals(LlmRequestAccounting.DenyCode.POLICY_UNAVAILABLE, denied.denyCode());
+        assertEquals(LlmRequestAccounting.DenyCode.POLICY_UNAVAILABLE,
+                LlmRequestAccounting.preflight(player.billingContext()).denyCode());
+        assertTrue(LlmRequestAccounting.reserve(system,
+                new LlmRequestAccounting.AttemptEstimate("test", 1, 1)).allowed());
+        assertFalse(LlmRequestAccounting.isInstalled());
     }
 
     @Test
@@ -54,5 +84,20 @@ class LlmRequestAccountingTest {
         assertEquals(LlmBillingContext.PrincipalKind.UNSPECIFIED,
                 legacy.billingContext().principalKind());
         assertFalse(legacy.billingContext().specified());
+    }
+
+    @Test
+    void frozenAccountingAndResponseConstructorsRemainLinkable() throws Exception {
+        assertTrue(LlmRequestAccounting.Reservation.class.getConstructor(boolean.class, String.class,
+                String.class, long.class) != null);
+        assertTrue(LlmResponse.class.getConstructor(boolean.class, String.class, String.class,
+                String.class, String.class, String.class, int.class, int.class, long.class,
+                List.class, String.class, String.class, String.class) != null);
+    }
+
+    private static LlmRequest request(LlmBillingContext billing) {
+        return LlmRequest.routed(List.of(new LlmMessage("user", "hello")),
+                new LlmRequestContext("request", "CHAT", "", "", "", "", "", false,
+                        "", "", "", "", "player"), billing);
     }
 }

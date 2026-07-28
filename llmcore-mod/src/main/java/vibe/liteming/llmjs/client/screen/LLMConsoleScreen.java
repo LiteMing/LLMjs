@@ -3,6 +3,7 @@ package vibe.liteming.llmjs.client.screen;
 import com.google.gson.JsonParser;
 import vibe.liteming.llmjs.client.ClientEventHandler;
 import vibe.liteming.llmjs.client.widget.LogPanel;
+import vibe.liteming.llmjs.client.widget.BudgetPanel;
 import vibe.liteming.llmjs.client.widget.ProviderListPanel;
 import vibe.liteming.llmjs.client.widget.RoutingPanel;
 import vibe.liteming.llmjs.client.widget.SetupPanel;
@@ -25,10 +26,11 @@ import static vibe.liteming.llmjs.client.ConsoleTexts.tooltip;
 
 @OnlyIn(Dist.CLIENT)
 public class LLMConsoleScreen extends Screen {
-    private enum Tab { LOG, PROVIDERS, ROUTING, TEST, SETUP }
+    private enum Tab { LOG, BUDGET, PROVIDERS, ROUTING, TEST, SETUP }
 
     private Tab activeTab = Tab.LOG;
     private LogPanel logPanel;
+    private BudgetPanel budgetPanel;
     private ProviderListPanel providerPanel;
     private RoutingPanel routingPanel;
     private TestPanel testPanel;
@@ -39,11 +41,15 @@ public class LLMConsoleScreen extends Screen {
     private boolean canView;
     private boolean canTest;
     private boolean canAdminister;
+    private boolean canManageBudgets;
+    private boolean budgetDefaultConfirmationRequired;
     private Button logTab;
+    private Button budgetTab;
     private Button providersTab;
     private Button routingTab;
     private Button testTab;
     private Button setupTab;
+    private Button confirmBudgetButton;
 
     public LLMConsoleScreen(String statusJson) {
         this(statusJson, null, null);
@@ -64,38 +70,49 @@ public class LLMConsoleScreen extends Screen {
 
     @Override
     protected void init() {
-        int tabY = 22;
-        int gap = width < 300 ? 2 : 4;
-        int tabW = Math.max(36, Math.min(64, (width - 20 - gap * 4) / 5));
-        int totalW = tabW * 5 + gap * 4;
+        int tabY = tabY();
+        int gap = width < 340 ? 2 : 4;
+        int tabW = Math.max(28, Math.min(64, (width - 20 - gap * 5) / 6));
+        int totalW = tabW * 6 + gap * 5;
         int startX = Math.max(4, (width - totalW) / 2);
 
         logTab = tooltip(Button.builder(text("tab.log"), b -> switchTab(Tab.LOG))
                 .pos(startX, tabY).size(tabW, 20).build(), "tab.log.tip");
+        budgetTab = tooltip(Button.builder(text("tab.budget"), b -> switchTab(Tab.BUDGET))
+                .pos(startX + (tabW + gap), tabY).size(tabW, 20).build(), "tab.budget.tip");
         providersTab = tooltip(Button.builder(text("tab.providers"), b -> switchTab(Tab.PROVIDERS))
-                .pos(startX + (tabW + gap), tabY).size(tabW, 20).build(), "tab.providers.tip");
+                .pos(startX + (tabW + gap) * 2, tabY).size(tabW, 20).build(), "tab.providers.tip");
         routingTab = tooltip(Button.builder(text("tab.routing"), b -> switchTab(Tab.ROUTING))
-                .pos(startX + (tabW + gap) * 2, tabY).size(tabW, 20).build(), "tab.routing.tip");
+                .pos(startX + (tabW + gap) * 3, tabY).size(tabW, 20).build(), "tab.routing.tip");
         testTab = tooltip(Button.builder(text("tab.test"), b -> switchTab(Tab.TEST))
-                .pos(startX + (tabW + gap) * 3, tabY).size(tabW, 20).build(), "tab.test.tip");
+                .pos(startX + (tabW + gap) * 4, tabY).size(tabW, 20).build(), "tab.test.tip");
         setupTab = tooltip(Button.builder(text("tab.setup"), b -> switchTab(Tab.SETUP))
-                .pos(startX + (tabW + gap) * 4, tabY).size(tabW, 20).build(), "tab.setup.tip");
+                .pos(startX + (tabW + gap) * 5, tabY).size(tabW, 20).build(), "tab.setup.tip");
         addRenderableWidget(logTab);
+        addRenderableWidget(budgetTab);
         addRenderableWidget(providersTab);
         addRenderableWidget(routingTab);
         addRenderableWidget(testTab);
         addRenderableWidget(setupTab);
+        confirmBudgetButton = tooltip(Button.builder(text("budget.confirm"), button -> {
+            if (minecraft != null && minecraft.player != null) {
+                minecraft.player.connection.sendCommand("llm budget confirm-default");
+            }
+        }).pos(Math.max(4, width - 134), 19).size(128, 18).build(), "budget.confirm.tip");
+        addRenderableWidget(confirmBudgetButton);
 
-        int panelY = 48;
+        int panelY = panelY();
         int margin = width < 260 ? 4 : 10;
-        int panelH = Math.max(1, height - 58);
+        int panelH = Math.max(1, height - panelY - 10);
         int panelW = Math.max(1, width - margin * 2);
         int panelX = margin;
 
         logPanel = new LogPanel(panelX, panelY, panelW, panelH);
+        budgetPanel = new BudgetPanel(panelX, panelY, panelW, panelH, initialStatusJson);
         providerPanel = new ProviderListPanel(panelX, panelY, panelW, panelH, initialStatusJson);
         routingPanel = new RoutingPanel(panelX, panelY, panelW, panelH, font, initialStatusJson);
         addRenderableWidget(logPanel);
+        addRenderableWidget(budgetPanel);
         addRenderableWidget(providerPanel);
         addRenderableWidget(routingPanel);
 
@@ -120,12 +137,12 @@ public class LLMConsoleScreen extends Screen {
             super.repositionElements();
             return;
         }
-        int tabY = 22;
-        int gap = width < 300 ? 2 : 4;
-        int tabW = Math.max(36, Math.min(64, (width - 20 - gap * 4) / 5));
-        int totalW = tabW * 5 + gap * 4;
+        int tabY = tabY();
+        int gap = width < 340 ? 2 : 4;
+        int tabW = Math.max(28, Math.min(64, (width - 20 - gap * 5) / 6));
+        int totalW = tabW * 6 + gap * 5;
         int startX = Math.max(4, (width - totalW) / 2);
-        List<Button> tabs = List.of(logTab, providersTab, routingTab, testTab, setupTab);
+        List<Button> tabs = List.of(logTab, budgetTab, providersTab, routingTab, testTab, setupTab);
         for (int index = 0; index < tabs.size(); index++) {
             Button tab = tabs.get(index);
             tab.setX(startX + (tabW + gap) * index);
@@ -133,13 +150,18 @@ public class LLMConsoleScreen extends Screen {
             tab.setWidth(tabW);
             tab.setHeight(20);
         }
+        confirmBudgetButton.setX(Math.max(4, width - 134));
+        confirmBudgetButton.setY(19);
+        confirmBudgetButton.setWidth(Math.min(128, Math.max(52, width / 2 - 6)));
+        confirmBudgetButton.setHeight(18);
 
-        int panelY = 48;
+        int panelY = panelY();
         int margin = width < 260 ? 4 : 10;
-        int panelH = Math.max(1, height - 58);
+        int panelH = Math.max(1, height - panelY - 10);
         int panelW = Math.max(1, width - margin * 2);
         int panelX = margin;
         logPanel.setBounds(panelX, panelY, panelW, panelH);
+        budgetPanel.setBounds(panelX, panelY, panelW, panelH);
         providerPanel.setBounds(panelX, panelY, panelW, panelH);
         routingPanel.setBounds(panelX, panelY, panelW, panelH);
         testPanel.setBounds(panelX, panelY, panelW, panelH);
@@ -149,12 +171,14 @@ public class LLMConsoleScreen extends Screen {
 
     private void switchTab(Tab tab) {
         if ((tab == Tab.LOG && !canView)
+                || (tab == Tab.BUDGET && !(canView || canTest))
                 || (tab == Tab.TEST && !canTest)
                 || ((tab == Tab.PROVIDERS || tab == Tab.ROUTING || tab == Tab.SETUP) && !canAdminister)) {
             tab = canTest ? Tab.TEST : Tab.LOG;
         }
         activeTab = tab;
         logPanel.visible = (tab == Tab.LOG);
+        budgetPanel.visible = (tab == Tab.BUDGET);
         providerPanel.visible = (tab == Tab.PROVIDERS);
         routingPanel.setPanelVisible(tab == Tab.ROUTING);
         testPanel.setVisible(tab == Tab.TEST);
@@ -165,9 +189,16 @@ public class LLMConsoleScreen extends Screen {
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
         renderBackground(graphics);
         graphics.drawCenteredString(font, title, width / 2, 6, 0xFFFFFF);
+        if (budgetDefaultConfirmationRequired) {
+            graphics.fill(4, 18, width - 4, 39, 0xD0AA2200);
+            int textWidth = Math.max(0, confirmBudgetButton.getX() - 12);
+            String warning = font.plainSubstrByWidth(string("budget.confirm.warning"), textWidth);
+            graphics.drawString(font, warning, 8, 24, 0xFFFF55, true);
+        }
         // Active tab underline
         Button active = switch (activeTab) {
             case LOG -> logTab;
+            case BUDGET -> budgetTab;
             case PROVIDERS -> providersTab;
             case ROUTING -> routingTab;
             case TEST -> testTab;
@@ -278,6 +309,9 @@ public class LLMConsoleScreen extends Screen {
         readPermissions(statusJson);
         if (providerPanel != null) {
             providerPanel.updateStatus(statusJson);
+            if (budgetPanel != null) {
+                budgetPanel.updateStatus(statusJson);
+            }
             if (testPanel != null) {
                 testPanel.updateStatus(statusJson);
             }
@@ -285,6 +319,7 @@ public class LLMConsoleScreen extends Screen {
         if (routingPanel != null) {
             routingPanel.updateStatus(statusJson);
         }
+        if (logTab != null) repositionElements();
         applyAccessState();
     }
 
@@ -311,10 +346,12 @@ public class LLMConsoleScreen extends Screen {
     private void applyAccessState() {
         if (providersTab == null) return;
         logTab.active = canView;
+        budgetTab.active = canView || canTest;
         providersTab.active = canAdminister;
         routingTab.active = canAdminister;
         testTab.active = canTest;
         setupTab.active = canAdminister;
+        confirmBudgetButton.visible = canManageBudgets && budgetDefaultConfirmationRequired;
         if (testPanel != null) testPanel.setRestricted(!canAdminister);
         if (!canAdminister && logPanel != null) switchTab(canTest ? Tab.TEST : Tab.LOG);
     }
@@ -323,12 +360,26 @@ public class LLMConsoleScreen extends Screen {
         try {
             var root = JsonParser.parseString(statusJson).getAsJsonObject();
             canAdminister = root.has("canAdminister") && root.get("canAdminister").getAsBoolean();
+            canManageBudgets = root.has("canManageBudgets")
+                    && root.get("canManageBudgets").getAsBoolean();
+            budgetDefaultConfirmationRequired = root.has("budgetDefaultConfirmationRequired")
+                    && root.get("budgetDefaultConfirmationRequired").getAsBoolean();
             canTest = canAdminister || (root.has("canTest") && root.get("canTest").getAsBoolean());
             canView = canAdminister || (root.has("canView") && root.get("canView").getAsBoolean());
         } catch (Exception ignored) {
             canView = false;
             canTest = false;
             canAdminister = false;
+            canManageBudgets = false;
+            budgetDefaultConfirmationRequired = false;
         }
+    }
+
+    private int tabY() {
+        return budgetDefaultConfirmationRequired ? 42 : 22;
+    }
+
+    private int panelY() {
+        return tabY() + 26;
     }
 }

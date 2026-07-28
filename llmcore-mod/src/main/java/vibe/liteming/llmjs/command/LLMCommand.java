@@ -22,6 +22,7 @@ import net.minecraft.commands.Commands;
 import net.minecraft.commands.SharedSuggestionProvider;
 import net.minecraft.commands.arguments.GameProfileArgument;
 import net.minecraft.network.chat.Component;
+import net.minecraft.ChatFormatting;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraftforge.network.PacketDistributor;
 
@@ -75,11 +76,34 @@ public class LLMCommand {
                         .then(Commands.literal("list")
                                 .requires(PermissionCheck::canManageAdministrators)
                                 .executes(ctx -> listBudgets(ctx.getSource())))
-                        .then(Commands.literal("limit")
+                        .then(Commands.literal("default")
                                 .requires(PermissionCheck::canManageAdministrators)
-                                .then(Commands.argument("tokens", LongArgumentType.longArg(0L))
-                                        .executes(ctx -> setBudgetLimit(ctx.getSource(),
+                                .then(Commands.literal("unlimited")
+                                        .executes(ctx -> setBudgetDefault(ctx.getSource(), -1L)))
+                                .then(Commands.literal("disabled")
+                                        .executes(ctx -> setBudgetDefault(ctx.getSource(), 0L)))
+                                .then(Commands.argument("tokens", LongArgumentType.longArg(1L))
+                                        .executes(ctx -> setBudgetDefault(ctx.getSource(),
                                                 LongArgumentType.getLong(ctx, "tokens")))))
+                        .then(Commands.literal("confirm-default")
+                                .requires(PermissionCheck::canManageAdministrators)
+                                .executes(ctx -> confirmBudgetDefault(ctx.getSource())))
+                        .then(Commands.literal("set")
+                                .requires(PermissionCheck::canManageAdministrators)
+                                .then(Commands.argument("player", GameProfileArgument.gameProfile())
+                                        .then(Commands.literal("inherit")
+                                                .executes(ctx -> setPlayerBudgets(ctx.getSource(),
+                                                        GameProfileArgument.getGameProfiles(ctx, "player"), null)))
+                                        .then(Commands.literal("unlimited")
+                                                .executes(ctx -> setPlayerBudgets(ctx.getSource(),
+                                                        GameProfileArgument.getGameProfiles(ctx, "player"), -1L)))
+                                        .then(Commands.literal("disabled")
+                                                .executes(ctx -> setPlayerBudgets(ctx.getSource(),
+                                                        GameProfileArgument.getGameProfiles(ctx, "player"), 0L)))
+                                        .then(Commands.argument("tokens", LongArgumentType.longArg(1L))
+                                                .executes(ctx -> setPlayerBudgets(ctx.getSource(),
+                                                        GameProfileArgument.getGameProfiles(ctx, "player"),
+                                                        LongArgumentType.getLong(ctx, "tokens"))))))
                         .then(Commands.literal("reset")
                                 .requires(PermissionCheck::canManageAdministrators)
                                 .then(Commands.argument("player", GameProfileArgument.gameProfile())
@@ -108,6 +132,13 @@ public class LLMCommand {
         }
         LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                 new S2CLogHistoryPacket(history));
+        if (PermissionCheck.canManageAdministrators(player)
+                && !LLMConfig.PERSONAL_BUDGET_DEFAULT_CONFIRMED.get()) {
+            player.sendSystemMessage(Component.translatable("command.llm.budget.confirm_warning")
+                    .withStyle(ChatFormatting.RED, ChatFormatting.BOLD));
+            player.sendSystemMessage(Component.translatable("command.llm.budget.confirm_hint")
+                    .withStyle(ChatFormatting.GOLD));
+        }
         return 1;
     }
 
@@ -244,11 +275,52 @@ public class LLMCommand {
         return entries.size();
     }
 
-    private static int setBudgetLimit(CommandSourceStack source, long tokens) {
-        LLMConfig.setPersonalBudgetLimit(tokens);
-        String key = tokens == 0L ? "command.llm.budget.limit_unlimited" : "command.llm.budget.limit_set";
+    private static int setBudgetDefault(CommandSourceStack source, long tokens) {
+        LLMConfig.setPersonalBudgetDefault(tokens);
+        String key = tokens == -1L
+                ? "command.llm.budget.default_unlimited"
+                : tokens == 0L
+                        ? "command.llm.budget.default_disabled"
+                        : "command.llm.budget.default_set";
         source.sendSuccess(() -> Component.translatable(key, tokens), true);
+        refreshStatus(source);
         return 1;
+    }
+
+    private static int confirmBudgetDefault(CommandSourceStack source) {
+        LLMConfig.confirmPersonalBudgetDefault();
+        source.sendSuccess(() -> Component.translatable("command.llm.budget.default_confirmed"), true);
+        refreshStatus(source);
+        return 1;
+    }
+
+    private static int setPlayerBudgets(CommandSourceStack source,
+            Collection<GameProfile> profiles, Long limitTokens) {
+        if (!PersonalBudgetService.INSTANCE.storageAvailable()) {
+            source.sendFailure(Component.translatable("command.llm.budget.storage_unavailable"));
+            return 0;
+        }
+        int processed = 0;
+        for (GameProfile profile : profiles) {
+            if (profile.getId() == null) continue;
+            PersonalBudgetService.INSTANCE.setLimit(profile.getId(), limitTokens);
+            String key = limitTokens == null
+                    ? "command.llm.budget.player_inherit"
+                    : limitTokens == -1L
+                            ? "command.llm.budget.player_unlimited"
+                            : limitTokens == 0L
+                                    ? "command.llm.budget.player_disabled"
+                                    : "command.llm.budget.player_set";
+            source.sendSuccess(() -> Component.translatable(key,
+                    profile.getName(), profile.getId().toString(), limitTokens), true);
+            ServerPlayer online = source.getServer().getPlayerList().getPlayer(profile.getId());
+            if (online != null) {
+                LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> online),
+                        new S2CStatusResponsePacket(PermissionCheck.statusFor(online).toString(), false));
+            }
+            processed++;
+        }
+        return processed;
     }
 
     private static int resetBudgets(CommandSourceStack source, Collection<GameProfile> profiles) {
@@ -270,9 +342,14 @@ public class LLMCommand {
 
     private static void sendBudgetStatus(CommandSourceStack source, GameProfile profile,
             PersonalBudgetService.Status status) {
-        Component limit = status.limitTokens() <= 0L
+        Component limit = status.unlimited()
                 ? Component.translatable("command.llm.budget.unlimited")
-                : Component.literal(Long.toString(status.limitTokens()));
+                : status.disabled()
+                        ? Component.translatable("command.llm.budget.disabled")
+                        : Component.literal(Long.toString(status.limitTokens()));
+        Component limitSource = status.inheritedLimit()
+                ? Component.translatable("command.llm.budget.source_default")
+                : Component.translatable("command.llm.budget.source_override");
         Component state = !status.storageAvailable()
                 ? Component.translatable("command.llm.budget.state_storage_unavailable")
                 : status.exhausted()
@@ -281,7 +358,14 @@ public class LLMCommand {
         source.sendSuccess(() -> Component.translatable("command.llm.budget.status",
                 profile.getName(), status.playerId().toString(), status.totalTokens(), limit,
                 status.promptTokens(), status.completionTokens(), status.estimatedTokens(),
-                status.reservedTokens(), state), false);
+                status.reservedTokens(), state, limitSource), false);
+    }
+
+    private static void refreshStatus(CommandSourceStack source) {
+        ServerPlayer player = source.getPlayer();
+        if (player == null) return;
+        LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                new S2CStatusResponsePacket(PermissionCheck.statusFor(player).toString(), false));
     }
 
     private static CompletableFuture<Suggestions> suggestProviders(

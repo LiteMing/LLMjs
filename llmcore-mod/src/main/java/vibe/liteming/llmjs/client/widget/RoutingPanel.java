@@ -32,9 +32,9 @@ import static vibe.liteming.llmjs.client.ConsoleTexts.tooltip;
  * shows the current provider chain; clicking a row opens an inline provider and
  * inherited-parameter editor.
  *
- * <p>Each purpose has a fixed-size pool of available providers (right column); the
- * active chain is the left column in priority order. Blank parameter fields inherit.
- * Save broadcasts a C2SUpdateRoutingPacket; Reset reloads the server snapshot.</p>
+ * <p>Each purpose has a responsive, multi-row pool of available providers; the
+ * active chain remains in priority order. Blank parameter fields inherit. Save
+ * broadcasts a C2SUpdateRoutingPacket; Reset reloads the server snapshot.</p>
  */
 @OnlyIn(Dist.CLIENT)
 public class RoutingPanel extends AbstractWidget {
@@ -57,7 +57,6 @@ public class RoutingPanel extends AbstractWidget {
     private static final int CONTENT_TOP = 6;
     private static final int FOOTER_GAP = 6;
     private static final int FOOTER_HEIGHT = 22;
-    private static final int NARROW_PROVIDER_BREAKPOINT = 360;
 
     private final Font font;
     private final ConsoleScrollBar pageScroll = new ConsoleScrollBar();
@@ -490,7 +489,7 @@ public class RoutingPanel extends AbstractWidget {
         if (editingRow >= 0) {
             ProviderEditorLayout layout = providerEditorLayout(editorScreenY());
             if (mouseY >= editorScreenY() + 12 && mouseY < layout.bottomY()) {
-                boolean activeArea = width >= NARROW_PROVIDER_BREAKPOINT
+                boolean activeArea = !usesStackedProviderLayout(width)
                         ? mouseX < getX() + width / 2
                         : mouseY < layout.availableY() - 2;
                 graphics.renderTooltip(font, text(activeArea ? "routing.active.tip" : "routing.available.tip"),
@@ -545,9 +544,10 @@ public class RoutingPanel extends AbstractWidget {
 
         ProviderEditorLayout providerLayout = providerEditorLayout(ey);
         int activeLabelX = getX() + 8;
-        int availableLabelX = width >= NARROW_PROVIDER_BREAKPOINT ? getX() + width / 2 + 8 : getX() + 8;
+        int availableLabelX = !usesStackedProviderLayout(width) ? getX() + width / 2 + 8 : getX() + 8;
         graphics.drawString(font, text("routing.active"), activeLabelX, providerLayout.activeY(), 0xAAAAFF, false);
-        graphics.drawString(font, text("routing.available"), availableLabelX,
+        graphics.drawString(font, Component.literal(string("routing.available")
+                        + " (" + providerNames.size() + ")"), availableLabelX,
                 providerLayout.availableY(), 0xAAAAFF, false);
 
         ProviderGrid activeGrid = providerLayout.activeGrid();
@@ -634,7 +634,11 @@ public class RoutingPanel extends AbstractWidget {
     }
 
     static boolean usesStackedProviderLayout(int panelWidth) {
-        return panelWidth < NARROW_PROVIDER_BREAKPOINT;
+        int half = Math.max(1, panelWidth / 2);
+        int activeUsableWidth = half - 56;
+        int availableUsableWidth = panelWidth - half - 70;
+        return providerColumnCount(activeUsableWidth, ACTIVE_SLOT_WIDTH) < 2
+                || providerColumnCount(availableUsableWidth, AVAILABLE_SLOT_WIDTH) < 2;
     }
 
     private static ProviderGrid providerGrid(int startX, int endX, int preferredSlotWidth) {

@@ -25,19 +25,26 @@ import java.util.UUID;
 
 /** Atomic per-world token usage store. Any malformed content fails closed. */
 final class PersonalBudgetLedger {
-    static final int SCHEMA_VERSION = 1;
+    static final int SCHEMA_VERSION = 2;
+    private static final long USAGE_FLUSH_INTERVAL_MS = 5_000L;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     record Usage(UUID playerId, long promptTokens, long completionTokens, long estimatedTokens,
-            long updatedAtMs) {
+            long requestCount, Long limitTokens, long updatedAtMs) {
         long totalTokens() {
             return saturatedAdd(saturatedAdd(promptTokens, completionTokens), estimatedTokens);
+        }
+
+        boolean hasUsage() {
+            return totalTokens() > 0L;
         }
     }
 
     private final Path file;
     private final Map<UUID, Usage> usageByPlayer = new LinkedHashMap<>();
     private boolean writable = true;
+    private boolean dirty;
+    private long lastPersistAtMs;
 
     PersonalBudgetLedger(Path file) {
         this.file = Objects.requireNonNull(file, "file").toAbsolutePath().normalize();
@@ -50,7 +57,7 @@ final class PersonalBudgetLedger {
 
     synchronized Usage usage(UUID playerId) {
         Usage usage = playerId == null ? null : usageByPlayer.get(playerId);
-        return usage == null ? new Usage(playerId, 0L, 0L, 0L, 0L) : usage;
+        return usage == null ? new Usage(playerId, 0L, 0L, 0L, 0L, null, 0L) : usage;
     }
 
     synchronized List<Usage> list() {
@@ -63,32 +70,88 @@ final class PersonalBudgetLedger {
             long estimatedTokens, long nowMs) {
         requireWritable();
         Objects.requireNonNull(playerId, "playerId");
-        Usage previous = usage(playerId);
+        Usage stored = usageByPlayer.get(playerId);
+        Usage previous = stored == null ? usage(playerId) : stored;
         Usage next = new Usage(playerId,
                 saturatedAdd(previous.promptTokens(), Math.max(0L, promptTokens)),
                 saturatedAdd(previous.completionTokens(), Math.max(0L, completionTokens)),
                 saturatedAdd(previous.estimatedTokens(), Math.max(0L, estimatedTokens)),
+                saturatedAdd(previous.requestCount(), 1L),
+                previous.limitTokens(),
                 Math.max(0L, nowMs));
         usageByPlayer.put(playerId, next);
         try {
-            persist();
+            dirty = true;
+            flushIfDue(nowMs);
         } catch (RuntimeException failure) {
-            if (previous.totalTokens() == 0L && previous.updatedAtMs() == 0L) usageByPlayer.remove(playerId);
-            else usageByPlayer.put(playerId, previous);
+            if (stored == null) usageByPlayer.remove(playerId);
+            else usageByPlayer.put(playerId, stored);
             writable = false;
             throw failure;
         }
         return next;
     }
 
-    synchronized boolean reset(UUID playerId) {
+    synchronized void flush() {
         requireWritable();
-        Usage previous = usageByPlayer.remove(playerId);
-        if (previous == null) return false;
+        if (!dirty) return;
         try {
             persist();
+            dirty = false;
+            lastPersistAtMs = System.currentTimeMillis();
+        } catch (RuntimeException failure) {
+            writable = false;
+            throw failure;
+        }
+    }
+
+    synchronized boolean reset(UUID playerId) {
+        requireWritable();
+        Usage previous = usageByPlayer.get(playerId);
+        if (previous == null) return false;
+        boolean changed = previous.hasUsage();
+        if (!changed) return false;
+        if (previous.limitTokens() == null) {
+            usageByPlayer.remove(playerId);
+        } else {
+            usageByPlayer.put(playerId, new Usage(playerId, 0L, 0L, 0L, 0L,
+                    previous.limitTokens(), previous.updatedAtMs()));
+        }
+        try {
+            persist();
+            dirty = false;
+            lastPersistAtMs = System.currentTimeMillis();
         } catch (RuntimeException failure) {
             usageByPlayer.put(previous.playerId(), previous);
+            writable = false;
+            throw failure;
+        }
+        return true;
+    }
+
+    synchronized boolean setLimit(UUID playerId, Long limitTokens, long nowMs) {
+        requireWritable();
+        Objects.requireNonNull(playerId, "playerId");
+        if (limitTokens != null && limitTokens < -1L) {
+            throw new IllegalArgumentException("limitTokens must be null, -1, 0, or positive");
+        }
+        Usage previous = usageByPlayer.get(playerId);
+        Usage current = previous == null ? usage(playerId) : previous;
+        if (Objects.equals(current.limitTokens(), limitTokens)) return false;
+        if (limitTokens == null && !current.hasUsage()) {
+            usageByPlayer.remove(playerId);
+        } else {
+            usageByPlayer.put(playerId, new Usage(playerId, current.promptTokens(),
+                    current.completionTokens(), current.estimatedTokens(), current.requestCount(), limitTokens,
+                    Math.max(0L, nowMs)));
+        }
+        try {
+            persist();
+            dirty = false;
+            lastPersistAtMs = Math.max(0L, nowMs);
+        } catch (RuntimeException failure) {
+            if (previous == null) usageByPlayer.remove(playerId);
+            else usageByPlayer.put(playerId, previous);
             writable = false;
             throw failure;
         }
@@ -99,7 +162,11 @@ final class PersonalBudgetLedger {
         if (!Files.isRegularFile(file)) return;
         try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
             JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
-            if (!root.has("schemaVersion") || root.get("schemaVersion").getAsInt() != SCHEMA_VERSION) {
+            if (!root.has("schemaVersion")) {
+                throw new IllegalArgumentException("missing schemaVersion");
+            }
+            int schemaVersion = root.get("schemaVersion").getAsInt();
+            if (schemaVersion != 1 && schemaVersion != SCHEMA_VERSION) {
                 throw new IllegalArgumentException("unsupported schemaVersion");
             }
             JsonArray entries = root.has("players") && root.get("players").isJsonArray()
@@ -111,6 +178,9 @@ final class PersonalBudgetLedger {
                         nonNegative(value, "promptTokens"),
                         nonNegative(value, "completionTokens"),
                         nonNegative(value, "estimatedTokens"),
+                        schemaVersion >= 2 && value.has("requestCount")
+                                ? nonNegative(value, "requestCount") : 0L,
+                        schemaVersion >= 2 ? optionalLimit(value) : null,
                         nonNegative(value, "updatedAtMs"));
                 if (usageByPlayer.put(playerId, usage) != null) {
                     throw new IllegalArgumentException("duplicate playerId " + playerId);
@@ -129,6 +199,16 @@ final class PersonalBudgetLedger {
         return number;
     }
 
+    private static Long optionalLimit(JsonObject value) {
+        if (!value.has("limitTokens")) return null;
+        if (value.get("limitTokens").isJsonNull()) {
+            throw new IllegalArgumentException("limitTokens must be omitted when unset");
+        }
+        long number = value.get("limitTokens").getAsLong();
+        if (number < -1L) throw new IllegalArgumentException("limitTokens is below -1");
+        return number;
+    }
+
     private void persist() {
         JsonObject root = new JsonObject();
         root.addProperty("schemaVersion", SCHEMA_VERSION);
@@ -139,6 +219,8 @@ final class PersonalBudgetLedger {
             value.addProperty("promptTokens", usage.promptTokens());
             value.addProperty("completionTokens", usage.completionTokens());
             value.addProperty("estimatedTokens", usage.estimatedTokens());
+            value.addProperty("requestCount", usage.requestCount());
+            if (usage.limitTokens() != null) value.addProperty("limitTokens", usage.limitTokens());
             value.addProperty("updatedAtMs", usage.updatedAtMs());
             players.add(value);
         }
@@ -160,6 +242,14 @@ final class PersonalBudgetLedger {
         } catch (IOException failure) {
             throw new IllegalStateException("Failed to persist personal token usage", failure);
         }
+    }
+
+    private void flushIfDue(long nowMs) {
+        long safeNow = Math.max(0L, nowMs);
+        if (lastPersistAtMs > 0L && safeNow - lastPersistAtMs < USAGE_FLUSH_INTERVAL_MS) return;
+        persist();
+        dirty = false;
+        lastPersistAtMs = safeNow;
     }
 
     private void requireWritable() {

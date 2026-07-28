@@ -2,6 +2,7 @@ package vibe.liteming.llmjs.pipeline;
 
 import com.google.gson.JsonObject;
 import org.jetbrains.annotations.Nullable;
+import vibe.liteming.llmcore.LlmRequestAccounting;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -16,13 +17,14 @@ public class LLMResponse {
     private final int completionTokens;
     private final long latencyMs;
     private final List<AttemptRecord> attempts;
+    private final LlmRequestAccounting.DenyCode denyCode;
 
     public record AttemptRecord(String provider, boolean success, @Nullable String error, long latencyMs) {}
 
     private LLMResponse(boolean success, @Nullable String content, @Nullable String error,
                          @Nullable String model, @Nullable String provider,
                          int promptTokens, int completionTokens, long latencyMs,
-                         List<AttemptRecord> attempts) {
+                         List<AttemptRecord> attempts, LlmRequestAccounting.DenyCode denyCode) {
         this.success = success;
         this.content = content;
         this.error = error;
@@ -32,21 +34,29 @@ public class LLMResponse {
         this.completionTokens = completionTokens;
         this.latencyMs = latencyMs;
         this.attempts = attempts;
+        this.denyCode = denyCode == null ? LlmRequestAccounting.DenyCode.NONE : denyCode;
     }
 
     public static LLMResponse success(String content, String model, String provider,
                                        int promptTokens, int completionTokens, long latencyMs) {
         return new LLMResponse(true, content, null, model, provider,
-                promptTokens, completionTokens, latencyMs, new ArrayList<>());
+                promptTokens, completionTokens, latencyMs, new ArrayList<>(),
+                LlmRequestAccounting.DenyCode.NONE);
     }
 
     public static LLMResponse error(String error) {
-        return new LLMResponse(false, null, error, null, null, 0, 0, 0, new ArrayList<>());
+        return new LLMResponse(false, null, error, null, null, 0, 0, 0,
+                new ArrayList<>(), LlmRequestAccounting.DenyCode.NONE);
+    }
+
+    public static LLMResponse denied(LlmRequestAccounting.DenyCode denyCode, String error) {
+        return new LLMResponse(false, null, error, null, null, 0, 0, 0,
+                new ArrayList<>(), denyCode);
     }
 
     public LLMResponse withAttempts(List<AttemptRecord> attempts) {
         return new LLMResponse(success, content, error, model, provider,
-                promptTokens, completionTokens, latencyMs, attempts);
+                promptTokens, completionTokens, latencyMs, attempts, denyCode);
     }
 
     public boolean isSuccess() { return success; }
@@ -58,6 +68,7 @@ public class LLMResponse {
     public int getCompletionTokens() { return completionTokens; }
     public long getLatencyMs() { return latencyMs; }
     public List<AttemptRecord> getAttempts() { return attempts; }
+    public LlmRequestAccounting.DenyCode getDenyCode() { return denyCode; }
 
     public JsonObject toJson() {
         JsonObject obj = new JsonObject();
@@ -71,6 +82,9 @@ public class LLMResponse {
             obj.addProperty("latencyMs", latencyMs);
         } else {
             obj.addProperty("error", error);
+            if (denyCode != LlmRequestAccounting.DenyCode.NONE) {
+                obj.addProperty("denyCode", denyCode.name());
+            }
         }
         return obj;
     }

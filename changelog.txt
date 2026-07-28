@@ -1,9 +1,16 @@
-LLMjs 2.4.0 / LLM Core 1.3.0 (Unreleased)
+LLMjs 2.5.0 / LLM Core 1.4.0 (Unreleased)
 ========================================
+ - Added per-player inherit, unlimited, disabled, and finite token limits with schema-1 ledger migration.
+ - Added structured billing denial codes to the frozen llm-core response contract.
+ - Added cancellation-safe reservation release plus TTL recovery for abandoned provider attempts.
+ - Player requests now fail closed when the billing policy or world ledger is unavailable.
+ - New servers keep an unlimited default but show a prominent owner confirmation warning in the Console.
  - Added five-minute, request-bound delegated Console Test access for trusted mods without granting log, provider, routing, setup, or parameter-management permissions.
- - Added world-scoped per-player token accounting and an optional common personal budget limit; exhausted players are rejected before provider access.
- - Added `/llm budget` status and owner-only list, limit, and reset operations.
- - Raised the llmjs runtime dependency to llm-core 1.3.0 so billing-aware requests cannot load against an older core.
+ - Added world-scoped per-player token accounting; exhausted or disabled players are rejected before provider access.
+ - Added `/llm budget` status and owner-only list, default, override, confirmation, and reset operations.
+ - Raised the llmjs runtime dependency to llm-core 1.4.0 so structured billing denials cannot load against an older core.
+ - Routing now stacks active and available providers when a resized window cannot fit both columns, so fourth and later entries remain reachable.
+ - Log request and response JSON is formatted as readable multiline text; clear and per-entry delete remain display-buffer-only actions.
 
 LLMjs 2.3.1 / LLM Core 1.1.1
 ================================
