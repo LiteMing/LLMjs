@@ -53,20 +53,20 @@ public class PermissionCheck {
     public static JsonObject statusFor(ServerPlayer player) {
         boolean canAdminister = canAdminister(player);
         boolean canManageBudgets = canManageAdministrators(player);
+        boolean canViewBudgets = canAdminister;
         boolean canView = canUse(player);
         var grant = ConsoleTestGrantService.INSTANCE.activeGrant(player.getUUID());
         boolean canTest = canAdminister || grant.isPresent();
         Supplier<JsonObject> restrictedStatus = () -> grant
                 .map(value -> ProviderManager.INSTANCE.getTestStatusJson(value.request().purpose()))
                 .orElseGet(JsonObject::new);
-        JsonObject result = createStatusPayload(canView, canTest, canAdminister,
+        JsonObject result = createStatusPayload(canView, canTest, canAdminister, canManageBudgets,
                 ProviderManager.INSTANCE::getStatusJson, restrictedStatus);
-        result.addProperty("canManageBudgets", canManageBudgets);
         result.addProperty("personalBudgetDefault", LLMConfig.PERSONAL_BUDGET_DEFAULT.get());
         result.addProperty("budgetDefaultConfirmationRequired",
                 canManageBudgets && !LLMConfig.PERSONAL_BUDGET_DEFAULT_CONFIRMED.get());
         result.add("personalBudget", PersonalBudgetService.INSTANCE.statusJson(player.getUUID()));
-        if (canManageBudgets) {
+        if (canViewBudgets) {
             JsonArray players = new JsonArray();
             for (PersonalBudgetService.Status status : PersonalBudgetService.INSTANCE.list()) {
                 JsonObject entry = PersonalBudgetService.INSTANCE.statusJson(status.playerId());
@@ -83,6 +83,7 @@ public class PermissionCheck {
     }
 
     static JsonObject createStatusPayload(boolean canView, boolean canTest, boolean canAdminister,
+            boolean canManageBudgets,
             Supplier<JsonObject> fullStatus, Supplier<JsonObject> restrictedTestStatus) {
         JsonObject result = canAdminister
                 ? fullStatus.get()
@@ -90,6 +91,8 @@ public class PermissionCheck {
         result.addProperty("canView", canView);
         result.addProperty("canTest", canTest);
         result.addProperty("canAdminister", canAdminister);
+        result.addProperty("canViewBudgets", canAdminister);
+        result.addProperty("canManageBudgets", canManageBudgets);
         return result;
     }
 

@@ -38,6 +38,7 @@ public final class BudgetPanel extends AbstractWidget {
     private final List<PrincipalEntry> principals = new ArrayList<>();
     private PlayerEntry own;
     private long defaultLimit = -1L;
+    private boolean canViewAll;
     private boolean canManage;
     private boolean confirmationRequired;
 
@@ -60,6 +61,7 @@ public final class BudgetPanel extends AbstractWidget {
         own = null;
         try {
             JsonObject root = JsonParser.parseString(statusJson).getAsJsonObject();
+            canViewAll = bool(root, "canViewBudgets");
             canManage = bool(root, "canManageBudgets");
             confirmationRequired = bool(root, "budgetDefaultConfirmationRequired");
             defaultLimit = number(root, "personalBudgetDefault", -1L);
@@ -85,6 +87,7 @@ public final class BudgetPanel extends AbstractWidget {
                 }
             }
         } catch (RuntimeException ignored) {
+            canViewAll = false;
             canManage = false;
             confirmationRequired = false;
         }
@@ -110,7 +113,9 @@ public final class BudgetPanel extends AbstractWidget {
         graphics.disableScissor();
         scroll.render(graphics, mouseX, mouseY);
         if (isMouseOver(mouseX, mouseY)) {
-            graphics.renderTooltip(font, text(canManage ? "budget.admin.tip" : "budget.self.tip"),
+            String tooltip = canManage ? "budget.admin.tip"
+                    : canViewAll ? "budget.overview.tip" : "budget.self.tip";
+            graphics.renderTooltip(font, text(tooltip),
                     mouseX, mouseY);
         }
     }
@@ -123,7 +128,7 @@ public final class BudgetPanel extends AbstractWidget {
         if (confirmationRequired) {
             lines.add(new DisplayLine(string("budget.confirm.required"), 0xFFFF55));
         }
-        if (canManage) {
+        if (canViewAll) {
             lines.add(new DisplayLine("", 0xFFFFFF));
             lines.add(new DisplayLine(string("budget.principals"), 0x55AAFF));
             if (principals.isEmpty()) {

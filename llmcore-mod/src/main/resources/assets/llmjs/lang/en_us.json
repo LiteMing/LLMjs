@@ -40,6 +40,7 @@
   "gui.llmjs.budget.source.default": "server default",
   "gui.llmjs.budget.source.override": "player override",
   "gui.llmjs.budget.admin.tip": "This is a read-only projection. Use /llm budget default|set|reset to change authoritative state.",
+  "gui.llmjs.budget.overview.tip": "This is a read-only projection. Only the server owner can change budget limits or usage.",
   "gui.llmjs.budget.self.tip": "Only your own aggregate is visible. Token budgets are managed by the server owner.",
   "gui.llmjs.common.error": "ERROR: %s",
   "gui.llmjs.validation.number": "%s must be a number",

@@ -40,6 +40,7 @@
   "gui.llmjs.budget.source.default": "继承服务器默认",
   "gui.llmjs.budget.source.override": "玩家覆盖",
   "gui.llmjs.budget.admin.tip": "这里只读投影现有状态；请用 /llm budget default|set|reset 修改权威数据。",
+  "gui.llmjs.budget.overview.tip": "这里只读投影全局状态；只有服主能修改预算上限或用量。",
   "gui.llmjs.budget.self.tip": "这里只显示你的汇总用量；Token 预算由服主管理。",
   "gui.llmjs.common.error": "错误：%s",
   "gui.llmjs.validation.number": "%s 必须是数字",

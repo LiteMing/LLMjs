@@ -74,7 +74,7 @@ public class LLMCommand {
                 .then(Commands.literal("budget")
                         .executes(ctx -> showOwnBudget(ctx.getSource()))
                         .then(Commands.literal("list")
-                                .requires(PermissionCheck::canManageAdministrators)
+                                .requires(PermissionCheck::canAdminister)
                                 .executes(ctx -> listBudgets(ctx.getSource())))
                         .then(Commands.literal("default")
                                 .requires(PermissionCheck::canManageAdministrators)

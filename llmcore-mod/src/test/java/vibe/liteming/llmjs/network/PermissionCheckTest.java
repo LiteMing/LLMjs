@@ -34,7 +34,7 @@ class PermissionCheckTest {
     void viewerStatusDoesNotResolveOrExposeProviderData() {
         AtomicBoolean invoked = new AtomicBoolean(false);
 
-        JsonObject status = PermissionCheck.createStatusPayload(true, false, false, () -> {
+        JsonObject status = PermissionCheck.createStatusPayload(true, false, false, false, () -> {
             invoked.set(true);
             JsonObject full = new JsonObject();
             full.addProperty("maskedKey", "sk-...last");
@@ -42,17 +42,19 @@ class PermissionCheckTest {
         }, JsonObject::new);
 
         assertFalse(invoked.get());
-        assertEquals(3, status.size());
+        assertEquals(5, status.size());
         assertTrue(status.get("canView").getAsBoolean());
         assertFalse(status.get("canTest").getAsBoolean());
         assertFalse(status.get("canAdminister").getAsBoolean());
+        assertFalse(status.get("canViewBudgets").getAsBoolean());
+        assertFalse(status.get("canManageBudgets").getAsBoolean());
         assertFalse(status.has("maskedKey"));
         assertFalse(status.has("providers"));
     }
 
     @Test
     void administratorStatusIncludesFullPayloadAndPermissionFlag() {
-        JsonObject status = PermissionCheck.createStatusPayload(true, true, true, () -> {
+        JsonObject status = PermissionCheck.createStatusPayload(true, true, true, true, () -> {
             JsonObject full = new JsonObject();
             full.addProperty("count", 2);
             return full;
@@ -62,12 +64,23 @@ class PermissionCheckTest {
         assertTrue(status.get("canView").getAsBoolean());
         assertTrue(status.get("canTest").getAsBoolean());
         assertTrue(status.get("canAdminister").getAsBoolean());
+        assertTrue(status.get("canViewBudgets").getAsBoolean());
+        assertTrue(status.get("canManageBudgets").getAsBoolean());
+    }
+
+    @Test
+    void whitelistedAdministratorCanViewButCannotModifyBudgets() {
+        JsonObject status = PermissionCheck.createStatusPayload(true, true, true, false,
+                JsonObject::new, JsonObject::new);
+
+        assertTrue(status.get("canViewBudgets").getAsBoolean());
+        assertFalse(status.get("canManageBudgets").getAsBoolean());
     }
 
     @Test
     void delegatedTestStatusUsesRestrictedPayloadOnly() {
         AtomicBoolean fullInvoked = new AtomicBoolean(false);
-        JsonObject status = PermissionCheck.createStatusPayload(false, true, false, () -> {
+        JsonObject status = PermissionCheck.createStatusPayload(false, true, false, false, () -> {
             fullInvoked.set(true);
             return new JsonObject();
         }, () -> {
