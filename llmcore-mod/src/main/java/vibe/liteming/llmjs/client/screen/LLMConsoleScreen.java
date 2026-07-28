@@ -352,6 +352,7 @@ public class LLMConsoleScreen extends Screen {
         testTab.active = canTest;
         setupTab.active = canAdminister;
         confirmBudgetButton.visible = canManageBudgets && budgetDefaultConfirmationRequired;
+        if (logPanel != null) logPanel.setCanManage(canAdminister);
         if (testPanel != null) testPanel.setRestricted(!canAdminister);
         if (!canAdminister && logPanel != null) switchTab(canTest ? Tab.TEST : Tab.LOG);
     }

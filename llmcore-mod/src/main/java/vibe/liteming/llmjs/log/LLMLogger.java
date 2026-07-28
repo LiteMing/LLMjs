@@ -124,6 +124,46 @@ public class LLMLogger {
         }
     }
 
+    /** Removes every buffered entry belonging to one request identity. */
+    public boolean removeByRequestId(String requestId) {
+        if (requestId == null || requestId.isBlank()) return false;
+        lock.writeLock().lock();
+        try {
+            LogEntry[] replacement = new LogEntry[buffer.length];
+            int retained = 0;
+            boolean removed = false;
+            for (int i = 0; i < size; i++) {
+                int index = (head - size + i + buffer.length) % buffer.length;
+                LogEntry entry = buffer[index];
+                if (entry != null && requestId.equals(entry.requestId())) {
+                    removed = true;
+                } else if (entry != null) {
+                    replacement[retained++] = entry;
+                }
+            }
+            if (removed) {
+                buffer = replacement;
+                size = retained;
+                head = retained % buffer.length;
+            }
+            return removed;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    /** Clears only the server's in-memory log ring. */
+    public void clear() {
+        lock.writeLock().lock();
+        try {
+            Arrays.fill(buffer, null);
+            head = 0;
+            size = 0;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
     public void log(Level level, String provider, String prompt, String status,
                     long latencyMs, int promptTokens, int completionTokens,
                     @Nullable String errorMessage) {

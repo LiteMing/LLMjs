@@ -13,6 +13,8 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
+import vibe.liteming.llmjs.network.LLMNetwork;
+import vibe.liteming.llmjs.network.packet.C2SLogMutationPacket;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -29,6 +31,7 @@ public class LogPanel extends AbstractWidget {
     private int detailScroll = 0;
     private boolean detailExpanded = false;
     private boolean draggingSelect = false;
+    private boolean canManage = false;
     private long copyFlashUntilMs = 0L;
     private static final int LINE_HEIGHT = 12;
     private static final int MAX_ENTRIES = 300;
@@ -57,6 +60,7 @@ public class LogPanel extends AbstractWidget {
     private record LogDisplayEntry(
             String text,
             int color,
+            String requestId,
             String purpose,
             String requestBody,
             String responseBody,
@@ -82,6 +86,10 @@ public class LogPanel extends AbstractWidget {
         setHeight(Math.max(1, height));
         autoScrollClamp();
         invalidateDetailCache();
+    }
+
+    public void setCanManage(boolean canManage) {
+        this.canManage = canManage;
     }
 
     public void clear() {
@@ -135,6 +143,7 @@ public class LogPanel extends AbstractWidget {
             String status = obj.has("status") ? obj.get("status").getAsString() : "";
             long latency = obj.has("latencyMs") ? obj.get("latencyMs").getAsLong() : 0;
             String summary = obj.has("requestSummary") ? obj.get("requestSummary").getAsString() : "";
+            String requestId = obj.has("requestId") ? obj.get("requestId").getAsString() : "";
             String purpose = obj.has("purpose") ? obj.get("purpose").getAsString() : "";
             String source = obj.has("source") ? obj.get("source").getAsString() : "";
             String requestBody = obj.has("requestBody") ? obj.get("requestBody").getAsString() : "";
@@ -163,7 +172,7 @@ public class LogPanel extends AbstractWidget {
             String actor = responder.isBlank() ? "" : "[Responder: " + responder + "] ";
             String text = String.format("[%s] %s%s%s%s | %s | %dms | %s", level, src, tag, actor,
                     provider, status, latency, summary);
-            entries.add(new LogDisplayEntry(text, color, purpose, requestBody, responseBody, error,
+            entries.add(new LogDisplayEntry(text, color, requestId, purpose, requestBody, responseBody, error,
                     responder, triggerSource, audience, inputKind, billingPrincipal, billingPrincipalId,
                     causalRootRequestId, finishReason, contentLength));
             while (entries.size() > MAX_ENTRIES) {
@@ -197,6 +206,7 @@ public class LogPanel extends AbstractWidget {
     }
 
     private boolean isOverClear(double mouseX, double mouseY, Font font, Component label) {
+        if (!canManage || entries.isEmpty()) return false;
         int clearX = clearButtonX(font, label);
         return mouseX >= clearX - 2 && mouseX < getX() + width - 2
                 && mouseY >= getY() && mouseY < getY() + 14;
@@ -218,6 +228,7 @@ public class LogPanel extends AbstractWidget {
 
     private boolean isOverDelete(int index, double mouseX, double mouseY) {
         if (index < 0 || index >= entries.size()) return false;
+        if (!canManage || entries.get(index).requestId().isBlank()) return false;
         int rowY = getY() + 14 + (index - scrollOffset) * LINE_HEIGHT;
         return mouseX >= deleteButtonX() && mouseX < getX() + width - 2
                 && mouseY >= rowY - 1 && mouseY < rowY + LINE_HEIGHT - 1;
@@ -339,13 +350,15 @@ public class LogPanel extends AbstractWidget {
         int listH = listHeight();
         graphics.fill(getX(), getY(), getX() + width, getY() + listH, 0x40000000);
         Component clearText = text("log.clear");
-        int clearX = clearButtonX(font, clearText);
+        int clearX = canManage ? clearButtonX(font, clearText) : getX() + width - 4;
         boolean clearHovered = isOverClear(mouseX, mouseY, font, clearText);
         String titleText = string("log.title");
         graphics.drawString(font, font.plainSubstrByWidth(titleText, Math.max(8, clearX - getX() - 8)),
                 getX() + 4, getY() + 2, 0xAAAAAA, false);
-        graphics.drawString(font, clearText, clearX, getY() + 2,
-                entries.isEmpty() ? 0x666666 : (clearHovered ? 0xFFFFFF : 0xFFAAAA), false);
+        if (canManage) {
+            graphics.drawString(font, clearText, clearX, getY() + 2,
+                    entries.isEmpty() ? 0x666666 : (clearHovered ? 0xFFFFFF : 0xFFAAAA), false);
+        }
 
         int contentY = getY() + 14;
         int contentH = listH - 16;
@@ -364,11 +377,15 @@ public class LogPanel extends AbstractWidget {
                 if (isSelected(i)) {
                     graphics.fill(getX() + 1, drawY - 1, getX() + width - 1, drawY + LINE_HEIGHT - 1, 0x553388FF);
                 }
-                String line = font.plainSubstrByWidth(entry.text, Math.max(8, width - DELETE_WIDTH - 12));
+                boolean canDelete = canManage && !entry.requestId().isBlank();
+                int reservedWidth = canDelete ? DELETE_WIDTH + 12 : 8;
+                String line = font.plainSubstrByWidth(entry.text, Math.max(8, width - reservedWidth));
                 graphics.drawString(font, line, getX() + 4, drawY, entry.color, false);
-                boolean deleteHovered = i == hoveredRow && isOverDelete(i, mouseX, mouseY);
-                graphics.drawCenteredString(font, text("log.delete"), deleteButtonX() + DELETE_WIDTH / 2,
-                        drawY, deleteHovered ? 0xFFFFFFFF : 0x88FFAAAA);
+                if (canDelete) {
+                    boolean deleteHovered = i == hoveredRow && isOverDelete(i, mouseX, mouseY);
+                    graphics.drawCenteredString(font, text("log.delete"), deleteButtonX() + DELETE_WIDTH / 2,
+                            drawY, deleteHovered ? 0xFFFFFFFF : 0x88FFAAAA);
+                }
             }
         }
 
@@ -569,7 +586,7 @@ public class LogPanel extends AbstractWidget {
 
         Font font = Minecraft.getInstance().font;
         if (button == 0 && isOverClear(mouseX, mouseY, font, text("log.clear"))) {
-            clear();
+            LLMNetwork.CHANNEL.sendToServer(C2SLogMutationPacket.clear());
             return true;
         }
 
@@ -584,7 +601,7 @@ public class LogPanel extends AbstractWidget {
 
         int deleteIndex = rowIndexAt(mouseY);
         if (button == 0 && isOverDelete(deleteIndex, mouseX, mouseY)) {
-            deleteEntry(deleteIndex);
+            LLMNetwork.CHANNEL.sendToServer(C2SLogMutationPacket.remove(entries.get(deleteIndex).requestId()));
             return true;
         }
 
@@ -750,33 +767,6 @@ public class LogPanel extends AbstractWidget {
             Minecraft.getInstance().keyboardHandler.setClipboard(sb.toString());
             copyFlashUntilMs = System.currentTimeMillis() + 1500L;
         } catch (Exception ignored) {}
-    }
-
-    private void deleteEntry(int index) {
-        if (index < 0 || index >= entries.size()) return;
-        int low = selectionLow();
-        int high = selectionHigh();
-        entries.remove(index);
-        if (low >= 0) {
-            if (index < low) {
-                low--;
-                high--;
-            } else if (index <= high) {
-                high--;
-            }
-            if (low < 0 || high < low || entries.isEmpty()) {
-                selectionAnchor = -1;
-                selectionEnd = -1;
-            } else {
-                selectionAnchor = Math.min(low, entries.size() - 1);
-                selectionEnd = Math.min(high, entries.size() - 1);
-            }
-        }
-        detailScroll = 0;
-        draggingSelect = false;
-        draggingDetailSelect = false;
-        invalidateDetailCache();
-        autoScrollClamp();
     }
 
     private void autoScrollClamp() {

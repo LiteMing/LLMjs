@@ -8,7 +8,7 @@ import net.minecraftforge.network.NetworkRegistry;
 import net.minecraftforge.network.simple.SimpleChannel;
 
 public class LLMNetwork {
-    private static final String PROTOCOL_VERSION = "5";
+    private static final String PROTOCOL_VERSION = "6";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(LlmCoreMod.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -65,6 +65,12 @@ public class LLMNetwork {
                 .encoder(S2CLogHistoryPacket::encode)
                 .decoder(S2CLogHistoryPacket::decode)
                 .consumerMainThread(S2CLogHistoryPacket::handle)
+                .add();
+
+        CHANNEL.messageBuilder(C2SLogMutationPacket.class, packetId++, NetworkDirection.PLAY_TO_SERVER)
+                .encoder(C2SLogMutationPacket::encode)
+                .decoder(C2SLogMutationPacket::decode)
+                .consumerMainThread(C2SLogMutationPacket::handle)
                 .add();
 
         CHANNEL.messageBuilder(S2CScreenshotRequestPacket.class, packetId++, NetworkDirection.PLAY_TO_CLIENT)
