@@ -261,6 +261,21 @@ class LlmOrchestratorTest {
     }
 
     @Test
+    void resolvesBoundedOutputWhenNoLayerConfiguresAMaximum() {
+        ProviderSpec spec = new ProviderSpec("test", "openai", "http://localhost/unused", "model",
+                null, null, 2_000, List.of());
+        LlmOrchestrator orchestrator = new LlmOrchestrator(Map.of("test", spec));
+        orchestrator.setGlobalDefaults(LlmRouteOptions.empty());
+
+        LlmResolvedParameters resolved = orchestrator.resolveParameters(
+                LlmRequest.routed(List.of(), LlmRequestContext.chat()), "test");
+
+        assertEquals(1_000, resolved.maxOutputTokens());
+        assertEquals(1_000, resolved.outputReserveTokens());
+        assertEquals(1_000, resolved.inputBudgetTokens());
+    }
+
+    @Test
     void preservesResponderAndTriggerContextFields() {
         LlmRequestContext context = new LlmRequestContext("req", "NPC_SOCIAL_REALTIME", "entity",
                 "minecraft:villager", "Ada", "session", "route", false,

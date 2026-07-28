@@ -28,6 +28,7 @@ import java.util.function.Consumer;
 public final class LlmOrchestrator {
     private static final long RATE_LIMIT_COOLDOWN_MS = 60_000L;
     private static final long TRANSIENT_FAILURE_COOLDOWN_MS = 10_000L;
+    private static final int DEFAULT_MAX_OUTPUT_TOKENS = 1_000;
     private static final Gson GSON = new Gson();
 
     private final HttpClient httpClient;
@@ -110,16 +111,17 @@ public final class LlmOrchestrator {
                 .overlay(safeRequest.requestOverrides());
 
         int timeout = effective.timeoutSeconds() == null ? 30 : effective.timeoutSeconds();
-        int reserve = effective.outputReserveTokens() != null
-                ? effective.outputReserveTokens()
-                : (effective.maxOutputTokens() == null ? 0 : effective.maxOutputTokens());
+        int maxOutput = effective.maxOutputTokens() == null
+                ? DEFAULT_MAX_OUTPUT_TOKENS : effective.maxOutputTokens();
+        int reserve = effective.outputReserveTokens() == null
+                ? maxOutput : effective.outputReserveTokens();
         int inputBudget = effective.inputBudgetTokens() == null
                 ? LlmResolvedParameters.UNBOUNDED_INPUT : effective.inputBudgetTokens();
         Integer contextWindow = provider == null ? null : provider.contextWindowTokens();
         if (contextWindow != null) {
             inputBudget = Math.min(inputBudget, Math.max(0, contextWindow - reserve));
         }
-        return new LlmResolvedParameters(providerName, effective.temperature(), effective.maxOutputTokens(),
+        return new LlmResolvedParameters(providerName, effective.temperature(), maxOutput,
                 timeout, inputBudget, reserve, contextWindow);
     }
 
