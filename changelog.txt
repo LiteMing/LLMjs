@@ -7,10 +7,13 @@ LLMjs 2.5.0 / LLM Core 1.4.0 (Unreleased)
  - New servers keep an unlimited default but show a prominent owner confirmation warning in the Console.
  - Added five-minute, request-bound delegated Console Test access for trusted mods without granting log, provider, routing, setup, or parameter-management permissions.
  - Added world-scoped per-player token accounting; exhausted or disabled players are rejected before provider access.
- - Added `/llm budget` status and owner-only list, default, override, confirmation, and reset operations.
+ - Added `/llm budget` status plus administrator-readable usage lists; default, override, confirmation, and reset operations remain owner-only.
  - Raised the llmjs runtime dependency to llm-core 1.4.0 so structured billing denials cannot load against an older core.
  - Routing now stacks active and available providers when a resized window cannot fit both columns, so fourth and later entries remain reachable.
- - Log request and response JSON is formatted as readable multiline text; clear and per-entry delete remain display-buffer-only actions.
+ - Provider attempts derive a bounded output reservation from request, route, provider, or the core default, so Console Test no longer fails as an apparent budget denial when max tokens are omitted.
+ - Log request and response JSON is formatted as readable multiline text; administrator clear and request-id deletion now mutate the server-authoritative log buffer.
+ - Budget default read failures are logged and surfaced as a fail-closed Console state instead of silently looking like an intentional zero limit.
+ - Request diagnostics carry addressee independently from trigger source and audience.
 
 LLMjs 2.3.1 / LLM Core 1.1.1
 ================================
