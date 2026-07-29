@@ -219,6 +219,12 @@ public class LLMConsoleScreen extends Screen {
     }
 
     @Override
+    public void tick() {
+        super.tick();
+        if (testPanel != null) testPanel.tick();
+    }
+
+    @Override
     public void onClose() {
         if (minecraft != null && returnScreen != null) {
             Screen parent = returnScreen;

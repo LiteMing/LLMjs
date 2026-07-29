@@ -14,6 +14,7 @@ LLMjs 2.5.0 / LLM Core 1.4.0 (Unreleased)
  - Log request and response JSON is formatted as readable multiline text; administrator clear and request-id deletion now mutate the server-authoritative log buffer.
  - Budget default read failures are logged and surfaced as a fail-closed Console state instead of silently looking like an intentional zero limit.
  - Request diagnostics carry addressee independently from trigger source and audience.
+ - Console Test now offers a complete long-text Request JSON view; invalid drafts cannot be sent, while delegated handoffs remain read-only and server-authorized.
 
 LLMjs 2.3.1 / LLM Core 1.1.1
 ================================

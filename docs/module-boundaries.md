@@ -47,6 +47,13 @@ only a usability measure. Online-mode UUIDs are authenticated by Minecraft.
 On an offline-mode server, LLM Core cannot validate any external account system
 and the server owner remains responsible for preventing name/UUID spoofing.
 
+Console Test's Form and Request JSON views edit one unsent `ConsoleTestRequest`.
+The JSON view exposes the complete messages, parts, overrides, and metadata sent
+through the existing Test packet; malformed or structurally invalid drafts are
+blocked client-side, then the server repeats schema, purpose, request-id, and
+permission validation. Delegated Test users may inspect but cannot edit that
+server-authorized JSON, and execution still uses the request stored in their grant.
+
 OP level 4, the integrated-server owner, and the dedicated-server console can
 change the administrator list with `/llm whitelist <player> <true|false>`.
 Whitelisted administrators cannot delegate this permission to other players.

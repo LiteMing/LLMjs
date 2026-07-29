@@ -129,6 +129,26 @@ class ConsoleTestExecutorTest {
     }
 
     @Test
+    void codecValidatesPrettyLongJsonBeforeConsoleSend() {
+        String longText = "x".repeat(100_000);
+        ConsoleTestRequest request = ConsoleTestRequest.simple(UUID.randomUUID(), longText, "");
+        String wireJson = ConsoleTestCodec.toJson(request);
+        String prettyJson = ConsoleTestCodec.pretty(wireJson);
+
+        ConsoleTestRequest decoded = ConsoleTestCodec.parseRequest(prettyJson, false);
+
+        assertEquals(longText, decoded.messages().get(0).parts().get(0).text());
+        assertTrue(prettyJson.contains("\n"));
+        assertTrue(org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> ConsoleTestCodec.parseRequest("{\"schemaVersion\":1,", false))
+                .getMessage().contains("malformed"));
+        assertTrue(org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                () -> ConsoleTestCodec.parseRequest(
+                        "{" + " ".repeat(ConsoleTestCodec.MAX_REQUEST_JSON_CHARS), false))
+                .getMessage().contains("exceeds limit"));
+    }
+
+    @Test
     void codecAcceptsCreatureChatStudioHandoffV1() {
         String requestId = UUID.randomUUID().toString();
         String fixture = """

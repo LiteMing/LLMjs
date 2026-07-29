@@ -9,6 +9,8 @@ import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.components.MultiLineEditBox;
+import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
@@ -41,8 +43,10 @@ public class TestPanel {
     private static final int TOOLBAR_Y = 106;
     private static final int STATUS_Y = 127;
     private static final int RESULT_TITLE_Y = 140;
-    private static final int RESULT_TEXT_Y = RESULT_TITLE_Y + 12;
     private static final int MIN_CONTENT_HEIGHT = 260;
+    private static final int JSON_EDITOR_Y = 42;
+    private static final int JSON_EDITOR_HEIGHT = 180;
+    private static final int JSON_CONTENT_HEIGHT = 380;
 
     private int x, y, width, height;
     private int contentHeight;
@@ -56,10 +60,12 @@ public class TestPanel {
     private final EditBox timeoutInput;
     private final EditBox inputBudgetInput;
     private final EditBox outputReserveInput;
+    private final RequestJsonEditBox requestJsonInput;
     private final Button routingModeButton;
     private final Button sendButton;
     private final Button visionProbeButton;
     private final Button simpleButton;
+    private final Button jsonModeButton;
     private final Button copyButton;
     private final Button saveRouteButton;
     private final Button prevTemplateBtn;
@@ -71,6 +77,10 @@ public class TestPanel {
     private boolean waiting;
     private boolean visible = true;
     private boolean restricted;
+    private boolean jsonMode;
+    private boolean jsonDraftValid;
+    private String jsonValidationText = "";
+    private int jsonValidationColor = 0xAAAAAA;
     private ConsoleTestRequest.RoutingMode routingMode = ConsoleTestRequest.RoutingMode.PURPOSE;
     private @Nullable String visionResultText;
     private int visionResultColor = 0xAAAAAA;
@@ -94,6 +104,32 @@ public class TestPanel {
 
     public record PromptTemplate(String name, String prompt) {}
     private record ResultSegment(String text, int startOffset, int endOffset) {}
+
+    private static final class RequestJsonEditBox extends MultiLineEditBox {
+        private boolean readOnly;
+
+        private RequestJsonEditBox(Font font, int x, int y, int width, int height,
+                Component placeholder, Component narration) {
+            super(font, x, y, width, height, placeholder, narration);
+        }
+
+        private void setReadOnly(boolean value) {
+            readOnly = value;
+        }
+
+        @Override
+        public boolean charTyped(char codePoint, int modifiers) {
+            return !readOnly && super.charTyped(codePoint, modifiers);
+        }
+
+        @Override
+        public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
+            if (!readOnly) return super.keyPressed(keyCode, scanCode, modifiers);
+            boolean navigation = keyCode >= 262 && keyCode <= 269;
+            return (navigation || Screen.isSelectAll(keyCode) || Screen.isCopy(keyCode))
+                    && super.keyPressed(keyCode, scanCode, modifiers);
+        }
+    }
 
     public TestPanel(int x, int y, int width, int height, Font font) {
         this.x = x;
@@ -138,9 +174,17 @@ public class TestPanel {
         saveTemplateBtn = tooltip(Button.builder(text("test.template.save"), button -> saveCurrentAsTemplate())
                 .pos(x + 50, y + TOOLBAR_Y).size(62, 16).build(), "test.template.save.tip");
         copyButton = tooltip(Button.builder(text("test.copy_result"), button -> copyResult())
-                .pos(x + 116, y + TOOLBAR_Y).size(90, 16).build(), "test.copy_result.tip");
+                .pos(x + 116, y + TOOLBAR_Y).size(72, 16).build(), "test.copy_result.tip");
         saveRouteButton = tooltip(Button.builder(text("test.save_route"), button -> saveToRouting())
-                .pos(x + 210, y + TOOLBAR_Y).size(80, 16).build(), "test.save_route.tip");
+                .pos(x + 192, y + TOOLBAR_Y).size(70, 16).build(), "test.save_route.tip");
+        jsonModeButton = tooltip(Button.builder(text("test.json.open"), button -> toggleJsonMode())
+                .pos(x + 266, y + TOOLBAR_Y).size(52, 16).build(), "test.json.mode.tip");
+        requestJsonInput = new RequestJsonEditBox(font, x + 4, y + JSON_EDITOR_Y,
+                Math.max(80, width - 12), JSON_EDITOR_HEIGHT,
+                text("test.json.placeholder"), text("test.json.editor"));
+        requestJsonInput.setCharacterLimit(ConsoleTestCodec.MAX_REQUEST_JSON_CHARS);
+        requestJsonInput.setValueListener(this::validateJsonDraft);
+        tooltip(requestJsonInput, "test.json.editor.tip");
         tooltip(purposeInput, "test.purpose.tip");
         tooltip(providerInput, "test.provider_chain.tip");
         tooltip(promptInput, "test.prompt.tip");
@@ -163,7 +207,8 @@ public class TestPanel {
     public List<AbstractWidget> getWidgets() {
         return List.of(purposeInput, routingModeButton, providerInput, visionProbeButton, promptInput, sendButton,
                 simpleButton, temperatureInput, maxOutputInput, timeoutInput, inputBudgetInput, outputReserveInput,
-                prevTemplateBtn, nextTemplateBtn, saveTemplateBtn, copyButton, saveRouteButton);
+                prevTemplateBtn, nextTemplateBtn, saveTemplateBtn, copyButton, saveRouteButton, jsonModeButton,
+                requestJsonInput);
     }
 
     public void setBounds(int x, int y, int width, int height) {
@@ -171,7 +216,7 @@ public class TestPanel {
         this.y = y;
         this.width = Math.max(1, width);
         this.height = Math.max(1, height);
-        this.contentHeight = Math.max(MIN_CONTENT_HEIGHT, this.height);
+        this.contentHeight = Math.max(jsonMode ? JSON_CONTENT_HEIGHT : MIN_CONTENT_HEIGHT, this.height);
         pageScroll.setTrack(this.x + this.width - 6, this.y + 2, this.y + this.height - 2);
         pageScroll.update(contentHeight, this.height);
         layoutWidgets();
@@ -205,12 +250,20 @@ public class TestPanel {
         place(prevTemplateBtn, x + 4, contentY(TOOLBAR_Y), 20, 16);
         place(nextTemplateBtn, x + 26, contentY(TOOLBAR_Y), 20, 16);
         place(saveTemplateBtn, x + 50, contentY(TOOLBAR_Y), 62, 16);
-        place(copyButton, x + 116, contentY(TOOLBAR_Y), 90, 16);
-        place(saveRouteButton, x + 210, contentY(TOOLBAR_Y), 80, 16);
+        place(copyButton, x + 116, contentY(TOOLBAR_Y), 72, 16);
+        place(saveRouteButton, x + 192, contentY(TOOLBAR_Y), 70, 16);
+        place(jsonModeButton, jsonMode ? x + 4 : x + 266,
+                contentY(jsonMode ? 4 : TOOLBAR_Y), jsonMode ? 62 : 52, jsonMode ? 18 : 16);
+        place(sendButton, jsonMode ? x + width - 72 : x + width - 140,
+                contentY(jsonMode ? 4 : 52), jsonMode ? 62 : 64, 18);
+        place(requestJsonInput, x + 4, contentY(JSON_EDITOR_Y), Math.max(80, width - 12), jsonEditorHeight());
 
         for (AbstractWidget widget : getWidgets()) {
             boolean inside = widget.getY() >= y && widget.getY() + widget.getHeight() <= y + height;
-            widget.visible = visible && inside;
+            boolean modeVisible = jsonMode
+                    ? widget == jsonModeButton || widget == sendButton || widget == requestJsonInput
+                    : widget != requestJsonInput;
+            widget.visible = visible && inside && modeVisible;
             if (!widget.visible && widget.isFocused()) widget.setFocused(false);
         }
     }
@@ -253,7 +306,16 @@ public class TestPanel {
         nextTemplateBtn.active = !restricted;
         saveTemplateBtn.active = !restricted;
         saveRouteButton.active = !restricted;
-        sendButton.active = !restricted || loadedHandoff != null;
+        requestJsonInput.setReadOnly(restricted);
+        requestJsonInput.active = true;
+        jsonModeButton.active = true;
+        updateSendButtonState();
+    }
+
+    private void updateSendButtonState() {
+        boolean allowed = !waiting && (!restricted || loadedHandoff != null);
+        if (jsonMode && !restricted) allowed = allowed && jsonDraftValid;
+        sendButton.active = allowed;
     }
 
     public void updateStatus(String statusJson) {
@@ -336,21 +398,72 @@ public class TestPanel {
     public void loadHandoff(String handoffJson) {
         try {
             ConsoleTestRequest request = ConsoleTestCodec.parseRequest(handoffJson, false);
-            loadedHandoff = request;
-            activeRequestId = request.requestUuid();
+            applyRequestToForm(request);
+            requestJsonInput.setValue(displayRequestJson(request));
             waiting = false;
-            routingMode = request.routingMode();
-            updateRoutingModeButton();
-            purposeInput.setValue(request.purpose());
-            providerInput.setValue(String.join(",", request.providerChain()));
-            setOverrides(request.overrides());
-            promptInput.setValue(lastText(request));
             setResponseText(string("test.status.draft", request.requestId(), request.messages().size(),
                     request.generationType()));
             updateRestrictedControls();
         } catch (IllegalArgumentException e) {
             setResponseText(string("common.error", e.getMessage()));
         }
+    }
+
+    private void toggleJsonMode() {
+        try {
+            if (jsonMode) {
+                ConsoleTestRequest request = restricted && loadedHandoff != null
+                        ? loadedHandoff
+                        : ConsoleTestCodec.parseRequest(requestJsonInput.getValue(), false);
+                applyRequestToForm(request);
+                jsonMode = false;
+            } else {
+                ConsoleTestRequest request = buildRequest();
+                requestJsonInput.setValue(displayRequestJson(request));
+                jsonMode = true;
+            }
+            contentHeight = Math.max(jsonMode ? JSON_CONTENT_HEIGHT : MIN_CONTENT_HEIGHT, height);
+            pageScroll.setOffset(0);
+            pageScroll.update(contentHeight, height);
+            jsonModeButton.setMessage(text(jsonMode ? "test.json.close" : "test.json.open"));
+            updateRestrictedControls();
+            layoutWidgets();
+            clampResponseScroll();
+        } catch (IllegalArgumentException e) {
+            setResponseText(string("common.error", e.getMessage()));
+            updateSendButtonState();
+        }
+    }
+
+    private void applyRequestToForm(ConsoleTestRequest request) {
+        loadedHandoff = request;
+        activeRequestId = request.requestUuid();
+        routingMode = request.routingMode();
+        updateRoutingModeButton();
+        purposeInput.setValue(request.purpose());
+        providerInput.setValue(String.join(",", request.providerChain()));
+        setOverrides(request.overrides());
+        promptInput.setValue(lastText(request));
+    }
+
+    private static String displayRequestJson(ConsoleTestRequest request) {
+        String compact = ConsoleTestCodec.toJson(request);
+        String pretty = ConsoleTestCodec.pretty(compact);
+        return pretty.length() <= ConsoleTestCodec.MAX_REQUEST_JSON_CHARS ? pretty : compact;
+    }
+
+    private void validateJsonDraft(String json) {
+        try {
+            ConsoleTestRequest request = ConsoleTestCodec.parseRequest(json, false);
+            jsonDraftValid = true;
+            jsonValidationText = string("test.json.valid", request.messages().size(), json.length());
+            jsonValidationColor = 0x55FF55;
+        } catch (IllegalArgumentException e) {
+            jsonDraftValid = false;
+            jsonValidationText = string("test.json.invalid", e.getMessage());
+            jsonValidationColor = 0xFF5555;
+        }
+        updateSendButtonState();
     }
 
     private void toggleRoutingMode() {
@@ -372,19 +485,25 @@ public class TestPanel {
         routingMode = ConsoleTestRequest.RoutingMode.PURPOSE;
         updateRoutingModeButton();
         setResponseText(null);
+        updateSendButtonState();
     }
 
     private void sendTest() {
         if (waiting || (restricted && loadedHandoff == null)) return;
         try {
-            ConsoleTestRequest request = buildRequest();
+            ConsoleTestRequest request = jsonMode && !restricted
+                    ? ConsoleTestCodec.parseRequest(requestJsonInput.getValue(), false)
+                    : buildRequest();
             String requestJson = ConsoleTestCodec.toJson(request);
+            if (jsonMode) requestJsonInput.setValue(displayRequestJson(request));
             activeRequestId = request.requestUuid();
             waiting = true;
             setResponseText(string("test.status.sending", request.purpose()));
+            updateSendButtonState();
             LLMNetwork.CHANNEL.sendToServer(new C2SChatRequestPacket(activeRequestId, requestJson));
         } catch (IllegalArgumentException e) {
             setResponseText(string("common.error", e.getMessage()));
+            updateSendButtonState();
         }
     }
 
@@ -485,11 +604,16 @@ public class TestPanel {
     public void onResponse(UUID requestId, String resultJson) {
         if (activeRequestId == null || !activeRequestId.equals(requestId)) return;
         waiting = false;
+        updateSendButtonState();
         try {
             setResponseText(ConsoleTestCodec.pretty(resultJson));
         } catch (Exception e) {
             setResponseText(string("test.status.invalid_result", e.getMessage()));
         }
+    }
+
+    public void tick() {
+        if (visible && jsonMode) requestJsonInput.tick();
     }
 
     private void sendVisionProbe() {
@@ -520,6 +644,7 @@ public class TestPanel {
 
     public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
         if (!visible || mouseX < x || mouseX > x + width || mouseY < y || mouseY > y + height) return false;
+        if (jsonMode && requestJsonInput.visible && requestJsonInput.isMouseOver(mouseX, mouseY)) return false;
         if (isInResponseArea(mouseX, mouseY)) {
             int before = responseScroll;
             responseScroll = Math.max(0, Math.min(maxResponseScroll(),
@@ -567,24 +692,33 @@ public class TestPanel {
         layoutWidgets();
         graphics.fill(x, y, x + width, y + height, 0x80000000);
         graphics.enableScissor(x, y, x + width, y + height);
-        graphics.drawString(font, text("test.purpose"), x + 4, contentY(9), 0xFFFFFF, false);
-        graphics.drawString(font, text("test.chain"), x + 4, contentY(33), 0xFFFFFF, false);
-        graphics.drawString(font, text(loadedHandoff == null ? "test.prompt" : "test.focus"),
-                x + 4, contentY(57), 0xFFFFFF, false);
-        int parameterY = contentY(PARAMETER_LABEL_Y);
-        int parameterCell = Math.max(1, (width - 8) / 5);
-        String[] labels = {"T", "Out", "Sec", "In", "Res"};
-        for (int index = 0; index < labels.length; index++) {
-            graphics.drawString(font, labels[index], x + 4 + parameterCell * index, parameterY, 0xAAAAAA, false);
+        if (jsonMode) {
+            graphics.drawString(font, text("test.json.editor"), x + 4, contentY(JSON_EDITOR_Y - 12),
+                    0xFFFFFF, false);
+            graphics.drawString(font, font.plainSubstrByWidth(jsonValidationText, Math.max(8, width - 18)),
+                    x + 4, contentY(jsonStatusY()), jsonValidationColor, false);
+        } else {
+            graphics.drawString(font, text("test.purpose"), x + 4, contentY(9), 0xFFFFFF, false);
+            graphics.drawString(font, text("test.chain"), x + 4, contentY(33), 0xFFFFFF, false);
+            graphics.drawString(font, text(loadedHandoff == null ? "test.prompt" : "test.focus"),
+                    x + 4, contentY(57), 0xFFFFFF, false);
+            int parameterY = contentY(PARAMETER_LABEL_Y);
+            int parameterCell = Math.max(1, (width - 8) / 5);
+            String[] labels = {"T", "Out", "Sec", "In", "Res"};
+            for (int index = 0; index < labels.length; index++) {
+                graphics.drawString(font, labels[index], x + 4 + parameterCell * index,
+                        parameterY, 0xAAAAAA, false);
+            }
+            String effective = effectiveByPurpose.getOrDefault(purposeInput.getValue().trim(),
+                    string("test.effective_unavailable"));
+            String draftPrefix = loadedHandoff == null
+                    ? "" : string("test.message_count", loadedHandoff.messages().size());
+            String status = visionResultText != null ? visionResultText : draftPrefix + effective;
+            graphics.drawString(font, font.plainSubstrByWidth(status, Math.max(8, width - 18)),
+                    x + 4, contentY(STATUS_Y), visionResultText == null ? 0x77AAFF : visionResultColor, false);
         }
-        String effective = effectiveByPurpose.getOrDefault(purposeInput.getValue().trim(),
-                string("test.effective_unavailable"));
-        String draftPrefix = loadedHandoff == null ? "" : string("test.message_count", loadedHandoff.messages().size());
-        String status = visionResultText != null ? visionResultText : draftPrefix + effective;
-        graphics.drawString(font, font.plainSubstrByWidth(status, Math.max(8, width - 18)),
-                x + 4, contentY(STATUS_Y), visionResultText == null ? 0x77AAFF : visionResultColor, false);
 
-        int responseY = contentY(RESULT_TITLE_Y);
+        int responseY = contentY(resultTitleY());
         graphics.drawString(font, text("test.result"), x + 4, responseY, 0xAAAAAA, false);
         if (responseText == null) {
             graphics.disableScissor();
@@ -611,9 +745,26 @@ public class TestPanel {
         if (mouseX >= x && mouseX < x + width && mouseY >= responseY && mouseY < responseY + 12) {
             graphics.renderTooltip(font, text("test.result.tip"), mouseX, mouseY);
         } else if (mouseX >= x && mouseX < x + width
-                && mouseY >= contentY(STATUS_Y) - 3 && mouseY < contentY(RESULT_TITLE_Y) - 1) {
+                && !jsonMode && mouseY >= contentY(STATUS_Y) - 3
+                && mouseY < contentY(RESULT_TITLE_Y) - 1) {
             graphics.renderTooltip(font, text("test.effective.tip"), mouseX, mouseY);
         }
+    }
+
+    private int resultTitleY() {
+        return jsonMode ? jsonStatusY() + 14 : RESULT_TITLE_Y;
+    }
+
+    private int resultTextY() {
+        return resultTitleY() + 12;
+    }
+
+    private int jsonEditorHeight() {
+        return Math.max(72, Math.min(JSON_EDITOR_HEIGHT, height - JSON_EDITOR_Y - 8));
+    }
+
+    private int jsonStatusY() {
+        return JSON_EDITOR_Y + jsonEditorHeight() + 18;
     }
 
     private void setResponseText(@Nullable String text) {
@@ -681,13 +832,13 @@ public class TestPanel {
 
     private boolean isInResponseArea(double mouseX, double mouseY) {
         return visible && responseText != null && mouseX >= x && mouseX <= x + width
-                && mouseY >= Math.max(y, contentY(RESULT_TEXT_Y))
+                && mouseY >= Math.max(y, contentY(resultTextY()))
                 && mouseY < Math.min(y + height, contentY(contentHeight));
     }
 
     private int resultCharOffsetAt(double mouseX, double mouseY, boolean clamp) {
         if (responseSegments.isEmpty()) return -1;
-        int row = (int) ((mouseY - contentY(RESULT_TEXT_Y)) / 10);
+        int row = (int) ((mouseY - contentY(resultTextY())) / 10);
         int segmentIndex = responseScroll + row;
         if (clamp) segmentIndex = Math.max(0, Math.min(responseSegments.size() - 1, segmentIndex));
         if (segmentIndex < 0 || segmentIndex >= responseSegments.size()) return -1;
@@ -728,7 +879,7 @@ public class TestPanel {
         int offset = resultCharOffsetAt(mouseX, mouseY, true);
         if (offset >= 0) responseSelectionEnd = offset;
         int maxScroll = maxResponseScroll();
-        if (mouseY < contentY(RESULT_TEXT_Y) + 6 && responseScroll > 0) responseScroll--;
+        if (mouseY < contentY(resultTextY()) + 6 && responseScroll > 0) responseScroll--;
         else if (mouseY > y + height - 8 && responseScroll < maxScroll) responseScroll++;
         return true;
     }
@@ -741,7 +892,7 @@ public class TestPanel {
     }
 
     private int maxResponseScroll() {
-        int visibleLines = Math.max(1, (contentHeight - RESULT_TEXT_Y - 4) / 10);
+        int visibleLines = Math.max(1, (contentHeight - resultTextY() - 4) / 10);
         return Math.max(0, responseSegments.size() - visibleLines);
     }
 
