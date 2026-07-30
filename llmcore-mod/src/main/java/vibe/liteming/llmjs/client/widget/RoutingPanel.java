@@ -58,6 +58,7 @@ public class RoutingPanel extends AbstractWidget {
     private static final int PROVIDER_COLUMN_GAP = 6;
     private static final int ACTIVE_SLOT_WIDTH = 90;
     private static final int AVAILABLE_SLOT_WIDTH = 110;
+    private static final int CAPABILITY_ROW_HEIGHT = 22;
     private static final int CONTENT_TOP = 6;
     private static final int FOOTER_GAP = 6;
     private static final int FOOTER_HEIGHT = 22;
@@ -384,7 +385,7 @@ public class RoutingPanel extends AbstractWidget {
     private int editorHeight() {
         if (editingRow < 0) return 0;
         ProviderEditorLayout layout = providerEditorLayout(0);
-        return layout.bottomY() + (editingRow > 0 ? 72 : 8);
+        return layout.bottomY() + (editingRow > 0 ? 92 : 8);
     }
 
     private int editorDetailsY() {
@@ -494,12 +495,12 @@ public class RoutingPanel extends AbstractWidget {
                 }
             }
             int detailsY = editorDetailsY();
-            if (mouseY >= detailsY - 4 && mouseY < detailsY + 12) {
-                graphics.renderTooltip(font, text("routing.effective.tip"), mouseX, mouseY);
-                return;
-            }
             if (isWebSearchToggleAt(mouseX, mouseY, detailsY)) {
                 graphics.renderTooltip(font, text("routing.web_search.tip"), mouseX, mouseY);
+                return;
+            }
+            if (mouseY >= detailsY + 24 && mouseY < detailsY + 40) {
+                graphics.renderTooltip(font, text("routing.effective.tip"), mouseX, mouseY);
                 return;
             }
         }
@@ -594,28 +595,56 @@ public class RoutingPanel extends AbstractWidget {
             int detailsY = providerLayout.bottomY() + 4;
             String purpose = purposes.get(editingRow - 1).id();
             EffectiveValues effective = effectiveValues.get(purpose);
+            boolean webSearchAllowed = webSearchPurposes.contains(purpose);
+            renderWebSearchToggle(graphics, mouseX, mouseY, detailsY, webSearchAllowed);
             String effectiveText = effective == null ? string("routing.effective_unavailable")
                     : string("routing.effective", effective.provider, effective.temperature,
                             effective.maxOutput, effective.timeout, effective.inputBudget, effective.outputReserve,
                             effective.webSearchAllowed ? string("common.allowed") : string("common.disabled"));
             graphics.drawString(font, ellipsize(effectiveText, width - 20),
-                    getX() + 8, detailsY, 0x88CCFF, false);
+                    getX() + 8, detailsY + 28, 0x88CCFF, false);
             updateParameterGeometry(detailsY);
             String[] labels = {"T", "Out", "Sec", "In", "Reserve"};
             List<EditBox> inputs = parameterInputs();
             for (int index = 0; index < inputs.size(); index++) {
                 EditBox input = inputs.get(index);
-                graphics.drawString(font, labels[index], input.getX(), detailsY + 15, 0xAAAAAA, false);
+                graphics.drawString(font, labels[index], input.getX(), detailsY + 43, 0xAAAAAA, false);
                 if (input.visible) input.render(graphics, mouseX, mouseY, partialTick);
             }
-            boolean webSearchAllowed = webSearchPurposes.contains(purpose);
-            String webSearch = (webSearchAllowed ? "[x] " : "[ ] ") + string("routing.web_search");
-            graphics.drawString(font, ellipsize(webSearch, width - 20), getX() + 8, detailsY + 44,
-                    webSearchAllowed ? 0x55FF55 : 0xAAAAAA, false);
             String help = parameterError.isEmpty() ? string("routing.parameter_help") : parameterError;
-            graphics.drawString(font, ellipsize(help, width - 20), getX() + 8, detailsY + 58,
+            graphics.drawString(font, ellipsize(help, width - 20), getX() + 8, detailsY + 72,
                     parameterError.isEmpty() ? 0x777777 : 0xFF5555, false);
         }
+    }
+
+    private void renderWebSearchToggle(GuiGraphics graphics, int mouseX, int mouseY,
+            int detailsY, boolean allowed) {
+        int left = getX() + 8;
+        int right = getX() + width - 12;
+        boolean hovered = isWebSearchToggleAt(mouseX, mouseY, detailsY);
+        int border = allowed ? 0xFF55CC88 : hovered ? 0xFF999999 : 0xFF666666;
+        int background = allowed ? (hovered ? 0xFF214F3B : 0xFF193D2F)
+                : hovered ? 0xFF383838 : 0xFF2A2A2A;
+        graphics.fill(left, detailsY, right, detailsY + CAPABILITY_ROW_HEIGHT, border);
+        graphics.fill(left + 1, detailsY + 1, right - 1,
+                detailsY + CAPABILITY_ROW_HEIGHT - 1, background);
+
+        int checkboxX = left + 6;
+        int checkboxY = detailsY + 5;
+        graphics.fill(checkboxX, checkboxY, checkboxX + 12, checkboxY + 12, border);
+        graphics.fill(checkboxX + 2, checkboxY + 2, checkboxX + 10, checkboxY + 10,
+                allowed ? 0xFF55CC88 : 0xFF181818);
+        if (allowed) {
+            graphics.drawCenteredString(font, "x", checkboxX + 6, checkboxY + 2, 0xFF102018);
+        }
+
+        String state = string(allowed ? "common.allowed" : "common.disabled");
+        int stateX = right - font.width(state) - 8;
+        int labelWidth = Math.max(1, stateX - (checkboxX + 18) - 6);
+        String label = ellipsize(string("routing.web_search"), labelWidth);
+        graphics.drawString(font, label, checkboxX + 18, detailsY + 7, 0xFFFFFF, false);
+        graphics.drawString(font, state, stateX, detailsY + 7,
+                allowed ? 0xFF77EEAA : 0xFFBBBBBB, false);
     }
 
     private void updateParameterGeometry(int detailsY) {
@@ -625,7 +654,7 @@ public class RoutingPanel extends AbstractWidget {
         for (int index = 0; index < inputs.size(); index++) {
             EditBox input = inputs.get(index);
             input.setX(getX() + 8 + index * cellWidth);
-            input.setY(detailsY + 24);
+            input.setY(detailsY + 52);
             input.setWidth(inputWidth);
             input.visible = visible && editingRow > 0
                     && input.getY() >= getY() && input.getY() + input.getHeight() <= getY() + height;
@@ -634,9 +663,8 @@ public class RoutingPanel extends AbstractWidget {
     }
 
     private boolean isWebSearchToggleAt(double mouseX, double mouseY, int detailsY) {
-        int labelWidth = Math.min(width - 20, font.width("[x] " + string("routing.web_search")) + 4);
-        return mouseX >= getX() + 8 && mouseX < getX() + 8 + Math.max(1, labelWidth)
-                && mouseY >= detailsY + 42 && mouseY < detailsY + 56;
+        return mouseX >= getX() + 8 && mouseX < getX() + width - 12
+                && mouseY >= detailsY && mouseY < detailsY + CAPABILITY_ROW_HEIGHT;
     }
 
     private ProviderEditorLayout providerEditorLayout(int editorY) {
