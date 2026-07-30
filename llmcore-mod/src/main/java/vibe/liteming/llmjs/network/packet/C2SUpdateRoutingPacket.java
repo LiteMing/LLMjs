@@ -2,6 +2,8 @@ package vibe.liteming.llmjs.network.packet;
 
 import vibe.liteming.llmcore.PriorityRoutingConfig;
 import vibe.liteming.llmcore.RoutingConfigStore;
+import vibe.liteming.llmcore.CapabilityPolicyStore;
+import vibe.liteming.llmcore.LlmCapabilityPolicy;
 import vibe.liteming.llmjs.network.LLMNetwork;
 import vibe.liteming.llmjs.network.PermissionCheck;
 import vibe.liteming.llmjs.provider.ProviderManager;
@@ -16,29 +18,38 @@ import java.util.Map;
 import java.util.function.Supplier;
 
 /**
- * Client -> Server: replace the global priority-routing table with a new snapshot
- * (default chain + per-purpose chains). Persists to {@code routing.json}, pushes the
- * new config into the running {@link vibe.liteming.llmcore.LlmOrchestrator}, and
- * broadcasts the refreshed status (which carries the new routing payload) to all
- * operators with console access.
+ * Client -> Server: replace the global priority-routing table and, when supplied,
+ * the separately versioned capability-policy snapshot. Both payloads are validated
+ * before either is applied, then persisted to their respective files and pushed
+ * into the running {@link vibe.liteming.llmcore.LlmOrchestrator}.
  *
- * <p>Wire format: a single JSON string (RoutingConfigStore.toJsonString). Empty
- * purposes map + empty default => "clear routing" (orchestrator falls back to all
- * providers in declaration order).</p>
+ * <p>Wire format for protocol 7: routing JSON, a capability-policy-present flag,
+ * then capability-policy JSON when present. The one-argument constructor leaves
+ * the current capability policy unchanged.</p>
  */
 public class C2SUpdateRoutingPacket {
     private final String routingJson;
+    private final String capabilityPolicyJson;
 
     public C2SUpdateRoutingPacket(String routingJson) {
+        this(routingJson, null);
+    }
+
+    public C2SUpdateRoutingPacket(String routingJson, String capabilityPolicyJson) {
         this.routingJson = routingJson == null ? "{}" : routingJson;
+        this.capabilityPolicyJson = capabilityPolicyJson;
     }
 
     public void encode(FriendlyByteBuf buf) {
         buf.writeUtf(routingJson, 32767);
+        buf.writeBoolean(capabilityPolicyJson != null);
+        if (capabilityPolicyJson != null) buf.writeUtf(capabilityPolicyJson, 32767);
     }
 
     public static C2SUpdateRoutingPacket decode(FriendlyByteBuf buf) {
-        return new C2SUpdateRoutingPacket(buf.readUtf(32767));
+        String routingJson = buf.readUtf(32767);
+        String capabilityPolicyJson = buf.readBoolean() ? buf.readUtf(32767) : null;
+        return new C2SUpdateRoutingPacket(routingJson, capabilityPolicyJson);
     }
 
     public static void handle(C2SUpdateRoutingPacket msg, Supplier<NetworkEvent.Context> ctx) {
@@ -46,16 +57,22 @@ public class C2SUpdateRoutingPacket {
             ServerPlayer player = ctx.get().getSender();
             if (player == null || !PermissionCheck.canAdminister(player)) return;
             PriorityRoutingConfig parsed;
+            LlmCapabilityPolicy parsedPolicy = null;
             try {
                 parsed = RoutingConfigStore.parse(msg.routingJson);
+                if (msg.capabilityPolicyJson != null) {
+                    parsedPolicy = CapabilityPolicyStore.parse(msg.capabilityPolicyJson);
+                }
             } catch (IllegalArgumentException e) {
-                player.sendSystemMessage(Component.literal("Routing update rejected: " + e.getMessage()));
+                player.sendSystemMessage(Component.literal("Console policy update rejected: " + e.getMessage()));
                 return;
             }
-            boolean persisted = ProviderManager.INSTANCE.updateRouting(parsed);
+            boolean persisted = parsedPolicy == null
+                    ? ProviderManager.INSTANCE.updateRouting(parsed)
+                    : ProviderManager.INSTANCE.updateRoutingAndCapabilities(parsed, parsedPolicy);
             if (!persisted) {
                 player.sendSystemMessage(Component.literal(
-                        "Routing applied for this session but could not be persisted"));
+                        "Console policy applied for this session but could not be fully persisted"));
             }
             // Broadcast refreshed status to every player who can see the console, so
             // all open Routing tabs reflect the new table.

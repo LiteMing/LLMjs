@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -238,6 +239,8 @@ class LlmOrchestratorTest {
         orchestrator.setGlobalDefaults(new LlmRouteOptions(null, null, 30, null, null));
         orchestrator.setRoutingConfig(new PriorityRoutingConfig(Map.of("CHAT", List.of("test")), List.of(),
                 Map.of("CHAT", new LlmRouteOptions(0.5, 200, 40, 900, 300))));
+        orchestrator.setCapabilityPolicy(LlmCapabilityPolicy.empty()
+                .withWebSearchAllowed("CHAT", true));
         LlmRequest routed = LlmRequest.routed(List.of(new LlmMessage("user", "hi")), LlmRequestContext.chat());
 
         LlmResolvedParameters purpose = orchestrator.resolveParameters(routed, "test");
@@ -258,6 +261,7 @@ class LlmOrchestratorTest {
         assertTrue(orchestrator.send(routed).join().success());
         assertTrue(requestBodies.get(0).contains("\"temperature\":0.5"));
         assertTrue(requestBodies.get(0).contains("\"max_tokens\":200"));
+        assertFalse(requestBodies.get(0).contains("web_search"));
     }
 
     @Test

@@ -4,6 +4,8 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import vibe.liteming.llmcore.CapabilityPolicyStore;
+import vibe.liteming.llmcore.LlmCapabilityPolicy;
 import vibe.liteming.llmcore.LlmRouteOptions;
 import vibe.liteming.llmjs.network.LLMNetwork;
 import vibe.liteming.llmjs.network.packet.C2SStatusRequestPacket;
@@ -19,8 +21,10 @@ import net.minecraftforge.api.distmarker.OnlyIn;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static vibe.liteming.llmjs.client.ConsoleTexts.string;
 import static vibe.liteming.llmjs.client.ConsoleTexts.text;
@@ -41,7 +45,7 @@ public class RoutingPanel extends AbstractWidget {
     public record PurposeRow(String id, String displayName, String description, String modId, boolean builtIn) {}
     public record ProviderName(String name) {}
     private record EffectiveValues(String provider, String temperature, String maxOutput, String timeout,
-            String inputBudget, String outputReserve) {}
+            String inputBudget, String outputReserve, boolean webSearchAllowed) {}
     private record ProviderGrid(int startX, int slotWidth, int columnStep, int columns) {}
     private record ProviderEditorLayout(ProviderGrid activeGrid, int activeY,
                                         ProviderGrid availableGrid, int availableY, int bottomY) {}
@@ -66,6 +70,7 @@ public class RoutingPanel extends AbstractWidget {
     private Map<String, List<String>> edited = new LinkedHashMap<>();
     private List<String> editedDefault = new ArrayList<>();
     private Map<String, LlmRouteOptions> editedOptions = new LinkedHashMap<>();
+    private Set<String> webSearchPurposes = new LinkedHashSet<>();
     private Map<String, EffectiveValues> effectiveValues = new LinkedHashMap<>();
     private final EditBox temperatureInput;
     private final EditBox maxOutputInput;
@@ -104,6 +109,7 @@ public class RoutingPanel extends AbstractWidget {
         Map<String, List<String>> serverChains = new LinkedHashMap<>();
         List<String> serverDefault = new ArrayList<>();
         Map<String, LlmRouteOptions> serverOptions = new LinkedHashMap<>();
+        Set<String> serverWebSearchPurposes = new LinkedHashSet<>();
         Map<String, EffectiveValues> serverEffective = new LinkedHashMap<>();
         try {
             JsonObject root = JsonParser.parseString(statusJson).getAsJsonObject();
@@ -147,6 +153,11 @@ public class RoutingPanel extends AbstractWidget {
                     }
                 }
             }
+            if (root.has("capabilityPolicy") && root.get("capabilityPolicy").isJsonObject()) {
+                LlmCapabilityPolicy policy = CapabilityPolicyStore.parse(
+                        root.getAsJsonObject("capabilityPolicy").toString());
+                serverWebSearchPurposes.addAll(policy.webSearchPurposes());
+            }
         } catch (Exception ignored) {}
         this.purposes = newPurposes;
         this.providerNames = newProviders;
@@ -154,6 +165,7 @@ public class RoutingPanel extends AbstractWidget {
         this.edited = new LinkedHashMap<>(serverChains);
         this.editedDefault = new ArrayList<>(serverDefault);
         this.editedOptions = new LinkedHashMap<>(serverOptions);
+        this.webSearchPurposes = new LinkedHashSet<>(serverWebSearchPurposes);
         this.effectiveValues = new LinkedHashMap<>(serverEffective);
         this.editingRow = -1;
         this.dirty = false;
@@ -189,7 +201,8 @@ public class RoutingPanel extends AbstractWidget {
                 json.has("inputBudgetUnbounded") && json.get("inputBudgetUnbounded").getAsBoolean()
                         ? string("common.unbounded")
                         : textValue(json, "inputBudgetTokens", string("common.unset")),
-                textValue(json, "outputReserveTokens", string("common.unset")));
+                textValue(json, "outputReserveTokens", string("common.unset")),
+                json.has("webSearchAllowed") && json.get("webSearchAllowed").getAsBoolean());
     }
 
     private static Double nullableDouble(JsonObject json, String key) {
@@ -371,7 +384,7 @@ public class RoutingPanel extends AbstractWidget {
     private int editorHeight() {
         if (editingRow < 0) return 0;
         ProviderEditorLayout layout = providerEditorLayout(0);
-        return layout.bottomY() + (editingRow > 0 ? 58 : 8);
+        return layout.bottomY() + (editingRow > 0 ? 72 : 8);
     }
 
     private int editorDetailsY() {
@@ -485,6 +498,10 @@ public class RoutingPanel extends AbstractWidget {
                 graphics.renderTooltip(font, text("routing.effective.tip"), mouseX, mouseY);
                 return;
             }
+            if (isWebSearchToggleAt(mouseX, mouseY, detailsY)) {
+                graphics.renderTooltip(font, text("routing.web_search.tip"), mouseX, mouseY);
+                return;
+            }
         }
         if (editingRow >= 0) {
             ProviderEditorLayout layout = providerEditorLayout(editorScreenY());
@@ -579,7 +596,8 @@ public class RoutingPanel extends AbstractWidget {
             EffectiveValues effective = effectiveValues.get(purpose);
             String effectiveText = effective == null ? string("routing.effective_unavailable")
                     : string("routing.effective", effective.provider, effective.temperature,
-                            effective.maxOutput, effective.timeout, effective.inputBudget, effective.outputReserve);
+                            effective.maxOutput, effective.timeout, effective.inputBudget, effective.outputReserve,
+                            effective.webSearchAllowed ? string("common.allowed") : string("common.disabled"));
             graphics.drawString(font, ellipsize(effectiveText, width - 20),
                     getX() + 8, detailsY, 0x88CCFF, false);
             updateParameterGeometry(detailsY);
@@ -590,8 +608,12 @@ public class RoutingPanel extends AbstractWidget {
                 graphics.drawString(font, labels[index], input.getX(), detailsY + 15, 0xAAAAAA, false);
                 if (input.visible) input.render(graphics, mouseX, mouseY, partialTick);
             }
+            boolean webSearchAllowed = webSearchPurposes.contains(purpose);
+            String webSearch = (webSearchAllowed ? "[x] " : "[ ] ") + string("routing.web_search");
+            graphics.drawString(font, ellipsize(webSearch, width - 20), getX() + 8, detailsY + 44,
+                    webSearchAllowed ? 0x55FF55 : 0xAAAAAA, false);
             String help = parameterError.isEmpty() ? string("routing.parameter_help") : parameterError;
-            graphics.drawString(font, ellipsize(help, width - 20), getX() + 8, detailsY + 44,
+            graphics.drawString(font, ellipsize(help, width - 20), getX() + 8, detailsY + 58,
                     parameterError.isEmpty() ? 0x777777 : 0xFF5555, false);
         }
     }
@@ -609,6 +631,12 @@ public class RoutingPanel extends AbstractWidget {
                     && input.getY() >= getY() && input.getY() + input.getHeight() <= getY() + height;
             if (!input.visible && input.isFocused()) input.setFocused(false);
         }
+    }
+
+    private boolean isWebSearchToggleAt(double mouseX, double mouseY, int detailsY) {
+        int labelWidth = Math.min(width - 20, font.width("[x] " + string("routing.web_search")) + 4);
+        return mouseX >= getX() + 8 && mouseX < getX() + 8 + Math.max(1, labelWidth)
+                && mouseY >= detailsY + 42 && mouseY < detailsY + 56;
     }
 
     private ProviderEditorLayout providerEditorLayout(int editorY) {
@@ -737,6 +765,13 @@ public class RoutingPanel extends AbstractWidget {
                 handled |= clicked;
             }
             if (handled) return true;
+            int detailsY = editorDetailsY();
+            if (isWebSearchToggleAt(mouseX, mouseY, detailsY)) {
+                String purpose = purposes.get(editingRow - 1).id();
+                if (!webSearchPurposes.add(purpose)) webSearchPurposes.remove(purpose);
+                dirty = true;
+                return true;
+            }
         }
         // Inline editor hit-testing
         if (editingRow >= 0 && mouseY >= editorScreenY()
@@ -825,7 +860,9 @@ public class RoutingPanel extends AbstractWidget {
         if (!commitParameterFields()) return;
         if (!dirty) return;
         String json = C2SUpdateRoutingPacket.toJson(editedDefault, edited, editedOptions);
-        LLMNetwork.CHANNEL.sendToServer(new C2SUpdateRoutingPacket(json));
+        String capabilityJson = CapabilityPolicyStore.toJsonString(
+                LlmCapabilityPolicy.allowingWebSearch(webSearchPurposes));
+        LLMNetwork.CHANNEL.sendToServer(new C2SUpdateRoutingPacket(json, capabilityJson));
         dirty = false;
     }
 

@@ -34,6 +34,7 @@ public final class LlmOrchestrator {
     private final HttpClient httpClient;
     private final Map<String, ProviderRuntime> providers = new ConcurrentHashMap<>();
     private volatile PriorityRoutingConfig routingConfig = PriorityRoutingConfig.empty();
+    private volatile LlmCapabilityPolicy capabilityPolicy = LlmCapabilityPolicy.empty();
     private volatile LlmRouteOptions globalDefaults = new LlmRouteOptions(null, null, 30, null, null);
 
     public LlmOrchestrator(Map<String, ProviderSpec> providerSpecs) {
@@ -64,6 +65,22 @@ public final class LlmOrchestrator {
 
     public PriorityRoutingConfig getRoutingConfig() {
         return routingConfig;
+    }
+
+    /**
+     * Install administrator authorization for optional capabilities. Legacy
+     * {@link #send(LlmRequest)} calls never request or activate these features.
+     */
+    public void setCapabilityPolicy(LlmCapabilityPolicy policy) {
+        this.capabilityPolicy = policy == null ? LlmCapabilityPolicy.empty() : policy;
+    }
+
+    public LlmCapabilityPolicy getCapabilityPolicy() {
+        return capabilityPolicy;
+    }
+
+    public boolean isWebSearchAllowed(String purpose) {
+        return capabilityPolicy.allowsWebSearch(purpose);
     }
 
     /** Generic host defaults; provider values still win for temperature/max output. */

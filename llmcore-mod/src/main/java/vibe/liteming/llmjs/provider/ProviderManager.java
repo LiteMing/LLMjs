@@ -3,8 +3,10 @@ package vibe.liteming.llmjs.provider;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import vibe.liteming.llmcore.LlmMessage;
+import vibe.liteming.llmcore.CapabilityPolicyStore;
 import vibe.liteming.llmcore.LlmBillingContext;
 import vibe.liteming.llmcore.LlmCallBudget;
+import vibe.liteming.llmcore.LlmCapabilityPolicy;
 import vibe.liteming.llmcore.LlmMessageFinalizer;
 import vibe.liteming.llmcore.LlmRequestAccounting;
 import vibe.liteming.llmcore.LlmOrchestrator;
@@ -43,6 +45,7 @@ public class ProviderManager {
     private volatile Map<String, Provider> providers = new ConcurrentHashMap<>();
     private volatile LlmOrchestrator orchestrator = new LlmOrchestrator(Map.of());
     private volatile PriorityRoutingConfig routingConfig = PriorityRoutingConfig.empty();
+    private volatile LlmCapabilityPolicy capabilityPolicy = LlmCapabilityPolicy.empty();
     private final Map<String, ConnectionStatus> statusCache = new ConcurrentHashMap<>();
     private Path configDir;
 
@@ -85,6 +88,10 @@ public class ProviderManager {
         // Load/reload the shared priority-routing table and push it into the orchestrator.
         this.routingConfig = RoutingConfigStore.load(getRoutingFile());
         this.orchestrator.setRoutingConfig(routingConfig);
+        this.capabilityPolicy = CapabilityPolicyStore.load(getCapabilityPolicyFile(), error ->
+                LlmCoreMod.LOGGER.error("Invalid capability-policy.json; optional capabilities are disabled: {}",
+                        error));
+        this.orchestrator.setCapabilityPolicy(capabilityPolicy);
     }
 
     /** Path used for {@code routing.json} (lives next to global providers.json). */
@@ -95,6 +102,16 @@ public class ProviderManager {
 
     public PriorityRoutingConfig getRoutingConfig() {
         return routingConfig;
+    }
+
+    /** Path used for the separately versioned optional-capability policy. */
+    public Path getCapabilityPolicyFile() {
+        if (gameRoot == null) return null;
+        return GlobalConfig.getGlobalProvidersFile().getParent().resolve("capability-policy.json");
+    }
+
+    public LlmCapabilityPolicy getCapabilityPolicy() {
+        return capabilityPolicy;
     }
 
     /**
@@ -112,6 +129,23 @@ public class ProviderManager {
             LlmCoreMod.LOGGER.warn("Failed to persist routing.json (in-memory still updated)");
         }
         return ok;
+    }
+
+    /** Apply and persist routing plus capability authorization as one validated UI snapshot. */
+    public synchronized boolean updateRoutingAndCapabilities(PriorityRoutingConfig nextRouting,
+            LlmCapabilityPolicy nextPolicy) {
+        this.routingConfig = nextRouting == null ? PriorityRoutingConfig.empty() : nextRouting;
+        this.capabilityPolicy = nextPolicy == null ? LlmCapabilityPolicy.empty() : nextPolicy;
+        this.orchestrator.setRoutingConfig(this.routingConfig);
+        this.orchestrator.setCapabilityPolicy(this.capabilityPolicy);
+
+        boolean routingSaved = RoutingConfigStore.save(getRoutingFile(), this.routingConfig);
+        boolean policySaved = CapabilityPolicyStore.save(getCapabilityPolicyFile(), this.capabilityPolicy);
+        if (!routingSaved || !policySaved) {
+            LlmCoreMod.LOGGER.warn("Console policy applied for this session but persistence failed "
+                    + "(routing={}, capabilities={})", routingSaved, policySaved);
+        }
+        return routingSaved && policySaved;
     }
 
     /** Convenience: full status object including providers + current routing. */
@@ -139,6 +173,10 @@ public class ProviderManager {
         result.add("routing", com.google.gson.JsonParser.parseString(
                 RoutingConfigStore.toJsonString(routingConfig)).getAsJsonObject());
         result.addProperty("routingFingerprint", RoutingConfigStore.fingerprint(routingConfig));
+        result.add("capabilityPolicy", com.google.gson.JsonParser.parseString(
+                CapabilityPolicyStore.toJsonString(capabilityPolicy)).getAsJsonObject());
+        result.addProperty("capabilityPolicyFingerprint",
+                CapabilityPolicyStore.fingerprint(capabilityPolicy));
         JsonArray purposesArray = new JsonArray();
         List<String> allCoreProviders = new ArrayList<>(orchestrator.getProviderNames());
         for (PurposeMeta meta : PurposeRegistry.snapshot()) {
@@ -152,6 +190,8 @@ public class ProviderManager {
             String effectiveProvider = chain.isEmpty() ? "" : chain.get(0);
             pm.add("effective", effectiveParametersJson(
                     orchestrator.resolveParameters(meta.id(), effectiveProvider)));
+            pm.getAsJsonObject("effective").addProperty("webSearchAllowed",
+                    orchestrator.isWebSearchAllowed(meta.id()));
             purposesArray.add(pm);
         }
         result.add("purposes", purposesArray);
@@ -174,6 +214,8 @@ public class ProviderManager {
             String effectiveProvider = chain.isEmpty() ? "" : chain.get(0);
             item.add("effective", effectiveParametersJson(
                     orchestrator.resolveParameters(meta.id(), effectiveProvider)));
+            item.getAsJsonObject("effective").addProperty("webSearchAllowed",
+                    orchestrator.isWebSearchAllowed(meta.id()));
             purposes.add(item);
         }
         result.add("purposes", purposes);
