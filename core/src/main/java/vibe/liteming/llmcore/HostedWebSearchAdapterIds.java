@@ -1,3 +1,5 @@
+// SPDX-FileCopyrightText: 2026 LiteMing
+// SPDX-License-Identifier: MIT
 package vibe.liteming.llmcore;
 
 import java.util.Set;

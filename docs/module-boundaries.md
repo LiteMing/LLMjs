@@ -25,6 +25,14 @@ fallback, and when both files exist only `llmcore.secret` is authoritative.
 The Gradle `check` tasks enforce artifact ownership and reject adapter-only
 KubeJS dependencies in `llmcore`.
 
+On Forge, `llmcore-mod` constructs the only configured `LlmOrchestrator`. A
+successful reload publishes the fully initialized instance through
+`SharedLlmRuntime`; consumer mods receive only that read-only runtime reference.
+They do not read provider, credential, routing, or capability-policy files and
+cannot reach `ProviderManager` or configuration writes through the shared API.
+Server shutdown clears the published instance by identity so an old lifecycle
+cannot remove a newer runtime.
+
 ## Console permissions
 
 Console access is split into viewer, delegated Test, and administrator roles. The existing

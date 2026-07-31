@@ -22,6 +22,7 @@ import vibe.liteming.llmcore.ProviderSpec;
 import vibe.liteming.llmcore.PurposeMeta;
 import vibe.liteming.llmcore.PurposeRegistry;
 import vibe.liteming.llmcore.RoutingConfigStore;
+import vibe.liteming.llmcore.SharedLlmRuntime;
 import vibe.liteming.llmcore.mod.LlmCoreMod;
 import vibe.liteming.llmjs.config.GlobalConfig;
 import vibe.liteming.llmjs.config.LLMConfig;
@@ -72,32 +73,50 @@ public class ProviderManager {
         reload();
     }
 
-    public void reload() {
+    public synchronized void reload() {
         if (configDir == null || gameRoot == null) return;
         Path globalProviders = GlobalConfig.getGlobalProvidersFile();
         Path serverProviders = configDir.resolve("providers.json");
         Path secretFile = ProviderLoader.resolveSecretFile(gameRoot);
+        Map<String, Provider> loadedProviders = ProviderLoader.loadAll(configDir, gameRoot);
         Map<String, ProviderSpec> specs = ProviderConfigLoader.load(globalProviders, serverProviders, secretFile);
         Map<String, ProviderProfile> profiles = ProviderConfigLoader.loadProfiles(
                 globalProviders, serverProviders, secretFile,
                 warning -> LlmCoreMod.LOGGER.warn("{}", warning));
-        this.orchestrator = new LlmOrchestrator(specs);
-        this.orchestrator.replaceProviderProfiles(profiles);
-        this.orchestrator.setGlobalDefaults(new LlmRouteOptions(null, null, LLMConfig.TIMEOUT.get(), null, null));
-        Map<String, Provider> newProviders = new LinkedHashMap<>();
-        specs.forEach((name, spec) -> newProviders.put(name, new CoreProviderAdapter(spec, orchestrator)));
-        ProviderLoader.loadAll(configDir, gameRoot).forEach((name, provider) -> {
-            if ("raw".equals(provider.getType())) newProviders.put(name, provider);
-        });
-        this.providers = new ConcurrentHashMap<>(newProviders);
-        LlmCoreMod.LOGGER.info("Loaded {} providers", providers.size());
-        // Load/reload the shared priority-routing table and push it into the orchestrator.
-        this.routingConfig = RoutingConfigStore.load(getRoutingFile());
-        this.orchestrator.setRoutingConfig(routingConfig);
-        this.capabilityPolicy = CapabilityPolicyStore.load(getCapabilityPolicyFile(), error ->
+        LlmOrchestrator candidate = new LlmOrchestrator(specs);
+        candidate.replaceProviderProfiles(profiles);
+        candidate.setGlobalDefaults(new LlmRouteOptions(null, null, LLMConfig.TIMEOUT.get(), null, null));
+        PriorityRoutingConfig candidateRouting = RoutingConfigStore.load(getRoutingFile());
+        candidate.setRoutingConfig(candidateRouting);
+        LlmCapabilityPolicy candidatePolicy = CapabilityPolicyStore.load(getCapabilityPolicyFile(), error ->
                 LlmCoreMod.LOGGER.error("Invalid capability-policy.json; optional capabilities are disabled: {}",
                         error));
-        this.orchestrator.setCapabilityPolicy(capabilityPolicy);
+        candidate.setCapabilityPolicy(candidatePolicy);
+
+        Map<String, Provider> newProviders = new LinkedHashMap<>();
+        specs.forEach((name, spec) -> newProviders.put(name, new CoreProviderAdapter(spec, candidate)));
+        loadedProviders.forEach((name, provider) -> {
+            if ("raw".equals(provider.getType())) newProviders.put(name, provider);
+        });
+
+        this.orchestrator = candidate;
+        this.providers = new ConcurrentHashMap<>(newProviders);
+        this.routingConfig = candidateRouting;
+        this.capabilityPolicy = candidatePolicy;
+        SharedLlmRuntime.install(candidate);
+        LlmCoreMod.LOGGER.info("Loaded and published {} providers", providers.size());
+    }
+
+    public synchronized void close() {
+        LlmOrchestrator expected = this.orchestrator;
+        SharedLlmRuntime.clear(expected);
+        this.orchestrator = new LlmOrchestrator(Map.of());
+        this.providers = new ConcurrentHashMap<>();
+        this.routingConfig = PriorityRoutingConfig.empty();
+        this.capabilityPolicy = LlmCapabilityPolicy.empty();
+        this.statusCache.clear();
+        this.configDir = null;
+        this.gameRoot = null;
     }
 
     /** Path used for {@code routing.json} (lives next to global providers.json). */

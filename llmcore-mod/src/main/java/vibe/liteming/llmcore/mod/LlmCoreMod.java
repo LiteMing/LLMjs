@@ -97,6 +97,7 @@ public final class LlmCoreMod {
 
     @SubscribeEvent
     public void onServerStopped(ServerStoppedEvent event) {
+        ProviderManager.INSTANCE.close();
         LlmRequestAccounting.clear();
         PersonalBudgetService.INSTANCE.close();
         LlmConsoleTestBridge.clear();
