@@ -1,6 +1,8 @@
 # LLM Core 多模态与联网能力地基计划
 
-> **状态**：总体设计草案；`llm-core 1.4.1` 的联网授权开关代码已完成，待游戏内人工验收；其余卡尚未授权实现。
+> **状态**：`llm-core 1.4.1` 执行中。purpose 联网授权、Provider capability profile、请求级 Hosted Web
+> Search、来源归一化和四种内置搜索方言已完成离线实现与定向测试；Console 实机、真实 Provider EVAL、独立搜索
+> 后端以及其余多模态/Tool 卡仍未完成。
 >
 > **审计基线**：AIjs `purpose-test-routing@0f8eb76`（`llm-core 1.4.0`）；CreatureChat
 > `HDRS@5637334`。审计日期：2026-07-30。
@@ -83,16 +85,22 @@ Agent 循环和最终事实裁决属于 CreatureChat。
 - `LlmRequest` 已携带 purpose、route override、生成参数和显式 `LlmBillingContext`；
 - `LlmOrchestrator` 已拥有 purpose route、Provider fallback、credential retry、token reservation/settlement、
   非流式与 OpenAI 文本流式调用；
+- additive `LlmExchangeRequest/Response` 已能表达请求级 `DISABLED/PREFERRED/REQUIRED` Hosted Web Search，
+  返回使用状态、typed error、routing decisions、degraded feature 与归一化 `LlmSource`；
+- `ProviderProfile/ProviderCapabilities` 已与 legacy `ProviderSpec` 分离；未声明能力的 Provider 默认 text-only；
+- Hosted Search 已有 OpenAI Chat、Anthropic Messages、Gemini GenerateContent 与 DashScope/Qwen OpenAI-compatible
+  四种 wire adapter；基础聊天 format 与搜索方言互不推断；
 - `PurposeRegistry` 是字符串 key，CreatureChat 已注册业务 purpose；core 不需要拥有
   `DEEP_RESOLUTION` 的业务语义。
 
 ### 1.2 尚不存在的能力
 
 - `LlmMessage.Part` 是 sealed interface，只允许文本和图片；没有音频、视频、文件、tool result；
-- `LlmRequest` 没有 requested/required capabilities、hosted tools、function tools 或 accepted output modalities；
-- `ProviderSpec` 没有模型能力声明；当前 fallback 不会在 HTTP 前排除不支持图片/搜索的 Provider；
-- `LlmResponse` 只有 `String content`，不能表达 tool calls、多段输出、音频、引用或搜索 provenance；
-- `parseResponse()` 固定读取第一个文本 part；只有 tool call 而没有 text 时会被当成无效响应；
+- 新 exchange 目前只覆盖 Hosted Web Search；尚不能表达通用 requested modalities、function tools、accepted output
+  modalities 或独立搜索后端；
+- capability filter 目前只覆盖 Hosted Search，尚未从媒体载荷推导 image/audio/video/file 能力；
+- `LlmExchangeResponse` 已能回传搜索来源，但尚不能表达通用 tool calls、多段 typed output 或音频输出；
+- Anthropic/Gemini 普通响应已拼接全部可见 text block；只有 tool call 而没有 text 的响应仍会被当成无效响应；
 - `sendStreaming(..., Consumer<String>)` 只能传文本 delta；
 - `finish_reason=tool_calls` 只做字符串归一化，不构成工具协议；
 - 请求/响应日志当前可保留完整 wire body，扩大到音视频后会造成体积、隐私和临时 URL 泄露风险；
@@ -251,12 +259,71 @@ purpose/explicit route
 | Hosted Web Search | Provider 在一次 exchange 内执行 | 请求映射、能力/策略/次数上限、usage、来源归一化 | 决定何时请求、验证/使用来源，不把结果直接当世界事实 |
 | Function tool / resolver | CreatureChat | 声明 schema、解析 inert tool call、序列化 tool result | registry、allowlist、权限、主线程 snapshot、执行、超时、Agent 状态与深度 |
 
-Hosted Web Search 使用明确的 `LlmHostedToolRequest.webSearch(...)`，不伪装成普通 function tool。首版通用
-选项只保留能严格执行的交集，例如 max uses、allowed/blocked domains 和 search context size；adapter 不支持的
-非空选项必须拒绝，不能静默忽略。厂商特有参数只有出现两个真实消费者或稳定标准后才进入公共 API。
+Hosted Web Search 使用明确的 `LlmHostedWebSearchRequest`，不伪装成普通 function tool。`1.4.1` 首版只冻结
+`DISABLED/PREFERRED/REQUIRED`；max uses、allowed/blocked domains 和 search context size 等选项只有在 adapter 能严格
+执行时才加入。adapter 不支持的非空选项必须拒绝，不能静默忽略。厂商特有参数只有出现两个真实消费者或稳定标准后
+才进入公共 API。
 
 Function tool 首版只需要 JSON Schema definition、tool choice、结构化 `LlmToolCall` 和按 call id 关联的
 `LlmToolResult`。core 不提供 `ToolExecutor`、callback registry、循环次数或递归调度器。
+
+#### 2.5.1 搜索 adapter 按 wire 方言复用，不按模型名枚举
+
+基础聊天协议与 Hosted Search 方言是两个正交维度：
+
+```text
+Provider/model profile
+  ├─ format: openai / claude / gemini
+  └─ capabilities.webSearch.adapter: 明确的 Hosted Search wire 方言
+```
+
+- `format=openai` 只表示普通聊天请求兼容 OpenAI Chat，不能据此推断搜索字段、搜索是否发生或来源位置；
+- Qwen/百炼首版使用独立 `dashscope_openai_chat_web_search` 方言；不能因其基础 format 是 OpenAI-compatible 就套用
+  OpenAI `web_search_options`；
+- DeepSeek、MiMo 以及普通 OpenAI-compatible 聚合平台默认 text-only。官方或第三方平台若为这些模型提供搜索，必须按
+  **平台实际 wire 契约**选择已有 adapter，或新增一个带离线 fixture 的小型 adapter；
+- 例如 Grok/第三方平台托管的 DeepSeek 若真实接受 OpenAI 搜索字段并返回 URL citation，可以声明
+  `openai_chat_web_search`；若使用自有字段，则新增平台方言，不能按 `model=deepseek-*` 猜测；
+- 未知 adapter id 可以被配置 loader 保留以便诊断，但 capability admission 会判定 unavailable，不产生 credential
+  选择、HTTP、attempt 或 reservation；首版不开放动态插件 SPI。
+
+首版 profile 配置：
+
+```json
+{
+  "qwen": {
+    "format": "openai",
+    "url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    "model": "qwen-plus",
+    "capabilities": {
+      "input": ["text"],
+      "output": ["text"],
+      "webSearch": {
+        "enabled": true,
+        "adapter": "dashscope_openai_chat_web_search"
+      }
+    }
+  }
+}
+```
+
+#### 2.5.2 独立 Search Backend 与 Hosted Search 并列
+
+为使没有 Hosted Search 的 DeepSeek、MiMo、本地模型也能使用外部知识，后续新增 llmcore-owned、模型无关的 typed
+Search Backend；它与 Provider Hosted Search 并列，不互相伪装：
+
+| 路径 | 调用形态 | 优点 | 约束 |
+|---|---|---|---|
+| Provider Hosted Search | 一次模型 exchange 内由 Provider 搜索 | 模型原生使用搜索与 citation | 受 Provider wire、费用和 usage 证据限制 |
+| Independent Search Backend | core 单独调用搜索服务并返回 `SearchResponse` | 与模型无关，可服务 DeepSeek/MiMo/本地模型 | 宿主决定是否再调用 LLM；core 不创建 Agent loop |
+
+独立接口至少携带 purpose、query、结果上限、domain policy、deadline 和 billing/root，并返回 backend、稳定状态、
+`LlmSource` 列表、routing decisions 与 typed error。core 负责搜索后端选择、联网策略、超时、结果上限、来源归一化和
+可观察性；CreatureChat 负责何时搜索、证据审查、是否把结果交给模型以及后续 coordinator 生命周期。
+
+首个低门槛后端优先选择管理员自托管的 SearXNG JSON API；Brave/Tavily/Exa 等正式 API 可作为可选 adapter。仓库不
+内嵌公共共享 key，不抓取不稳定搜索网页，不默认选用第三方公共实例，也不因升级自动联网。可提供示例配置，但所有
+backend 仍按 purpose fail closed。
 
 ### 2.6 Purpose 能力策略独立于 routing 参数
 
@@ -318,20 +385,36 @@ core 只统计实际 Provider exchange 和 Provider 报告的 hosted-tool usage�
 
 ### 3.0 `llm-core 1.4.1` 首个执行切片
 
-本次只交付 Web Search 的管理员授权地基：
+`1.4.1` 当前实际切片如下：
+
+| 子项 | 状态 | 当前结果 |
+|---|---|---|
+| purpose Web Search policy | 已实现，待实机 | schema-1 原子存储、默认关闭、Routing 管理员开关 |
+| Provider capability profile | 已实现，离线测试通过 | additive loader；缺省 text-only；非法字段 fail closed；Console status 只读回传 |
+| 请求级 Hosted Search | 已实现，离线测试通过 | `DISABLED/PREFERRED/REQUIRED`；准入后再 credential/HTTP/accounting |
+| Hosted Search adapters | 已实现，待真实 EVAL | OpenAI Chat、Anthropic Messages、Gemini、DashScope/Qwen |
+| 来源回传 | 已实现，离线测试通过 | usage evidence、URI/title/snippet/span/provider metadata；不声明来源可信 |
+| CreatureChat 采用 | 未开始 | 不修改 CChat；等业务卡原子采用 typed exchange |
+| 独立 Search Backend | 计划中 | 见 `CORE-S1`；不属于本次已实现范围 |
+| 通用媒体与 Tool 协议 | 未开始 | 继续按 M/T 卡执行 |
+
+已交付行为：
 
 - 新增独立、schema-1、原子保存的 `capability-policy.json`，按 purpose 保存 Web Search 授权；
 - 未配置、文件缺失、文件损坏或字段非法时一律关闭 Web Search，并记录服务端诊断；
 - Console Routing 的 purpose 编辑区提供“允许 Web Search”开关，与当前路由草稿一起校验和保存；
-- `LlmOrchestrator` 暴露只读的 effective policy 查询，供后续 exchange admission 使用；
+- `LlmOrchestrator` 暴露 effective policy、Provider profile 查询和 typed `exchange()`；
+- 请求只有在显式请求、purpose policy 允许、Provider 明确声明、adapter 存在且兼容基础 format 时才发送搜索字段；
+- `REQUIRED` 无搜索使用证据时继续 fallback 并最终明确失败；`PREFERRED` 才能显式标记 degraded 后返回普通文本；
+- 搜索来源只表示 Provider 返回的 provenance，不表示可信、正确或可直接写入知识库；
 - 保持 `LlmRequest`、`LlmResponse`、legacy `send/sendStreaming`、`routing.json` schema 2 和旧 Provider wire body 不变。
 
-本切片**不发送搜索参数，也不宣称任何 Provider 已支持搜索**。管理员开关只是授权，后续请求还必须显式请求搜索，
-且 CORE-W1/C1 完成后才能由具备明确 capability 的 Provider 执行。这样 1.4.1 升级本身不会使 CreatureChat 或
-LLMjs 的现有请求联网。
+本切片只在新 `exchange()` 满足三重准入后发送搜索参数；管理员开关本身不会使 CreatureChat、LLMjs legacy
+`send()` 或普通 Provider 请求联网。独立 Search Backend、多模态与 caller-owned tool 尚未实现。
 
-**验收**：默认关闭、逐 purpose 开关、严格 schema、损坏配置 fail closed、运行时 reload、Console 权限、双语文案、
-core/mod 构建以及未修改 CreatureChat 的关键契约与双 loader 构建均通过；旧请求体 golden 不出现搜索字段。
+**剩余验收**：真实 Console 操作；四种已声明方言的显式环境变量 Provider EVAL；完整 core/mod build；未修改
+CreatureChat 的关键契约与双 loader 构建。离线测试已覆盖默认关闭、capability skip 无 HTTP/accounting、严格
+REQUIRED fallback、PREFERRED degraded、四种 request/response fixture、来源归一化和 legacy body 不注入搜索字段。
 CreatureChat 的“解析版本必须等于声明版本”护栏会在 composite build 中按预期拒绝尚未声明的 1.4.1，只有正式采用
 1.4.1 时才原子更新其版本常量与冻结测试，不为本地 foundation 验证提前修改下游。
 
@@ -349,6 +432,7 @@ CORE-F0 兼容与所有权 ADR
             │    └─ CORE-T2 typed streaming events
             └─ CORE-W1 hosted Web Search + sources
                  └─ CORE-W2 purpose capability policy + Console
+                      └─ CORE-S1 independent Search Backend
 
 CORE-C1 + CORE-M2 + CORE-T1 + CORE-W2
   └─ CORE-I1 CreatureChat 不改代码兼容门
@@ -569,6 +653,25 @@ usage 缺失均有稳定结果；旧 `send()` request body 永不出现搜索字
 **验收**：默认关闭、逐 purpose 开关、max uses、Provider 无能力、reload、原子写失败、旧 Console client/packet、权限
 拒绝和双语 lang parity 全覆盖；关闭搜索后 CChat 业务能得到明确拒绝而非普通回答。
 
+### CORE-S1｜P1｜模型无关的独立 Search Backend
+
+**目标**：让没有 Provider Hosted Search 的 DeepSeek、MiMo、本地模型和第三方 OpenAI-compatible 服务也能取得有来源
+的外部搜索结果，同时不在 core 内创建第二次模型调用或 Agent loop。
+
+**范围**：
+
+- 新增独立 `SearchRequest/SearchResponse` typed 契约，携带 purpose、query、maxResults、domain policy、deadline、
+  billing principal/root、backend decisions 和稳定 error code；
+- 复用有界 `LlmSource` 值对象，但用明确 source/backend metadata 区分 independent search 与 Provider citation；
+- 首个 adapter 优先自托管 SearXNG JSON API；至少再用一个正式 API fixture 证明 backend-neutral 边界；
+- 搜索 backend 配置与模型 Provider profile 分离；purpose policy 默认关闭，backend 不可用时 fail closed；
+- core 只执行一次搜索交换并返回结果，不自动选模型、拼 prompt、总结结果、重试 LLM 或执行 resolver；
+- 不内置公共 key、公共代理或网页抓取 fallback，不将免费服务等同于无成本/无限额/可默认启用。
+
+**验收**：无 Hosted Search 的 DeepSeek/MiMo fixture 能经“搜索 → 宿主决定后续模型调用”取得相同 typed sources；默认
+关闭、domain policy、结果上限、超时、取消、backend fallback、计费拒绝、来源畸形、日志清洗和零自动 LLM 调用均有
+测试；与 Hosted Search 并存时调用路径和 provenance 可明确区分。
+
 ### CORE-I1｜P0｜CreatureChat 零改动兼容门
 
 **目标**：证明 foundation 发布不会强迫当前 CreatureChat 迁移。
@@ -699,6 +802,7 @@ usage 缺失均有稳定结果；旧 `send()` request body 永不出现搜索字
 | 099-01 `DEEP_RESOLUTION` | W2 Console policy 能显示、路由和禁用该 purpose | purpose 由 CChat 注册，core 不内置 |
 | 099-03 coordinator | T1 提供 inert call/result；现有 billing/root 继续使用 | coordinator/CAS/ContextToken 在 CChat |
 | 099-04 planner/evidence | T1 tool schema/result；W1 sources | resolver allowlist 与 evidence trust 在 CChat |
+| 099-04 外部知识检索 | Provider 有托管搜索时采用 W1；任意模型需要独立检索时采用 S1 | CChat 决定检索时机、证据可信度和是否再次调用模型 |
 | 099-05 最终回答 | X1 typed response；无额外 core Agent | 最终 NPC 发言与状态提交在 CChat |
 | 099-08 离线 EVAL | AIjs 提供 adapter stub/golden；CChat 提供世界 fixture | 两仓各测自己的 owner，不复制 resolver |
 | 100-05/06 文档 | capability/privacy/provider boundary 文档可被公开引用 | 不替代 CChat 的玩家/管理员说明 |

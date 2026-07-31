@@ -33,6 +33,7 @@ public final class LlmOrchestrator {
 
     private final HttpClient httpClient;
     private final Map<String, ProviderRuntime> providers = new ConcurrentHashMap<>();
+    private final Map<String, ProviderProfile> providerProfiles = new ConcurrentHashMap<>();
     private volatile PriorityRoutingConfig routingConfig = PriorityRoutingConfig.empty();
     private volatile LlmCapabilityPolicy capabilityPolicy = LlmCapabilityPolicy.empty();
     private volatile LlmRouteOptions globalDefaults = new LlmRouteOptions(null, null, 30, null, null);
@@ -51,6 +52,20 @@ public final class LlmOrchestrator {
         }
         providers.clear();
         providers.putAll(replacement);
+        providerProfiles.keySet().retainAll(replacement.keySet());
+        replacement.keySet().forEach(name -> providerProfiles.putIfAbsent(name, ProviderProfile.textOnly(name)));
+    }
+
+    /** Replace explicit provider/model capability profiles. Missing providers remain text-only. */
+    public void replaceProviderProfiles(Map<String, ProviderProfile> profiles) {
+        Map<String, ProviderProfile> replacement = new LinkedHashMap<>();
+        for (String name : providers.keySet()) {
+            ProviderProfile profile = profiles == null ? null : profiles.get(name);
+            replacement.put(name, profile == null ? ProviderProfile.textOnly(name)
+                    : new ProviderProfile(name, profile.capabilities()));
+        }
+        providerProfiles.clear();
+        providerProfiles.putAll(replacement);
     }
 
     /**
@@ -114,6 +129,19 @@ public final class LlmOrchestrator {
         return runtime == null ? null : runtime.spec;
     }
 
+    public ProviderProfile getProviderProfile(String name) {
+        return providerProfiles.getOrDefault(name, ProviderProfile.textOnly(name));
+    }
+
+    public boolean isProviderWebSearchCapable(String name) {
+        ProviderRuntime provider = providers.get(name);
+        if (provider == null) return false;
+        ProviderCapabilities.HostedWebSearch declared = getProviderProfile(name).capabilities().webSearch();
+        HostedWebSearchAdapters.HostedWebSearchAdapter adapter =
+                HostedWebSearchAdapters.find(declared.adapterId());
+        return declared.enabled() && adapter != null && adapter.supportsFormat(provider.spec.format());
+    }
+
     /** Resolve one provider attempt using test > purpose > provider/global precedence. */
     public LlmResolvedParameters resolveParameters(LlmRequest request, String providerName) {
         LlmRequest safeRequest = request == null ? LlmRequest.routed(List.of(), LlmRequestContext.chat()) : request;
@@ -160,6 +188,99 @@ public final class LlmOrchestrator {
                     LlmRequestLogger.publish("llm-core", request, response);
                     return response;
                 });
+    }
+
+    /**
+     * Execute an additive typed exchange. Hosted Web Search is admitted only when
+     * explicitly requested, allowed for the purpose, and declared by a compatible
+     * provider profile. Capability skips occur before credential selection, HTTP,
+     * attempt creation, or accounting reservation.
+     */
+    public CompletableFuture<LlmExchangeResponse> exchange(LlmExchangeRequest exchangeRequest) {
+        LlmExchangeRequest safe = exchangeRequest == null
+                ? LlmExchangeRequest.text(null) : exchangeRequest;
+        LlmRequest request = safe.request();
+        LlmHostedWebSearchRequest search = safe.webSearch();
+        if (!search.requested()) {
+            return send(request).thenApply(response -> new LlmExchangeResponse(response,
+                    LlmExchangeResponse.WebSearchStatus.NOT_REQUESTED, 0, List.of(), List.of(), List.of(),
+                    response.success() ? LlmExchangeResponse.ErrorCode.NONE
+                            : LlmExchangeResponse.ErrorCode.PROVIDER_FAILURE,
+                    response.success() ? "" : response.error()));
+        }
+
+        String purpose = request.context() == null ? "" : request.context().purpose();
+        List<LlmRoutingDecision> decisions = new ArrayList<>();
+        if (!capabilityPolicy.allowsWebSearch(purpose)) {
+            decisions.add(new LlmRoutingDecision("", LlmRoutingDecision.Code.POLICY_DISABLED,
+                    "Web Search is disabled for purpose '" + purpose + "'"));
+            if (search.requirement() == LlmHostedWebSearchRequest.Requirement.REQUIRED) {
+                return completedExchangeFailure(request, LlmExchangeResponse.WebSearchStatus.POLICY_DISABLED,
+                        LlmExchangeResponse.ErrorCode.FEATURE_DISABLED, "Web Search is disabled for this purpose",
+                        decisions, List.of());
+            }
+            decisions.add(new LlmRoutingDecision("", LlmRoutingDecision.Code.DEGRADED_TO_TEXT,
+                    "Preferred Web Search degraded to text-only because policy disabled it"));
+            return attemptProvider(request, resolveChain(request), 0, new ArrayList<>())
+                    .thenApply(response -> finishExchange(request, new LlmExchangeResponse(response,
+                            LlmExchangeResponse.WebSearchStatus.DEGRADED, 0, List.of(), decisions,
+                            List.of("web_search"), response.success() ? LlmExchangeResponse.ErrorCode.NONE
+                                    : LlmExchangeResponse.ErrorCode.PROVIDER_FAILURE,
+                            response.success() ? "" : response.error())));
+        }
+
+        List<String> originalChain = resolveChain(request);
+        List<SearchProvider> capable = new ArrayList<>();
+        for (String providerName : originalChain) {
+            ProviderRuntime runtime = providers.get(providerName);
+            if (runtime == null) {
+                decisions.add(new LlmRoutingDecision(providerName, LlmRoutingDecision.Code.PROVIDER_NOT_FOUND,
+                        "Provider is not registered"));
+                continue;
+            }
+            ProviderCapabilities.HostedWebSearch declared = getProviderProfile(providerName)
+                    .capabilities().webSearch();
+            if (!declared.enabled()) {
+                decisions.add(new LlmRoutingDecision(providerName,
+                        LlmRoutingDecision.Code.WEB_SEARCH_NOT_DECLARED,
+                        "Provider profile does not declare Hosted Web Search"));
+                continue;
+            }
+            HostedWebSearchAdapters.HostedWebSearchAdapter adapter =
+                    HostedWebSearchAdapters.find(declared.adapterId());
+            if (adapter == null) {
+                decisions.add(new LlmRoutingDecision(providerName,
+                        LlmRoutingDecision.Code.WEB_SEARCH_ADAPTER_UNAVAILABLE,
+                        "Unknown Hosted Web Search adapter '" + declared.adapterId() + "'"));
+                continue;
+            }
+            if (!adapter.supportsFormat(runtime.spec.format())) {
+                decisions.add(new LlmRoutingDecision(providerName,
+                        LlmRoutingDecision.Code.WEB_SEARCH_ADAPTER_INCOMPATIBLE,
+                        "Adapter '" + declared.adapterId() + "' is incompatible with format '"
+                                + runtime.spec.format() + "'"));
+                continue;
+            }
+            capable.add(new SearchProvider(runtime, adapter));
+        }
+
+        if (capable.isEmpty()) {
+            if (search.requirement() == LlmHostedWebSearchRequest.Requirement.REQUIRED) {
+                return completedExchangeFailure(request, LlmExchangeResponse.WebSearchStatus.NO_CAPABLE_PROVIDER,
+                        LlmExchangeResponse.ErrorCode.NO_CAPABLE_PROVIDER,
+                        "No routed provider explicitly supports Hosted Web Search", decisions, List.of());
+            }
+            decisions.add(new LlmRoutingDecision("", LlmRoutingDecision.Code.DEGRADED_TO_TEXT,
+                    "Preferred Web Search degraded because no routed provider declared it"));
+            return attemptProvider(request, originalChain, 0, new ArrayList<>())
+                    .thenApply(response -> finishExchange(request, new LlmExchangeResponse(response,
+                            LlmExchangeResponse.WebSearchStatus.DEGRADED, 0, List.of(), decisions,
+                            List.of("web_search"), response.success() ? LlmExchangeResponse.ErrorCode.NONE
+                                    : LlmExchangeResponse.ErrorCode.PROVIDER_FAILURE,
+                            response.success() ? "" : response.error())));
+        }
+
+        return attemptSearchProvider(request, search, capable, originalChain, 0, new ArrayList<>(), decisions, false);
     }
 
     public CompletableFuture<LlmResponse> sendStreaming(LlmRequest request, Consumer<String> onDelta) {
@@ -285,6 +406,137 @@ public final class LlmOrchestrator {
                 new LlmRequestContext("", "DEBUG_TEST", "", "", "", "", providerName, false,
                         "", "", "console-provider-test", "", "test"),
                 LlmRouteOptions.empty(), billing);
+    }
+
+    private CompletableFuture<LlmExchangeResponse> attemptSearchProvider(LlmRequest request,
+            LlmHostedWebSearchRequest search, List<SearchProvider> capable, List<String> originalChain, int index,
+            List<LlmResponse.Attempt> attempts, List<LlmRoutingDecision> decisions, boolean sawSuccessfulWithoutSearch) {
+        if (index >= capable.size()) {
+            if (search.requirement() == LlmHostedWebSearchRequest.Requirement.REQUIRED) {
+                LlmExchangeResponse.ErrorCode code = sawSuccessfulWithoutSearch
+                        ? LlmExchangeResponse.ErrorCode.REQUIRED_FEATURE_NOT_USED
+                        : LlmExchangeResponse.ErrorCode.PROVIDER_FAILURE;
+                String error = sawSuccessfulWithoutSearch
+                        ? "A provider returned text but did not prove Hosted Web Search was used"
+                        : "All Hosted Web Search providers failed";
+                return completedExchangeFailure(request,
+                        sawSuccessfulWithoutSearch
+                                ? LlmExchangeResponse.WebSearchStatus.REQUESTED_NOT_USED
+                                : LlmExchangeResponse.WebSearchStatus.REQUESTED_NOT_USED,
+                        code, error, decisions, attempts);
+            }
+
+            List<String> textFallback = originalChain;
+            if (textFallback.isEmpty()) {
+                LlmResponse failure = LlmResponse.failure("All Hosted Web Search providers failed", attempts);
+                return CompletableFuture.completedFuture(finishExchange(request, new LlmExchangeResponse(failure,
+                        LlmExchangeResponse.WebSearchStatus.REQUESTED_NOT_USED, 0, List.of(), decisions,
+                        List.of("web_search"), LlmExchangeResponse.ErrorCode.PROVIDER_FAILURE, failure.error())));
+            }
+            decisions.add(new LlmRoutingDecision("", LlmRoutingDecision.Code.DEGRADED_TO_TEXT,
+                    "Preferred Web Search degraded to a fresh text-only attempt after all search attempts failed"));
+            return attemptProvider(request, textFallback, 0, attempts)
+                    .thenApply(response -> finishExchange(request, new LlmExchangeResponse(response,
+                            LlmExchangeResponse.WebSearchStatus.DEGRADED, 0, List.of(), decisions,
+                            List.of("web_search"), response.success() ? LlmExchangeResponse.ErrorCode.NONE
+                                    : LlmExchangeResponse.ErrorCode.PROVIDER_FAILURE,
+                            response.success() ? "" : response.error())));
+        }
+
+        SearchProvider provider = capable.get(index);
+        CredentialRuntime credential = provider.runtime.selectCredential(System.currentTimeMillis(), null);
+        if (credential == null) {
+            decisions.add(new LlmRoutingDecision(provider.runtime.spec.name(),
+                    LlmRoutingDecision.Code.NO_HEALTHY_CREDENTIAL, "No healthy credential"));
+            return attemptSearchProvider(request, search, capable, originalChain, index + 1, attempts, decisions,
+                    sawSuccessfulWithoutSearch);
+        }
+        return attemptSearchWithCredential(request, search, capable, originalChain, index, attempts, decisions,
+                sawSuccessfulWithoutSearch, provider, credential);
+    }
+
+    private CompletableFuture<LlmExchangeResponse> attemptSearchWithCredential(LlmRequest request,
+            LlmHostedWebSearchRequest search, List<SearchProvider> capable, List<String> originalChain, int index,
+            List<LlmResponse.Attempt> attempts, List<LlmRoutingDecision> decisions, boolean sawSuccessfulWithoutSearch,
+            SearchProvider provider, CredentialRuntime credential) {
+        long startedAt = System.currentTimeMillis();
+        credential.inflight.incrementAndGet();
+        return sendSearchSingle(request, provider.runtime.spec, credential.spec, provider.adapter)
+                .handle((result, throwable) -> {
+                    credential.inflight.decrementAndGet();
+                    if (throwable == null) return result;
+                    credential.cooldownUntil = System.currentTimeMillis() + TRANSIENT_FAILURE_COOLDOWN_MS;
+                    return SearchSingleResult.failure("Request failed: " + rootMessage(throwable),
+                            System.currentTimeMillis() - startedAt);
+                }).thenCompose(result -> {
+                    SingleResult base = result.result;
+                    boolean fulfilled = base.success && result.evidence.used();
+                    String attemptError = base.success && !fulfilled
+                            ? "Hosted Web Search was requested but no invocation evidence was returned" : base.error;
+                    attempts.add(new LlmResponse.Attempt(provider.runtime.spec.name(), credential.spec.id(),
+                            base.success && (fulfilled
+                                    || search.requirement() == LlmHostedWebSearchRequest.Requirement.PREFERRED),
+                            attemptError, base.latencyMs, base.finishReason));
+
+                    if (base.policyRejected) {
+                        LlmResponse denied = LlmResponse.failure(base.error, attempts, base.denyCode);
+                        return CompletableFuture.completedFuture(finishExchange(request, new LlmExchangeResponse(denied,
+                                LlmExchangeResponse.WebSearchStatus.REQUESTED_NOT_USED, 0, List.of(), decisions,
+                                List.of(), LlmExchangeResponse.ErrorCode.PROVIDER_FAILURE, base.error)));
+                    }
+                    if (base.success) {
+                        credential.consecutiveFailures.set(0);
+                        if (fulfilled) {
+                            LlmResponse response = legacyResponse(provider.runtime.spec, credential.spec, base, attempts);
+                            return CompletableFuture.completedFuture(finishExchange(request, new LlmExchangeResponse(
+                                    response, LlmExchangeResponse.WebSearchStatus.USED, result.evidence.uses(),
+                                    result.evidence.sources(), decisions, List.of(),
+                                    LlmExchangeResponse.ErrorCode.NONE, "")));
+                        }
+                        if (search.requirement() == LlmHostedWebSearchRequest.Requirement.PREFERRED) {
+                            decisions.add(new LlmRoutingDecision(provider.runtime.spec.name(),
+                                    LlmRoutingDecision.Code.DEGRADED_TO_TEXT,
+                                    "Provider returned text without Hosted Web Search invocation evidence"));
+                            LlmResponse response = legacyResponse(provider.runtime.spec, credential.spec, base, attempts);
+                            return CompletableFuture.completedFuture(finishExchange(request, new LlmExchangeResponse(
+                                    response, LlmExchangeResponse.WebSearchStatus.DEGRADED, 0, List.of(),
+                                    decisions, List.of("web_search"), LlmExchangeResponse.ErrorCode.NONE, "")));
+                        }
+                        return attemptSearchProvider(request, search, capable, originalChain, index + 1, attempts,
+                                decisions, true);
+                    }
+
+                    applyFailure(credential, base.httpStatus);
+                    if (isCredentialRetryable(base.httpStatus)) {
+                        CredentialRuntime next = provider.runtime.selectCredential(System.currentTimeMillis(), credential);
+                        if (next != null) {
+                            return attemptSearchWithCredential(request, search, capable, originalChain, index, attempts,
+                                    decisions, sawSuccessfulWithoutSearch, provider, next);
+                        }
+                    }
+                    return attemptSearchProvider(request, search, capable, originalChain, index + 1, attempts, decisions,
+                            sawSuccessfulWithoutSearch);
+                });
+    }
+
+    private static LlmResponse legacyResponse(ProviderSpec provider, ProviderSpec.Credential credential,
+            SingleResult result, List<LlmResponse.Attempt> attempts) {
+        return new LlmResponse(true, result.content, "", provider.name(), provider.model(), credential.id(),
+                result.promptTokens, result.completionTokens, result.latencyMs, attempts, result.requestBody,
+                result.responseBody, result.finishReason);
+    }
+
+    private CompletableFuture<LlmExchangeResponse> completedExchangeFailure(LlmRequest request,
+            LlmExchangeResponse.WebSearchStatus status, LlmExchangeResponse.ErrorCode code, String error,
+            List<LlmRoutingDecision> decisions, List<LlmResponse.Attempt> attempts) {
+        LlmResponse failure = LlmResponse.failure(error, attempts);
+        return CompletableFuture.completedFuture(finishExchange(request, new LlmExchangeResponse(failure, status, 0,
+                List.of(), decisions, List.of(), code, error)));
+    }
+
+    private static LlmExchangeResponse finishExchange(LlmRequest request, LlmExchangeResponse response) {
+        LlmRequestLogger.publish("llm-core", request, response.legacyResponse());
+        return response;
     }
 
     private CompletableFuture<LlmResponse> attemptProvider(LlmRequest request, List<String> chain, int index,
@@ -453,6 +705,55 @@ public final class LlmOrchestrator {
         return execution.handle((result, throwable) -> throwable == null ? result
                 : SingleResult.failure(rootMessage(throwable), 0,
                         System.currentTimeMillis() - startedAt, requestBody, ""));
+    }
+
+    private CompletableFuture<SearchSingleResult> sendSearchSingle(LlmRequest request, ProviderSpec provider,
+            ProviderSpec.Credential credential, HostedWebSearchAdapters.HostedWebSearchAdapter adapter) {
+        String format = provider.format();
+        String url = resolveUrl(provider, credential.key());
+        LlmResolvedParameters parameters = resolveParameters(request, provider.name());
+        JsonObject body = buildBody(format, provider, request, parameters);
+        adapter.apply(body);
+        String requestBody = GSON.toJson(body);
+        HttpRequest.Builder builder = HttpRequest.newBuilder(URI.create(url))
+                .timeout(Duration.ofSeconds(parameters.timeoutSeconds()))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(requestBody));
+        applyHeaders(builder, format, credential.key());
+        LlmRequestAccounting.Reservation reservation = LlmRequestAccounting.reserve(request,
+                attemptEstimate(request, provider, parameters));
+        if (!reservation.allowed()) {
+            return CompletableFuture.completedFuture(new SearchSingleResult(
+                    SingleResult.policyFailure(reservation.denyCode(), reservation.reason()),
+                    HostedWebSearchAdapters.Evidence.none()));
+        }
+        long startedAt = System.currentTimeMillis();
+        CompletableFuture<SearchSingleResult> execution;
+        try {
+            execution = httpClient.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString())
+                    .thenApply(response -> {
+                        SingleResult result = parseResponse(format, response.statusCode(), response.body(),
+                                System.currentTimeMillis() - startedAt, requestBody);
+                        if (!result.success) return new SearchSingleResult(result,
+                                HostedWebSearchAdapters.Evidence.none());
+                        try {
+                            JsonObject responseJson = JsonParser.parseString(response.body()).getAsJsonObject();
+                            return new SearchSingleResult(result, adapter.parse(responseJson, provider.name()));
+                        } catch (RuntimeException malformedEvidence) {
+                            return new SearchSingleResult(result, HostedWebSearchAdapters.Evidence.none());
+                        }
+                    });
+        } catch (RuntimeException failure) {
+            execution = CompletableFuture.completedFuture(SearchSingleResult.failure(
+                    rootMessage(failure), System.currentTimeMillis() - startedAt, requestBody));
+        }
+        execution.whenComplete((result, throwable) -> finishAccounting(request, reservation,
+                throwable == null && result != null && result.result.success,
+                result == null ? 0 : result.result.promptTokens,
+                result == null ? 0 : result.result.completionTokens));
+        return execution.handle((result, throwable) -> throwable == null ? result
+                : SearchSingleResult.failure(rootMessage(throwable),
+                        System.currentTimeMillis() - startedAt, requestBody));
     }
 
     private CompletableFuture<StreamResult> sendSingleStreaming(LlmRequest request, ProviderSpec provider,
@@ -731,8 +1032,7 @@ public final class LlmOrchestrator {
             int completionTokens = 0;
             if ("gemini".equals(format)) {
                 JsonObject candidate = root.getAsJsonArray("candidates").get(0).getAsJsonObject();
-                content = candidate.getAsJsonObject("content").getAsJsonArray("parts").get(0).getAsJsonObject()
-                        .get("text").getAsString();
+                content = concatenateTextParts(candidate.getAsJsonObject("content").getAsJsonArray("parts"));
                 finishReason = candidate.has("finishReason")
                         ? normalizeFinishReason(candidate.get("finishReason").getAsString()) : "";
                 if (root.has("usageMetadata")) {
@@ -741,7 +1041,7 @@ public final class LlmOrchestrator {
                     completionTokens = getInt(usage, "candidatesTokenCount");
                 }
             } else if ("claude".equals(format) || "anthropic".equals(format)) {
-                content = root.getAsJsonArray("content").get(0).getAsJsonObject().get("text").getAsString();
+                content = concatenateTextParts(root.getAsJsonArray("content"));
                 finishReason = root.has("stop_reason")
                         ? normalizeFinishReason(root.get("stop_reason").getAsString()) : "";
                 if (root.has("usage")) {
@@ -765,6 +1065,25 @@ public final class LlmOrchestrator {
         } catch (Exception e) {
             return SingleResult.failure("Invalid provider response: " + rootMessage(e), -1, latencyMs, requestBody, body);
         }
+    }
+
+    private static String concatenateTextParts(JsonArray parts) {
+        StringBuilder content = new StringBuilder();
+        for (JsonElement element : parts) {
+            if (!element.isJsonObject()) continue;
+            JsonObject part = element.getAsJsonObject();
+            if (part.has("thought") && part.get("thought").isJsonPrimitive()
+                    && part.getAsJsonPrimitive("thought").isBoolean()
+                    && part.get("thought").getAsBoolean()) continue;
+            if (!part.has("text") || part.get("text").isJsonNull()
+                    || !part.get("text").isJsonPrimitive()) continue;
+            String text = part.get("text").getAsString();
+            if (!text.isEmpty()) content.append(text);
+        }
+        if (content.isEmpty()) {
+            throw new IllegalArgumentException("Provider response contains no text part");
+        }
+        return content.toString();
     }
 
     private static String normalizeFinishReason(String raw) {
@@ -902,6 +1221,25 @@ public final class LlmOrchestrator {
         private static SingleResult policyFailure(LlmRequestAccounting.DenyCode denyCode, String error) {
             return new SingleResult(false, "", "Billing denied: " + error,
                     0, 0, 0, 0L, "", "", "error", true, denyCode);
+        }
+    }
+
+    private record SearchProvider(ProviderRuntime runtime,
+            HostedWebSearchAdapters.HostedWebSearchAdapter adapter) {
+    }
+
+    private record SearchSingleResult(SingleResult result, HostedWebSearchAdapters.Evidence evidence) {
+        private SearchSingleResult {
+            evidence = evidence == null ? HostedWebSearchAdapters.Evidence.none() : evidence;
+        }
+
+        private static SearchSingleResult failure(String error, long latencyMs) {
+            return failure(error, latencyMs, "");
+        }
+
+        private static SearchSingleResult failure(String error, long latencyMs, String requestBody) {
+            return new SearchSingleResult(SingleResult.failure(error, 0, latencyMs, requestBody, ""),
+                    HostedWebSearchAdapters.Evidence.none());
         }
     }
 

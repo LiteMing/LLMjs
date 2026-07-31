@@ -16,6 +16,8 @@ import vibe.liteming.llmcore.LlmResolvedParameters;
 import vibe.liteming.llmcore.LlmRouteOptions;
 import vibe.liteming.llmcore.PriorityRoutingConfig;
 import vibe.liteming.llmcore.ProviderConfigLoader;
+import vibe.liteming.llmcore.ProviderCapabilities;
+import vibe.liteming.llmcore.ProviderProfile;
 import vibe.liteming.llmcore.ProviderSpec;
 import vibe.liteming.llmcore.PurposeMeta;
 import vibe.liteming.llmcore.PurposeRegistry;
@@ -72,11 +74,15 @@ public class ProviderManager {
 
     public void reload() {
         if (configDir == null || gameRoot == null) return;
-        Map<String, ProviderSpec> specs = ProviderConfigLoader.load(
-                GlobalConfig.getGlobalProvidersFile(),
-                configDir.resolve("providers.json"),
-                ProviderLoader.resolveSecretFile(gameRoot));
+        Path globalProviders = GlobalConfig.getGlobalProvidersFile();
+        Path serverProviders = configDir.resolve("providers.json");
+        Path secretFile = ProviderLoader.resolveSecretFile(gameRoot);
+        Map<String, ProviderSpec> specs = ProviderConfigLoader.load(globalProviders, serverProviders, secretFile);
+        Map<String, ProviderProfile> profiles = ProviderConfigLoader.loadProfiles(
+                globalProviders, serverProviders, secretFile,
+                warning -> LlmCoreMod.LOGGER.warn("{}", warning));
         this.orchestrator = new LlmOrchestrator(specs);
+        this.orchestrator.replaceProviderProfiles(profiles);
         this.orchestrator.setGlobalDefaults(new LlmRouteOptions(null, null, LLMConfig.TIMEOUT.get(), null, null));
         Map<String, Provider> newProviders = new LinkedHashMap<>();
         specs.forEach((name, spec) -> newProviders.put(name, new CoreProviderAdapter(spec, orchestrator)));
@@ -162,6 +168,23 @@ public class ProviderManager {
             pJson.addProperty("url", entry.getValue().getUrl());
             pJson.addProperty("maskedKey", entry.getValue().getMaskedKey());
             pJson.addProperty("configured", entry.getValue().isConfigured());
+            ProviderProfile profile = orchestrator.getProviderProfile(entry.getKey());
+            ProviderCapabilities capabilities = profile.capabilities();
+            JsonObject capabilitiesJson = new JsonObject();
+            JsonArray input = new JsonArray();
+            capabilities.inputModalities().forEach(input::add);
+            capabilitiesJson.add("input", input);
+            JsonArray output = new JsonArray();
+            capabilities.outputModalities().forEach(output::add);
+            capabilitiesJson.add("output", output);
+            JsonObject webSearch = new JsonObject();
+            webSearch.addProperty("declared", capabilities.webSearch().enabled());
+            webSearch.addProperty("capable", orchestrator.isProviderWebSearchCapable(entry.getKey()));
+            if (capabilities.webSearch().enabled()) {
+                webSearch.addProperty("adapter", capabilities.webSearch().adapterId());
+            }
+            capabilitiesJson.add("webSearch", webSearch);
+            pJson.add("capabilities", capabilitiesJson);
             ConnectionStatus cached = statusCache.get(entry.getKey());
             if (cached != null) pJson.add("status", cached.toJson());
             else pJson.addProperty("status", "untested");
