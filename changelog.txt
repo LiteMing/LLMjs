@@ -1,5 +1,6 @@
-LLMjs 2.5.0 / LLM Core 1.4.0 (Unreleased)
+LLMjs 2.5.0 / LLM Core 1.4.1 (Unreleased)
 ========================================
+ - Added opt-in provider-hosted Web Search with per-purpose administrator authorization, capability-aware fallback, explicit degraded/failed outcomes, and normalized source citations. Existing requests remain offline unless they explicitly request search.
  - Added per-player inherit, unlimited, disabled, and finite token limits with schema-1 ledger migration.
  - Added structured billing denial codes to the frozen llm-core response contract.
  - Added cancellation-safe reservation release plus TTL recovery for abandoned provider attempts.
