@@ -67,7 +67,7 @@ public class ProviderManager {
     private Path gameRoot;
 
     public void init(Path serverConfigDir, Path gameRoot) {
-        this.configDir = serverConfigDir.resolve("llmjs");
+        this.configDir = GlobalConfig.resolveServerDirectory(serverConfigDir);
         this.gameRoot = gameRoot;
         reload();
     }

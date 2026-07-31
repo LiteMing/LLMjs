@@ -9,7 +9,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Manages the global config directory: config/llmjs/
+ * Manages the global config directory: config/llmcore/
  * - providers.json: global provider presets (url + model, no keys)
  * - templates.json: test prompt templates
  *
@@ -17,13 +17,22 @@ import java.util.List;
  * Keys are NEVER stored here - they go in llmcore.secret only.
  */
 public class GlobalConfig {
+    public static final String CONFIG_DIRECTORY = "llmcore";
+    public static final String LEGACY_CONFIG_DIRECTORY = "llmjs";
+
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static final List<String> GLOBAL_OWNED_FILES = List.of(
+            "providers.json", "templates.json", "routing.json", "capability-policy.json");
+    private static final List<String> SERVER_OWNED_FILES = List.of(
+            "providers.json", "providers_raw.json");
     private static Path globalDir;
 
     public record Template(String name, String prompt) {}
 
     public static void init(Path gameRoot) {
-        globalDir = gameRoot.resolve("config").resolve("llmjs");
+        Path configRoot = gameRoot.resolve("config");
+        globalDir = configRoot.resolve(CONFIG_DIRECTORY);
+        migrateOwnedFiles(configRoot.resolve(LEGACY_CONFIG_DIRECTORY), globalDir, GLOBAL_OWNED_FILES);
         try {
             Files.createDirectories(globalDir);
             Path providersFile = globalDir.resolve("providers.json");
@@ -31,11 +40,11 @@ public class GlobalConfig {
 
             if (!Files.exists(providersFile)) {
                 Files.writeString(providersFile, getDefaultProviders());
-                LlmCoreMod.LOGGER.info("Created global config/llmjs/providers.json");
+                LlmCoreMod.LOGGER.info("Created global config/llmcore/providers.json");
             }
             if (!Files.exists(templatesFile)) {
                 Files.writeString(templatesFile, getDefaultTemplates());
-                LlmCoreMod.LOGGER.info("Created global config/llmjs/templates.json");
+                LlmCoreMod.LOGGER.info("Created global config/llmcore/templates.json");
             }
         } catch (IOException e) {
             LlmCoreMod.LOGGER.error("Failed to create global config directory", e);
@@ -46,6 +55,28 @@ public class GlobalConfig {
 
     public static Path getGlobalProvidersFile() {
         return globalDir != null ? globalDir.resolve("providers.json") : null;
+    }
+
+    public static Path resolveServerDirectory(Path serverConfigRoot) {
+        Path canonical = serverConfigRoot.resolve(CONFIG_DIRECTORY);
+        migrateOwnedFiles(serverConfigRoot.resolve(LEGACY_CONFIG_DIRECTORY), canonical, SERVER_OWNED_FILES);
+        return canonical;
+    }
+
+    private static void migrateOwnedFiles(Path legacyDir, Path canonicalDir, List<String> fileNames) {
+        for (String fileName : fileNames) {
+            Path legacy = legacyDir.resolve(fileName);
+            Path canonical = canonicalDir.resolve(fileName);
+            if (!Files.exists(legacy) || Files.exists(canonical)) continue;
+            try {
+                Files.createDirectories(canonicalDir);
+                Files.move(legacy, canonical);
+                LlmCoreMod.LOGGER.info("Migrated llm-core config {} to {}", legacy, canonical);
+            } catch (IOException error) {
+                throw new IllegalStateException("Failed to migrate llm-core config " + legacy + " to " + canonical,
+                        error);
+            }
+        }
     }
 
     // === Templates ===

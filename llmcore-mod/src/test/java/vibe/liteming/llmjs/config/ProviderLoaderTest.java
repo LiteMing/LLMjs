@@ -7,6 +7,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ProviderLoaderTest {
     @TempDir
@@ -18,10 +20,14 @@ class ProviderLoaderTest {
     }
 
     @Test
-    void keepsUsingLegacyPathWhenItIsTheOnlyExistingSecret() throws Exception {
-        Path legacy = Files.writeString(tempDir.resolve("llmjs.secret"), "{}");
+    void renamesLegacySecretWhenCanonicalIsAbsent() throws Exception {
+        Path legacy = Files.writeString(tempDir.resolve("llmjs.secret"), "{\"legacy\":true}");
 
-        assertEquals(legacy, ProviderLoader.resolveSecretFile(tempDir));
+        Path resolved = ProviderLoader.resolveSecretFile(tempDir);
+
+        assertEquals(tempDir.resolve("llmcore.secret"), resolved);
+        assertFalse(Files.exists(legacy));
+        assertEquals("{\"legacy\":true}", Files.readString(resolved));
     }
 
     @Test
@@ -30,5 +36,6 @@ class ProviderLoaderTest {
         Path canonical = Files.writeString(tempDir.resolve("llmcore.secret"), "{}");
 
         assertEquals(canonical, ProviderLoader.resolveSecretFile(tempDir));
+        assertTrue(Files.exists(tempDir.resolve("llmjs.secret")));
     }
 }

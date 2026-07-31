@@ -21,7 +21,7 @@ import java.util.Map;
 import java.util.Set;
 
 /**
- * Atomic load/save of {@link PriorityRoutingConfig} to {@code config/llmjs/routing.json}.
+ * Atomic load/save of {@link PriorityRoutingConfig} to {@code config/llmcore/routing.json}.
  * Schema (JSON):
  * <pre>
  * {

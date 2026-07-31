@@ -14,8 +14,8 @@ import java.util.Map;
 
 /**
  * Provider loading with 3-layer merge:
- * 1. config/llmjs/providers.json        (global presets, no keys)
- * 2. serverconfig/llmjs/providers.json   (server override, no keys)
+ * 1. config/llmcore/providers.json        (global presets, no keys)
+ * 2. serverconfig/llmcore/providers.json   (server override, no keys)
  * 3. llmcore.secret                      (keys only)
  */
 public class ProviderLoader {
@@ -27,15 +27,22 @@ public class ProviderLoader {
     private static Path secretFilePath;
 
     /**
-     * New installations use llmcore.secret. Existing installations keep using
-     * llmjs.secret until they are explicitly migrated, so an upgrade never
-     * appears to lose configured credentials.
+     * Resolve the canonical secret path. A lone legacy secret is renamed once;
+     * it is never retained as a readable compatibility path.
      */
-    public static Path resolveSecretFile(Path gameRoot) {
+    public static synchronized Path resolveSecretFile(Path gameRoot) {
         Path current = gameRoot.resolve(SECRET_FILE_NAME);
         if (Files.exists(current)) return current;
         Path legacy = gameRoot.resolve(LEGACY_SECRET_FILE_NAME);
-        return Files.exists(legacy) ? legacy : current;
+        if (!Files.exists(legacy)) return current;
+        try {
+            Files.move(legacy, current);
+            LlmCoreMod.LOGGER.info("Migrated {} to {}", LEGACY_SECRET_FILE_NAME, SECRET_FILE_NAME);
+            return current;
+        } catch (IOException error) {
+            throw new IllegalStateException("Failed to rename " + LEGACY_SECRET_FILE_NAME + " to "
+                    + SECRET_FILE_NAME, error);
+        }
     }
 
     public static Map<String, Provider> loadAll(Path serverConfigDir, Path gameRoot) {
@@ -54,9 +61,6 @@ public class ProviderLoader {
             if (!Files.exists(secretFile)) {
                 Files.writeString(secretFile, getDefaultSecret());
                 LlmCoreMod.LOGGER.info("Created {} - fill in your API keys here", SECRET_FILE_NAME);
-            } else if (LEGACY_SECRET_FILE_NAME.equals(secretFile.getFileName().toString())) {
-                LlmCoreMod.LOGGER.warn("Using legacy {}; rename it to {} when all consumers support the new path",
-                        LEGACY_SECRET_FILE_NAME, SECRET_FILE_NAME);
             }
         } catch (IOException e) {
             LlmCoreMod.LOGGER.error("Failed to create config files", e);
@@ -65,18 +69,18 @@ public class ProviderLoader {
         // Load secrets: the ONLY source for keys
         JsonObject secrets = loadSecrets(secretFile);
 
-        // Layer 1: global providers (config/llmjs/providers.json)
+        // Layer 1: global providers (config/llmcore/providers.json)
         Path globalFile = GlobalConfig.getGlobalProvidersFile();
         if (globalFile != null && Files.exists(globalFile)) {
             loadSimpleProviders(globalFile, providers, secrets);
-            LlmCoreMod.LOGGER.debug("Loaded global providers from config/llmjs/providers.json");
+            LlmCoreMod.LOGGER.debug("Loaded global providers from config/llmcore/providers.json");
         }
 
         // Layer 2: server providers override global (same name = replace)
         Path serverFile = serverConfigDir.resolve("providers.json");
         if (Files.exists(serverFile)) {
             loadSimpleProviders(serverFile, providers, secrets);
-            LlmCoreMod.LOGGER.debug("Loaded server provider overrides from serverconfig/llmjs/providers.json");
+            LlmCoreMod.LOGGER.debug("Loaded server provider overrides from serverconfig/llmcore/providers.json");
         }
 
         // RAW providers (server-level only, advanced usage)
@@ -169,24 +173,24 @@ public class ProviderLoader {
         String safeFormat = format == null || format.isBlank() ? "openai" : format;
         vibe.liteming.llmcore.ProviderSpec spec = new vibe.liteming.llmcore.ProviderSpec(name, safeFormat, url,
                 model, null, null, java.util.List.of(new vibe.liteming.llmcore.ProviderSpec.Credential(name + "#1", key, 1)));
-        return ProviderFiles.setup(gameRootDir.resolve("config/llmjs/providers.json"),
+        return ProviderFiles.setup(gameRootDir.resolve("config/llmcore/providers.json"),
                 secretFilePath, spec);
     }
 
     public static boolean updateWithoutKey(String name, String url, String model, String format) {
         return gameRootDir != null && ProviderFiles.updateProvider(
-                gameRootDir.resolve("config/llmjs/providers.json"), name, url, model, format);
+                gameRootDir.resolve("config/llmcore/providers.json"), name, url, model, format);
     }
 
     public static boolean deleteProvider(String name) {
         if (gameRootDir == null || name == null || name.isBlank()) return false;
         boolean deleted = ProviderFiles.deleteProvider(
-                gameRootDir.resolve("config/llmjs/providers.json"),
+                gameRootDir.resolve("config/llmcore/providers.json"),
                 secretFilePath,
                 name);
         // Also drop from server override if present
         deleted |= ProviderFiles.deleteProvider(
-                gameRootDir.resolve("serverconfig/llmjs/providers.json"),
+                gameRootDir.resolve("serverconfig/llmcore/providers.json"),
                 null,
                 name);
         return deleted;

@@ -15,10 +15,12 @@ The repository builds three artifacts with distinct ownership:
 Runtime and Console classes moved to the `llmcore` artifact before their Java
 packages are renamed. Their existing `vibe.liteming.llmjs.*` binary names stay
 available from `llmcore` so linked mods can continue using the current handoff
-contract without a coordinated release. Existing `config/llmjs`,
-`serverconfig/llmjs`, translation keys, and the `/llm` command also remain
-stable. New installations store credentials in `llmcore.secret`; existing
-`llmjs.secret` files remain a supported fallback during migration.
+contract without a coordinated release. Translation keys and the `/llm` command
+remain stable. LLM Core owns `config/llmcore`, `serverconfig/llmcore`, and the
+root `llmcore.secret`. On upgrade, known core-owned JSON files are moved out of
+the old `llmjs` directories when their canonical targets are absent. A lone
+`llmjs.secret` is renamed once to `llmcore.secret`; it is never read as a
+fallback, and when both files exist only `llmcore.secret` is authoritative.
 
 The Gradle `check` tasks enforce artifact ownership and reject adapter-only
 KubeJS dependencies in `llmcore`.
