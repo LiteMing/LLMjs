@@ -1,8 +1,8 @@
 # LLM Core 多模态与联网能力地基计划
 
-> **状态**：`llm-core 1.4.1` 执行中。purpose 联网授权、Provider capability profile、请求级 Hosted Web
-> Search、来源归一化和四种内置搜索方言已完成离线实现与定向测试；Console 实机、真实 Provider EVAL、独立搜索
-> 后端以及其余多模态/Tool 卡仍未完成。
+> **状态**：`llm-core 1.4.2` 执行中。purpose 联网授权、Provider capability profile、请求级 Hosted Web
+> Search、来源归一化、四种内置搜索方言、core 配置所有权迁移和 Forge 共享 runtime 发布均已完成离线实现与
+> 定向测试；Console 实机、真实 Provider EVAL、独立搜索后端以及其余多模态/Tool 卡仍未完成。
 >
 > **审计基线**：AIjs `purpose-test-routing@0f8eb76`（`llm-core 1.4.0`）；CreatureChat
 > `HDRS@5637334`。审计日期：2026-07-30。
@@ -70,7 +70,8 @@ Agent 循环和最终事实裁决属于 CreatureChat。
   多模态、搜索、tool call、预算或 provenance 契约；
 - 不把 URL、搜索摘要或模型引用直接当作已验证事实；宿主必须自行做 evidence policy；
 - 不在没有真实 Provider 纵向切片时发布“支持视频/音频输出”等空能力；
-- 不借本计划重命名现有 `vibe.liteming.llmjs.*` runtime/Console 包、配置目录、命令或翻译 key。
+- 不借本计划重命名现有 `vibe.liteming.llmjs.*` runtime/Console 包、命令或翻译 key；1.4.2 只把明确由 core
+  拥有的配置迁至 `config/llmcore`、`serverconfig/llmcore` 与根 `llmcore.secret`。
 
 ---
 
@@ -415,8 +416,23 @@ core 只统计实际 Provider exchange 和 Provider 报告的 hosted-tool usage�
 **剩余验收**：真实 Console 操作；四种已声明方言的显式环境变量 Provider EVAL；完整 core/mod build；未修改
 CreatureChat 的关键契约与双 loader 构建。离线测试已覆盖默认关闭、capability skip 无 HTTP/accounting、严格
 REQUIRED fallback、PREFERRED degraded、四种 request/response fixture、来源归一化和 legacy body 不注入搜索字段。
-CreatureChat 的“解析版本必须等于声明版本”护栏会在 composite build 中按预期拒绝尚未声明的 1.4.1，只有正式采用
-1.4.1 时才原子更新其版本常量与冻结测试，不为本地 foundation 验证提前修改下游。
+CreatureChat 在 1.4.2 采用卡中同步更新解析版本、Forge 下限和冻结契约；业务请求仍使用 legacy
+`send/sendStreaming`，不会因管理员开启 policy 自动联网。
+
+### 3.0.1 `llm-core 1.4.2` 配置所有权与共享 runtime 切片
+
+| 子项 | 状态 | 当前结果 |
+|---|---|---|
+| canonical 配置路径 | 已实现，测试通过 | `config/llmcore`、`serverconfig/llmcore`、根 `llmcore.secret` |
+| 旧 secret 迁移 | 已实现，测试通过 | 仅 canonical 不存在时把孤立 `llmjs.secret` 原子改名；之后不再兼容读取 |
+| runtime 原子发布 | 已实现，测试通过 | 完整 reload 后 `SharedLlmRuntime.install(candidate)`；不发布半初始化实例 |
+| 生命周期清理 | 已实现，测试通过 | server stop/manager close 使用 expected-instance CAS，旧生命周期不能清除新实例 |
+| CreatureChat 采用 | 已实现，待实机 | 只调用 `SharedLlmRuntime.current()`；不读 core 配置、不创建第二 orchestrator |
+
+公开共享入口保持最窄形状：`current()` 返回当前完整实例的 `Optional`，`install(...)` 只供 runtime owner 发布，
+`clear(expected)` 只按实例身份清理。它不暴露 secret 路径、`ProviderManager`、配置写入或 CreatureChat 类型。
+Console 与 llmjs 继续消费同一个 `ProviderManager`/orchestrator。Forge 是当前唯一生产 owner；Fabric 不在 CChat
+恢复自建配置或 fallback runtime，待真实 llmcore Fabric 消费者出现后另行接线。
 
 ```text
 CORE-F0 兼容与所有权 ADR
