@@ -657,7 +657,7 @@ public class RoutingPanel extends AbstractWidget {
             input.setY(detailsY + 52);
             input.setWidth(inputWidth);
             input.visible = visible && editingRow > 0
-                    && input.getY() >= getY() && input.getY() + input.getHeight() <= getY() + height;
+                    && input.getY() < getY() + height && input.getY() + input.getHeight() > getY();
             if (!input.visible && input.isFocused()) input.setFocused(false);
         }
     }

@@ -10,6 +10,7 @@ import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.components.MultiLineEditBox;
+import net.minecraft.client.gui.components.MultilineTextField;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraftforge.api.distmarker.Dist;
@@ -44,6 +45,13 @@ public class TestPanel {
     private static final int STATUS_Y = 127;
     private static final int RESULT_TITLE_Y = 140;
     private static final int MIN_CONTENT_HEIGHT = 260;
+    private static final int COMPACT_CHAIN_Y = 22;
+    private static final int COMPACT_PROMPT_Y = 40;
+    private static final int COMPACT_PARAM_INPUT_Y = 58;
+    private static final int COMPACT_TOOLBAR_Y = 72;
+    private static final int COMPACT_STATUS_Y = 88;
+    private static final int COMPACT_RESULT_TITLE_Y = 100;
+    private static final int COMPACT_MIN_CONTENT_HEIGHT = 130;
     private static final int JSON_EDITOR_Y = 42;
     private static final int JSON_EDITOR_HEIGHT = 180;
     private static final int JSON_CONTENT_HEIGHT = 380;
@@ -108,6 +116,24 @@ public class TestPanel {
     private static final class RequestJsonEditBox extends MultiLineEditBox {
         private boolean readOnly;
 
+        // MultiLineEditBox's underlying MultilineTextField is private and its
+        // selection anchor is only collapsed on click when the "selecting" flag
+        // happens to be false; setValue() leaves the anchor at the end of the
+        // text, so a stale selecting=true made every plain click select from the
+        // document end toward the click point and broke independent drag
+        // selection. Locate the field by type so it also works after reobfuscation.
+        private static final java.lang.reflect.Field TEXT_FIELD = locateTextField();
+
+        private static java.lang.reflect.Field locateTextField() {
+            for (java.lang.reflect.Field field : MultiLineEditBox.class.getDeclaredFields()) {
+                if (MultilineTextField.class.isAssignableFrom(field.getType())) {
+                    field.setAccessible(true);
+                    return field;
+                }
+            }
+            return null;
+        }
+
         private RequestJsonEditBox(Font font, int x, int y, int width, int height,
                 Component placeholder, Component narration) {
             super(font, x, y, width, height, placeholder, narration);
@@ -115,6 +141,34 @@ public class TestPanel {
 
         private void setReadOnly(boolean value) {
             readOnly = value;
+        }
+
+        // MultiLineEditBox hit-tests via withinContentAreaPoint() which ignores the
+        // visible flag; an invisible editor was swallowing clicks over the whole
+        // lower Setup panel. Gate all mouse handlers on visibility.
+        @Override
+        public boolean mouseClicked(double mouseX, double mouseY, int button) {
+            if (!visible) return false;
+            boolean handled = super.mouseClicked(mouseX, mouseY, button);
+            // 1.20.1 bug: AbstractScrollWidget.mouseClicked returns true for every
+            // in-content click without doing anything, so MultiLineEditBox's own
+            // cursor-seek branch is unreachable and clicking never moves the caret.
+            // Replicate the seek here.
+            if (handled && button == 0 && withinContentAreaPoint(mouseX, mouseY)) {
+                seekCursorToPoint(mouseX, mouseY);
+            }
+            return handled;
+        }
+
+        @Override
+        public boolean mouseDragged(double mouseX, double mouseY, int button,
+                double dragX, double dragY) {
+            return visible && super.mouseDragged(mouseX, mouseY, button, dragX, dragY);
+        }
+
+        @Override
+        public boolean mouseReleased(double mouseX, double mouseY, int button) {
+            return visible && super.mouseReleased(mouseX, mouseY, button);
         }
 
         @Override
@@ -128,6 +182,20 @@ public class TestPanel {
             boolean navigation = keyCode >= 262 && keyCode <= 269;
             return (navigation || Screen.isSelectAll(keyCode) || Screen.isCopy(keyCode))
                     && super.keyPressed(keyCode, scanCode, modifiers);
+        }
+
+        // Replicates MultiLineEditBox.seekCursorScreen: moves the caret (and with
+        // selecting=false collapses the anchor, so a plain click never selects).
+        private void seekCursorToPoint(double mouseX, double mouseY) {
+            if (TEXT_FIELD == null) return;
+            try {
+                MultilineTextField textField = (MultilineTextField) TEXT_FIELD.get(this);
+                textField.setSelecting(Screen.hasShiftDown());
+                double localX = mouseX - (double) getX() - (double) innerPadding();
+                double localY = mouseY - (double) getY() - (double) innerPadding() + scrollAmount();
+                textField.seekCursorToPoint(localX, localY);
+            } catch (Exception ignored) {
+            }
         }
     }
 
@@ -216,13 +284,45 @@ public class TestPanel {
         this.y = y;
         this.width = Math.max(1, width);
         this.height = Math.max(1, height);
-        this.contentHeight = Math.max(jsonMode ? JSON_CONTENT_HEIGHT : MIN_CONTENT_HEIGHT, this.height);
+        this.contentHeight = Math.max(jsonMode ? JSON_CONTENT_HEIGHT : formContentHeight(), this.height);
         pageScroll.setTrack(this.x + this.width - 6, this.y + 2, this.y + this.height - 2);
         pageScroll.update(contentHeight, this.height);
         layoutWidgets();
         responseSegments = buildResultSegments(responseText);
         responseLineCount = responseSegments.size();
         clampResponseScroll();
+    }
+
+    private boolean compactLayout() {
+        return !jsonMode && height < 200;
+    }
+
+    private int chainY() {
+        return compactLayout() ? COMPACT_CHAIN_Y : 28;
+    }
+
+    private int promptY() {
+        return compactLayout() ? COMPACT_PROMPT_Y : 52;
+    }
+
+    private int parameterLabelY() {
+        return compactLayout() ? COMPACT_PARAM_INPUT_Y - 9 : PARAMETER_LABEL_Y;
+    }
+
+    private int parameterInputY() {
+        return compactLayout() ? COMPACT_PARAM_INPUT_Y : PARAMETER_INPUT_Y;
+    }
+
+    private int toolbarY() {
+        return compactLayout() ? COMPACT_TOOLBAR_Y : TOOLBAR_Y;
+    }
+
+    private int statusY() {
+        return compactLayout() ? COMPACT_STATUS_Y : STATUS_Y;
+    }
+
+    private int formContentHeight() {
+        return compactLayout() ? COMPACT_MIN_CONTENT_HEIGHT : MIN_CONTENT_HEIGHT;
     }
 
     private int contentY(int relativeY) {
@@ -234,36 +334,36 @@ public class TestPanel {
         place(purposeInput, x + 62, contentY(4), purposeWidth, 18);
         place(routingModeButton, x + 66 + purposeWidth, contentY(4), 70, 18);
         place(visionProbeButton, x + width - 72, contentY(4), 62, 18);
-        place(providerInput, x + 62, contentY(28), Math.max(80, width - 72), 18);
-        place(promptInput, x + 62, contentY(52), Math.max(70, width - 208), 18);
-        place(sendButton, x + width - 140, contentY(52), 64, 18);
-        place(simpleButton, x + width - 72, contentY(52), 62, 18);
+        place(providerInput, x + 62, contentY(chainY()), Math.max(80, width - 72), 18);
+        place(promptInput, x + 62, contentY(promptY()), Math.max(70, width - 208), 18);
+        place(sendButton, x + width - 140, contentY(promptY()), 64, 18);
+        place(simpleButton, x + width - 72, contentY(promptY()), 62, 18);
 
         int parameterCell = Math.max(1, (width - 8) / 5);
         List<EditBox> parameters = List.of(temperatureInput, maxOutputInput, timeoutInput,
                 inputBudgetInput, outputReserveInput);
         for (int index = 0; index < parameters.size(); index++) {
-            place(parameters.get(index), x + 4 + parameterCell * index, contentY(PARAMETER_INPUT_Y),
+            place(parameters.get(index), x + 4 + parameterCell * index, contentY(parameterInputY()),
                     Math.max(34, parameterCell - 4), 18);
         }
 
-        place(prevTemplateBtn, x + 4, contentY(TOOLBAR_Y), 20, 16);
-        place(nextTemplateBtn, x + 26, contentY(TOOLBAR_Y), 20, 16);
-        place(saveTemplateBtn, x + 50, contentY(TOOLBAR_Y), 62, 16);
-        place(copyButton, x + 116, contentY(TOOLBAR_Y), 72, 16);
-        place(saveRouteButton, x + 192, contentY(TOOLBAR_Y), 70, 16);
+        place(prevTemplateBtn, x + 4, contentY(toolbarY()), 20, 16);
+        place(nextTemplateBtn, x + 26, contentY(toolbarY()), 20, 16);
+        place(saveTemplateBtn, x + 50, contentY(toolbarY()), 62, 16);
+        place(copyButton, x + 116, contentY(toolbarY()), 72, 16);
+        place(saveRouteButton, x + 192, contentY(toolbarY()), 70, 16);
         place(jsonModeButton, jsonMode ? x + 4 : x + 266,
-                contentY(jsonMode ? 4 : TOOLBAR_Y), jsonMode ? 62 : 52, jsonMode ? 18 : 16);
+                contentY(jsonMode ? 4 : toolbarY()), jsonMode ? 62 : 52, jsonMode ? 18 : 16);
         place(sendButton, jsonMode ? x + width - 72 : x + width - 140,
-                contentY(jsonMode ? 4 : 52), jsonMode ? 62 : 64, 18);
+                contentY(jsonMode ? 4 : promptY()), jsonMode ? 62 : 64, 18);
         place(requestJsonInput, x + 4, contentY(JSON_EDITOR_Y), Math.max(80, width - 12), jsonEditorHeight());
 
         for (AbstractWidget widget : getWidgets()) {
-            boolean inside = widget.getY() >= y && widget.getY() + widget.getHeight() <= y + height;
+            boolean overlaps = widget.getY() < y + height && widget.getY() + widget.getHeight() > y;
             boolean modeVisible = jsonMode
                     ? widget == jsonModeButton || widget == sendButton || widget == requestJsonInput
                     : widget != requestJsonInput;
-            widget.visible = visible && inside && modeVisible;
+            widget.visible = visible && overlaps && modeVisible;
             if (!widget.visible && widget.isFocused()) widget.setFocused(false);
         }
     }
@@ -422,7 +522,7 @@ public class TestPanel {
                 requestJsonInput.setValue(displayRequestJson(request));
                 jsonMode = true;
             }
-            contentHeight = Math.max(jsonMode ? JSON_CONTENT_HEIGHT : MIN_CONTENT_HEIGHT, height);
+            contentHeight = Math.max(jsonMode ? JSON_CONTENT_HEIGHT : formContentHeight(), height);
             pageScroll.setOffset(0);
             pageScroll.update(contentHeight, height);
             jsonModeButton.setMessage(text(jsonMode ? "test.json.close" : "test.json.open"));
@@ -651,7 +751,7 @@ public class TestPanel {
                     responseScroll - (int) Math.signum(delta) * 3));
             if (responseScroll != before) return true;
         }
-        if (pageScroll.scroll(delta, 24)) {
+        if (pageScroll.scroll(delta, compactLayout() ? 20 : 24)) {
             layoutWidgets();
             return true;
         }
@@ -699,10 +799,10 @@ public class TestPanel {
                     x + 4, contentY(jsonStatusY()), jsonValidationColor, false);
         } else {
             graphics.drawString(font, text("test.purpose"), x + 4, contentY(9), 0xFFFFFF, false);
-            graphics.drawString(font, text("test.chain"), x + 4, contentY(33), 0xFFFFFF, false);
+            graphics.drawString(font, text("test.chain"), x + 4, contentY(chainY() + 5), 0xFFFFFF, false);
             graphics.drawString(font, text(loadedHandoff == null ? "test.prompt" : "test.focus"),
-                    x + 4, contentY(57), 0xFFFFFF, false);
-            int parameterY = contentY(PARAMETER_LABEL_Y);
+                    x + 4, contentY(promptY() + 5), 0xFFFFFF, false);
+            int parameterY = contentY(parameterLabelY());
             int parameterCell = Math.max(1, (width - 8) / 5);
             String[] labels = {"T", "Out", "Sec", "In", "Res"};
             for (int index = 0; index < labels.length; index++) {
@@ -715,7 +815,7 @@ public class TestPanel {
                     ? "" : string("test.message_count", loadedHandoff.messages().size());
             String status = visionResultText != null ? visionResultText : draftPrefix + effective;
             graphics.drawString(font, font.plainSubstrByWidth(status, Math.max(8, width - 18)),
-                    x + 4, contentY(STATUS_Y), visionResultText == null ? 0x77AAFF : visionResultColor, false);
+                    x + 4, contentY(statusY()), visionResultText == null ? 0x77AAFF : visionResultColor, false);
         }
 
         int responseY = contentY(resultTitleY());
@@ -745,14 +845,15 @@ public class TestPanel {
         if (mouseX >= x && mouseX < x + width && mouseY >= responseY && mouseY < responseY + 12) {
             graphics.renderTooltip(font, text("test.result.tip"), mouseX, mouseY);
         } else if (mouseX >= x && mouseX < x + width
-                && !jsonMode && mouseY >= contentY(STATUS_Y) - 3
-                && mouseY < contentY(RESULT_TITLE_Y) - 1) {
+                && !jsonMode && mouseY >= contentY(statusY()) - 3
+                && mouseY < contentY(resultTitleY()) - 1) {
             graphics.renderTooltip(font, text("test.effective.tip"), mouseX, mouseY);
         }
     }
 
     private int resultTitleY() {
-        return jsonMode ? jsonStatusY() + 14 : RESULT_TITLE_Y;
+        return jsonMode ? jsonStatusY() + 14
+                : compactLayout() ? COMPACT_RESULT_TITLE_Y : RESULT_TITLE_Y;
     }
 
     private int resultTextY() {

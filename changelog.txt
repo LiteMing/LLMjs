@@ -1,3 +1,9 @@
+LLM Core 1.4.3 (Hotfix)
+=======================
+ - Fixed the Console Setup tab being unable to receive clicks: the Test tab's hidden Request JSON editor (a MultiLineEditBox) is registered as a screen child, and MultiLineEditBox hit-tests with a pure geometry check that ignores the widget's visible flag. While invisible it swallowed every left click inside its large rect, which covered the URL, model, API key, clear-key, and save controls. All mouse handlers of that editor are now gated on visibility, so hidden panels can no longer steal clicks from the Setup tab (or any other tab).
+ - Fixed the Request JSON editor's click behavior: in 1.20.1, AbstractScrollWidget.mouseClicked returns true for every in-content click without doing anything, which makes MultiLineEditBox's own cursor-seek branch dead code — so clicking never moved the caret (and a stale anchor made click+drag look like selection from the document end). Clicking now replicates the seek, moving the caret to the clicked character, collapsing the selection on plain clicks, and extending it on Shift+click; drag selection remains anchored at the click origin.
+ - Also hardened short-window layouts: Setup and Test tabs now compact their rows when the panel is short, keep partially visible controls clickable, and scroll by whole rows so every field and button stays reachable regardless of window or GUI scale; the Routing tab parameter editor uses the same overlap visibility rule. Normal-size windows are unaffected.
+
 LLMjs 2.5.0 / LLM Core 1.4.2 (Unreleased)
 ========================================
  - Moved LLM Core-owned provider, routing, and capability policy files to config/llmcore and serverconfig/llmcore. A lone legacy llmjs.secret is renamed once to llmcore.secret and is never read as a fallback.

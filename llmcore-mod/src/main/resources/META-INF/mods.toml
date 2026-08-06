@@ -4,7 +4,7 @@ license="MIT"
 
 [[mods]]
 modId="llmcore"
-version="1.4.2"
+version="1.4.3"
 displayName="LLM Core"
 description='''
 Shared LLM runtime and administrator Console for provider setup, routing, tests, and traffic inspection.

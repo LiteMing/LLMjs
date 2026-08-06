@@ -39,7 +39,9 @@ public class SetupPanel {
 
     private static final int LABEL_W = 70;
     private static final int ROW_H = 26;
+    private static final int COMPACT_ROW_H = 20;
     private static final int NORMAL_MIN_CONTENT_HEIGHT = 224;
+    private static final int COMPACT_MIN_CONTENT_HEIGHT = 150;
     private static final int STACKED_MIN_CONTENT_HEIGHT = 320;
 
     public SetupPanel(int x, int y, int width, int height, Font font) {
@@ -105,11 +107,20 @@ public class SetupPanel {
         this.width = Math.max(1, width);
         this.height = Math.max(1, height);
         this.stackedLayout = this.width < 250;
-        int minimum = stackedLayout ? STACKED_MIN_CONTENT_HEIGHT : NORMAL_MIN_CONTENT_HEIGHT;
+        int minimum = stackedLayout ? STACKED_MIN_CONTENT_HEIGHT
+                : compactLayout() ? COMPACT_MIN_CONTENT_HEIGHT : NORMAL_MIN_CONTENT_HEIGHT;
         this.contentHeight = Math.max(minimum, this.height);
         pageScroll.setTrack(this.x + this.width - 6, this.y + 2, this.y + this.height - 2);
         pageScroll.update(contentHeight, this.height);
         layoutWidgets();
+    }
+
+    private boolean compactLayout() {
+        return !stackedLayout && height < 200;
+    }
+
+    private int rowH() {
+        return compactLayout() ? COMPACT_ROW_H : ROW_H;
     }
 
     private int contentY(int relativeY) {
@@ -117,19 +128,25 @@ public class SetupPanel {
     }
 
     private int fieldRelativeY(int index) {
-        return stackedLayout ? 18 + index * 34 : 10 + index * ROW_H;
+        if (stackedLayout) return 18 + index * 34;
+        return (compactLayout() ? 4 : 10) + index * rowH();
     }
 
     private int labelRelativeY(int index) {
-        return stackedLayout ? 8 + index * 34 : 14 + index * ROW_H;
+        if (stackedLayout) return 8 + index * 34;
+        return (compactLayout() ? 2 : 14) + index * rowH();
     }
 
     private int buttonRelativeY() {
-        return stackedLayout ? 184 : 146;
+        if (stackedLayout) return 184;
+        if (compactLayout()) return fieldRelativeY(4) + 18 + 6;
+        return 146;
     }
 
     private int statusRelativeY() {
-        return stackedLayout ? 238 : 176;
+        if (stackedLayout) return 238;
+        if (compactLayout()) return buttonRelativeY() + 24;
+        return 176;
     }
 
     private void layoutWidgets() {
@@ -148,8 +165,8 @@ public class SetupPanel {
                     Math.max(40, Math.min(120, x + width - 8 - (inputX + 108))), 20);
         }
         for (var widget : getWidgets()) {
-            boolean inside = widget.getY() >= y && widget.getY() + widget.getHeight() <= y + height;
-            widget.visible = visible && inside;
+            boolean overlaps = widget.getY() < y + height && widget.getY() + widget.getHeight() > y;
+            widget.visible = visible && overlaps;
             if (!widget.visible && widget.isFocused()) widget.setFocused(false);
         }
     }
@@ -264,7 +281,8 @@ public class SetupPanel {
 
     public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
         if (!visible || mouseX < x || mouseX > x + width || mouseY < y || mouseY > y + height) return false;
-        if (!pageScroll.scroll(delta, 24)) return false;
+        int step = stackedLayout ? 24 : rowH();
+        if (!pageScroll.scroll(delta, step)) return false;
         layoutWidgets();
         return true;
     }
