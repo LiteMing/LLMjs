@@ -25,11 +25,12 @@ import java.util.Set;
  * Schema (JSON):
  * <pre>
  * {
- *   "schemaVersion": 2,
- *   "default": { "providers": ["dialogue_primary", "fallback_stable"] },
+ *   "schemaVersion": 3,
+ *   "default": { "route": "A*3 > (B | C) > A", "deadlineSeconds": 120 },
  *   "purposes": {
  *     "MEMORY_SUMMARY": {
- *       "providers": ["summary_cheap", "dialogue_primary"],
+ *       "route": "summary_cheap > dialogue_primary",
+ *       "deadlineSeconds": 120,
  *       "temperature": 0.2,
  *       "maxOutputTokens": 500,
  *       "timeoutSeconds": 60,
@@ -44,7 +45,7 @@ import java.util.Set;
  */
 public final class RoutingConfigStore {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-    private static final int SCHEMA_VERSION = 2;
+    private static final int SCHEMA_VERSION = 3;
 
     private RoutingConfigStore() {
     }
@@ -73,14 +74,14 @@ public final class RoutingConfigStore {
         JsonObject root = parsed.getAsJsonObject();
         if (root.has("schemaVersion")) {
             int version = readInteger(root, "schemaVersion", 1, SCHEMA_VERSION);
-            if (version != SCHEMA_VERSION) {
+            if (version != 2 && version != SCHEMA_VERSION) {
                 throw new IllegalArgumentException("unsupported routing schemaVersion: " + version);
             }
         }
 
-        List<String> defaultChain = root.has("default")
-                ? readRouteChain(root.get("default"), "default") : List.of();
-        Map<String, List<String>> purposeChains = new LinkedHashMap<>();
+        LlmRoute defaultRoute = root.has("default")
+                ? readRoute(root.get("default"), "default") : LlmRoute.empty();
+        Map<String, LlmRoute> purposeRoutes = new LinkedHashMap<>();
         Map<String, LlmRouteOptions> purposeOptions = new LinkedHashMap<>();
         if (root.has("purposes")) {
             if (!root.get("purposes").isJsonObject()) {
@@ -90,15 +91,15 @@ public final class RoutingConfigStore {
                 String purpose = entry.getKey() == null ? "" : entry.getKey().trim();
                 if (purpose.isEmpty()) throw new IllegalArgumentException("purpose id must not be blank");
                 JsonElement value = entry.getValue();
-                List<String> chain = readRouteChain(value, "purposes." + purpose);
-                if (!chain.isEmpty()) purposeChains.put(purpose, chain);
+                LlmRoute route = readRoute(value, "purposes." + purpose);
+                if (!route.isUnset()) purposeRoutes.put(purpose, route);
                 if (value.isJsonObject()) {
                     LlmRouteOptions options = readOptions(value.getAsJsonObject(), "purposes." + purpose);
                     if (!options.isEmpty()) purposeOptions.put(purpose, options);
                 }
             }
         }
-        return new PriorityRoutingConfig(purposeChains, defaultChain, purposeOptions);
+        return new PriorityRoutingConfig(defaultRoute, purposeRoutes, purposeOptions);
     }
 
     public static synchronized boolean save(Path routingFile, PriorityRoutingConfig config) {
@@ -138,15 +139,12 @@ public final class RoutingConfigStore {
         PriorityRoutingConfig cfg = config == null ? PriorityRoutingConfig.empty() : config;
         JsonObject root = new JsonObject();
         root.addProperty("schemaVersion", SCHEMA_VERSION);
-        JsonObject defaultRoute = new JsonObject();
-        defaultRoute.add("providers", toArray(cfg.defaultChain()));
-        root.add("default", defaultRoute);
+        root.add("default", routeJson(cfg.defaultRoute()));
         JsonObject purposes = new JsonObject();
-        Set<String> purposeIds = new LinkedHashSet<>(cfg.purposeChains().keySet());
+        Set<String> purposeIds = new LinkedHashSet<>(cfg.purposeRoutes().keySet());
         purposeIds.addAll(cfg.purposeOptions().keySet());
         for (String purpose : purposeIds) {
-            JsonObject route = new JsonObject();
-            route.add("providers", toArray(cfg.purposeChains().getOrDefault(purpose, List.of())));
+            JsonObject route = routeJson(cfg.purposeRoutes().getOrDefault(purpose, LlmRoute.empty()));
             writeOptions(route, cfg.purposeOptions().get(purpose));
             purposes.add(purpose, route);
         }
@@ -154,16 +152,33 @@ public final class RoutingConfigStore {
         return root;
     }
 
-    private static List<String> readRouteChain(JsonElement route, String path) {
-        if (route == null || route.isJsonNull()) return List.of();
-        if (route.isJsonArray()) return readStrings(route.getAsJsonArray(), path);
+    private static JsonObject routeJson(LlmRoute route) {
+        JsonObject object = new JsonObject();
+        object.addProperty("route", route.expression());
+        if (route.deadlineOverrideSeconds() != null) object.addProperty("deadlineSeconds", route.deadlineOverrideSeconds());
+        return object;
+    }
+
+    private static LlmRoute readRoute(JsonElement route, String path) {
+        if (route == null || route.isJsonNull()) return LlmRoute.empty();
+        if (route.isJsonArray()) return LlmRoute.sequential(readStrings(route.getAsJsonArray(), path));
         if (route.isJsonObject()) {
             JsonObject object = route.getAsJsonObject();
-            if (!object.has("providers")) return List.of();
-            if (!object.get("providers").isJsonArray()) {
-                throw new IllegalArgumentException(path + ".providers must be an array");
-            }
-            return readStrings(object.getAsJsonArray("providers"), path + ".providers");
+            LlmRoute parsed;
+            if (object.has("route")) {
+                if (object.has("providers")) throw new IllegalArgumentException(path + " cannot contain both route and providers");
+                JsonElement expression = object.get("route");
+                if (!expression.isJsonPrimitive() || !expression.getAsJsonPrimitive().isString()) {
+                    throw new IllegalArgumentException(path + ".route must be a string");
+                }
+                parsed = LlmRoute.parse(expression.getAsString());
+            } else if (object.has("providers")) {
+                if (!object.get("providers").isJsonArray()) {
+                    throw new IllegalArgumentException(path + ".providers must be an array");
+                }
+                parsed = LlmRoute.sequential(readStrings(object.getAsJsonArray("providers"), path + ".providers"));
+            } else parsed = LlmRoute.empty();
+            return parsed.withDeadline(readNullableInteger(object, "deadlineSeconds", path));
         }
         throw new IllegalArgumentException(path + " must be an array or object");
     }
@@ -251,9 +266,4 @@ public final class RoutingConfigStore {
         return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
     }
 
-    private static JsonArray toArray(List<String> list) {
-        JsonArray arr = new JsonArray();
-        if (list != null) for (String s : list) arr.add(s);
-        return arr;
-    }
 }

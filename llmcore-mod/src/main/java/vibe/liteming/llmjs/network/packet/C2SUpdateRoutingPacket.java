@@ -23,7 +23,7 @@ import java.util.function.Supplier;
  * before either is applied, then persisted to their respective files and pushed
  * into the running {@link vibe.liteming.llmcore.LlmOrchestrator}.
  *
- * <p>Wire format for protocol 7: routing JSON, a capability-policy-present flag,
+ * <p>Wire format for protocol 8: schema-3 routing JSON, a capability-policy-present flag,
  * then capability-policy JSON when present. The one-argument constructor leaves
  * the current capability policy unchanged.</p>
  */

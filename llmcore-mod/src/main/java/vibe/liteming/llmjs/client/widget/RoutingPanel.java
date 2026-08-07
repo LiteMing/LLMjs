@@ -1,12 +1,14 @@
 package vibe.liteming.llmjs.client.widget;
 
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import vibe.liteming.llmcore.CapabilityPolicyStore;
 import vibe.liteming.llmcore.LlmCapabilityPolicy;
 import vibe.liteming.llmcore.LlmRouteOptions;
+import vibe.liteming.llmcore.LlmRoute;
+import vibe.liteming.llmcore.PriorityRoutingConfig;
+import vibe.liteming.llmcore.RoutingConfigStore;
 import vibe.liteming.llmjs.network.LLMNetwork;
 import vibe.liteming.llmjs.network.packet.C2SStatusRequestPacket;
 import vibe.liteming.llmjs.network.packet.C2SUpdateRoutingPacket;
@@ -33,11 +35,11 @@ import static vibe.liteming.llmjs.client.ConsoleTexts.tooltip;
 /**
  * Routing tab widget for the /llm console. Renders one row per registered purpose
  * (from {@link vibe.liteming.llmcore.PurposeRegistry}) plus a "default" row. Each row
- * shows the current provider chain; clicking a row opens an inline provider and
- * inherited-parameter editor.
+ * shows the current route; clicking a row opens an inline stage, retry, race,
+ * deadline and inherited-parameter editor.
  *
  * <p>Each purpose has a responsive, multi-row pool of available providers; the
- * active chain remains in priority order. Blank parameter fields inherit. Save
+ * active stages remain in execution order. Blank parameter fields inherit. Save
  * broadcasts a C2SUpdateRoutingPacket; Reset reloads the server snapshot.</p>
  */
 @OnlyIn(Dist.CLIENT)
@@ -50,6 +52,11 @@ public class RoutingPanel extends AbstractWidget {
     private record ProviderEditorLayout(ProviderGrid activeGrid, int activeY,
                                         ProviderGrid availableGrid, int availableY, int bottomY) {}
     private record RowColumns(int purposeWidth, int chainX, int chainWidth, int editX) {}
+    private record RouteButton(int x, int y, int width) {
+        boolean contains(double mouseX, double mouseY) {
+            return mouseX >= x && mouseX < x + width && mouseY >= y && mouseY < y + 18;
+        }
+    }
 
     private static final int ROW_HEIGHT = 18;
     private static final int HEADER_Y_OFFSET = 6;
@@ -67,12 +74,13 @@ public class RoutingPanel extends AbstractWidget {
     private final ConsoleScrollBar pageScroll = new ConsoleScrollBar();
     private List<PurposeRow> purposes = new ArrayList<>();
     private List<String> providerNames = new ArrayList<>();
-    /** edited chains: key = purpose id (or "$default"), value = ordered provider names */
-    private Map<String, List<String>> edited = new LinkedHashMap<>();
-    private List<String> editedDefault = new ArrayList<>();
+    private Map<String, LlmRoute> edited = new LinkedHashMap<>();
+    private LlmRoute editedDefault = LlmRoute.empty();
     private Map<String, LlmRouteOptions> editedOptions = new LinkedHashMap<>();
     private Set<String> webSearchPurposes = new LinkedHashSet<>();
     private Map<String, EffectiveValues> effectiveValues = new LinkedHashMap<>();
+    private final EditBox routeInput;
+    private final EditBox deadlineInput;
     private final EditBox temperatureInput;
     private final EditBox maxOutputInput;
     private final EditBox timeoutInput;
@@ -82,16 +90,30 @@ public class RoutingPanel extends AbstractWidget {
     private String parameterError = "";
     /** row index currently being edited (-1 = none). Header row 0 = default; subsequent = purposes. */
     private int editingRow = -1;
+    /** Last candidate gesture; changing buttons starts a new stage. */
+    private int lastCandidateButton = -1;
+    private boolean advancedRouteOpen;
+    private boolean loadingInputs;
     private boolean dirty = false;
 
     public RoutingPanel(int x, int y, int width, int height, Font font, String statusJson) {
         super(x, y, width, height, text("tab.routing"));
         this.font = font;
+        this.routeInput = tooltip(new EditBox(font, 0, 0, 100, 18, text("routing.route")), "routing.route.tip");
+        routeInput.setMaxLength(8192);
+        routeInput.setHint(Component.literal("A*3 > (B | C) > A"));
+        routeInput.visible = false;
+        this.deadlineInput = parameterInput(font, "routing.deadline", "routing.deadline.tip");
+        deadlineInput.setMaxLength(4);
         this.temperatureInput = parameterInput(font, "parameter.temperature", "parameter.temperature.tip");
         this.maxOutputInput = parameterInput(font, "parameter.max_output", "parameter.max_output.tip");
         this.timeoutInput = parameterInput(font, "parameter.timeout", "parameter.timeout.tip");
         this.inputBudgetInput = parameterInput(font, "parameter.input_budget", "parameter.input_budget.tip");
         this.outputReserveInput = parameterInput(font, "parameter.output_reserve", "parameter.output_reserve.tip");
+        for (EditBox input : List.of(routeInput, deadlineInput, temperatureInput,
+                maxOutputInput, timeoutInput, inputBudgetInput, outputReserveInput)) {
+            input.setResponder(value -> { if (!loadingInputs) dirty = true; });
+        }
         updateStatus(statusJson);
         updateScrollGeometry();
     }
@@ -107,8 +129,8 @@ public class RoutingPanel extends AbstractWidget {
     public void updateStatus(String statusJson) {
         List<PurposeRow> newPurposes = new ArrayList<>();
         List<String> newProviders = new ArrayList<>();
-        Map<String, List<String>> serverChains = new LinkedHashMap<>();
-        List<String> serverDefault = new ArrayList<>();
+        Map<String, LlmRoute> serverRoutes = new LinkedHashMap<>();
+        LlmRoute serverDefault = LlmRoute.empty();
         Map<String, LlmRouteOptions> serverOptions = new LinkedHashMap<>();
         Set<String> serverWebSearchPurposes = new LinkedHashSet<>();
         Map<String, EffectiveValues> serverEffective = new LinkedHashMap<>();
@@ -138,21 +160,10 @@ public class RoutingPanel extends AbstractWidget {
                 }
             }
             if (root.has("routing") && root.get("routing").isJsonObject()) {
-                JsonObject r = root.getAsJsonObject("routing");
-                if (r.has("default")) {
-                    serverDefault.addAll(readRouteChain(r.get("default")));
-                }
-                if (r.has("purposes") && r.get("purposes").isJsonObject()) {
-                    JsonObject obj = r.getAsJsonObject("purposes");
-                    for (var entry : obj.entrySet()) {
-                        List<String> chain = readRouteChain(entry.getValue());
-                        if (!chain.isEmpty()) serverChains.put(entry.getKey(), chain);
-                        if (entry.getValue().isJsonObject()) {
-                            LlmRouteOptions options = readOptions(entry.getValue().getAsJsonObject());
-                            if (!options.isEmpty()) serverOptions.put(entry.getKey(), options);
-                        }
-                    }
-                }
+                PriorityRoutingConfig snapshot = RoutingConfigStore.parse(root.getAsJsonObject("routing").toString());
+                serverDefault = snapshot.defaultRoute();
+                serverRoutes.putAll(snapshot.purposeRoutes());
+                serverOptions.putAll(snapshot.purposeOptions());
             }
             if (root.has("capabilityPolicy") && root.get("capabilityPolicy").isJsonObject()) {
                 LlmCapabilityPolicy policy = CapabilityPolicyStore.parse(
@@ -163,35 +174,20 @@ public class RoutingPanel extends AbstractWidget {
         this.purposes = newPurposes;
         this.providerNames = newProviders;
         // Always reset local edits to the freshly-arrived server snapshot.
-        this.edited = new LinkedHashMap<>(serverChains);
-        this.editedDefault = new ArrayList<>(serverDefault);
+        this.edited = new LinkedHashMap<>(serverRoutes);
+        this.editedDefault = serverDefault;
         this.editedOptions = new LinkedHashMap<>(serverOptions);
         this.webSearchPurposes = new LinkedHashSet<>(serverWebSearchPurposes);
         this.effectiveValues = new LinkedHashMap<>(serverEffective);
         this.editingRow = -1;
+        this.lastCandidateButton = -1;
+        this.advancedRouteOpen = false;
         this.dirty = false;
         this.parameterError = "";
         setParameterInputsVisible(false);
+        routeInput.visible = false;
+        deadlineInput.visible = false;
         updateScrollGeometry();
-    }
-
-    private static List<String> readRouteChain(JsonElement route) {
-        JsonArray providers = null;
-        if (route != null && route.isJsonArray()) providers = route.getAsJsonArray();
-        else if (route != null && route.isJsonObject() && route.getAsJsonObject().has("providers")
-                && route.getAsJsonObject().get("providers").isJsonArray()) {
-            providers = route.getAsJsonObject().getAsJsonArray("providers");
-        }
-        if (providers == null) return List.of();
-        List<String> chain = new ArrayList<>();
-        for (JsonElement element : providers) chain.add(element.getAsString());
-        return chain;
-    }
-
-    private static LlmRouteOptions readOptions(JsonObject route) {
-        return new LlmRouteOptions(nullableDouble(route, "temperature"),
-                nullableInt(route, "maxOutputTokens"), nullableInt(route, "timeoutSeconds"),
-                nullableInt(route, "inputBudgetTokens"), nullableInt(route, "outputReserveTokens"));
     }
 
     private static EffectiveValues readEffective(JsonObject json) {
@@ -206,30 +202,36 @@ public class RoutingPanel extends AbstractWidget {
                 json.has("webSearchAllowed") && json.get("webSearchAllowed").getAsBoolean());
     }
 
-    private static Double nullableDouble(JsonObject json, String key) {
-        return json.has(key) && !json.get(key).isJsonNull() ? json.get(key).getAsDouble() : null;
-    }
-
-    private static Integer nullableInt(JsonObject json, String key) {
-        return json.has(key) && !json.get(key).isJsonNull() ? json.get(key).getAsInt() : null;
-    }
-
     private static String textValue(JsonObject json, String key, String fallback) {
         return json.has(key) && !json.get(key).isJsonNull() ? json.get(key).getAsString() : fallback;
     }
 
     public boolean isDirty() { return dirty; }
 
-    private List<String> getRowChain(int row) {
+    private LlmRoute getRowRoute(int row) {
         if (row == 0) return editedDefault;
-        if (row >= 1 && row <= purposes.size()) return edited.get(purposes.get(row - 1).id());
-        return null;
+        if (row >= 1 && row <= purposes.size()) return edited.getOrDefault(purposes.get(row - 1).id(), LlmRoute.empty());
+        return LlmRoute.empty();
     }
 
-    private void setRowChain(int row, List<String> chain) {
-        if (row == 0) editedDefault = new ArrayList<>(chain);
-        else if (row >= 1 && row <= purposes.size()) edited.put(purposes.get(row - 1).id(), new ArrayList<>(chain));
+    private List<String> getRowChain(int row) { return getRowRoute(row).providers(); }
+
+    private void setRowRoute(int row, LlmRoute route) {
+        if (row == 0) editedDefault = route;
+        else if (row >= 1 && row <= purposes.size()) {
+            String purpose = purposes.get(row - 1).id();
+            if (route.isUnset()) edited.remove(purpose);
+            else edited.put(purpose, route);
+        }
         dirty = true;
+    }
+
+    private void loadRouteFields() {
+        LlmRoute route = getRowRoute(editingRow);
+        setInputValue(routeInput, route.expression());
+        setInputValue(deadlineInput, number(route.deadlineOverrideSeconds()));
+        deadlineInput.setHint(Component.literal(Integer.toString(editingRow == 0
+                ? LlmRoute.DEFAULT_DEADLINE_SECONDS : editedDefault.deadlineSeconds())));
     }
 
     private LlmRouteOptions getRowOptions(int row) {
@@ -240,10 +242,14 @@ public class RoutingPanel extends AbstractWidget {
     private void openEditor(int row) {
         if (!commitParameterFields()) return;
         editingRow = editingRow == row ? -1 : row;
+        lastCandidateButton = -1;
+        advancedRouteOpen = false;
         parameterError = "";
         boolean parameterRow = editingRow > 0;
         setParameterInputsVisible(parameterRow);
         if (parameterRow) loadParameterFields(getRowOptions(editingRow));
+        if (editingRow >= 0) loadRouteFields();
+        else { routeInput.visible = false; deadlineInput.visible = false; }
         updateScrollGeometry();
         ensureEditorVisible();
     }
@@ -258,11 +264,17 @@ public class RoutingPanel extends AbstractWidget {
     }
 
     private void loadParameterFields(LlmRouteOptions options) {
-        temperatureInput.setValue(number(options.temperature()));
-        maxOutputInput.setValue(number(options.maxOutputTokens()));
-        timeoutInput.setValue(number(options.timeoutSeconds()));
-        inputBudgetInput.setValue(number(options.inputBudgetTokens()));
-        outputReserveInput.setValue(number(options.outputReserveTokens()));
+        setInputValue(temperatureInput, number(options.temperature()));
+        setInputValue(maxOutputInput, number(options.maxOutputTokens()));
+        setInputValue(timeoutInput, number(options.timeoutSeconds()));
+        setInputValue(inputBudgetInput, number(options.inputBudgetTokens()));
+        setInputValue(outputReserveInput, number(options.outputReserveTokens()));
+    }
+
+    private void setInputValue(EditBox input, String value) {
+        loadingInputs = true;
+        try { input.setValue(value); }
+        finally { loadingInputs = false; }
     }
 
     private static String number(Number value) {
@@ -280,9 +292,22 @@ public class RoutingPanel extends AbstractWidget {
         return List.of(temperatureInput, maxOutputInput, timeoutInput, inputBudgetInput, outputReserveInput);
     }
 
+    private List<EditBox> editorInputs() {
+        List<EditBox> inputs = new ArrayList<>(List.of(routeInput, deadlineInput));
+        if (editingRow > 0) inputs.addAll(parameterInputs());
+        return inputs;
+    }
+
     private boolean commitParameterFields() {
-        if (editingRow <= 0 || editingRow > purposes.size()) return true;
+        if (editingRow < 0 || editingRow > purposes.size()) return true;
         try {
+            Integer deadline = parseInteger(deadlineInput.getValue(), string("routing.deadline"));
+            LlmRoute route = (advancedRouteOpen ? LlmRoute.parse(routeInput.getValue())
+                    : getRowRoute(editingRow)).withDeadline(deadline);
+            if (!route.equals(getRowRoute(editingRow))) setRowRoute(editingRow, route);
+            if (!advancedRouteOpen) setInputValue(routeInput, route.expression());
+            if (editingRow == 0) { parameterError = ""; return true; }
+
             LlmRouteOptions options = new LlmRouteOptions(
                     parseDouble(temperatureInput.getValue(), string("parameter.temperature")),
                     parseInteger(maxOutputInput.getValue(), string("parameter.max_output")),
@@ -341,12 +366,20 @@ public class RoutingPanel extends AbstractWidget {
     public void setPanelVisible(boolean visible) {
         this.visible = visible;
         setParameterInputsVisible(visible && editingRow > 0);
+        routeInput.visible = visible && editingRow >= 0 && advancedRouteOpen;
+        deadlineInput.visible = visible && editingRow >= 0;
+        if (!visible) {
+            lastCandidateButton = -1;
+            routeInput.setFocused(false);
+            deadlineInput.setFocused(false);
+        }
         if (visible) updateScrollGeometry();
     }
 
     private void updateScrollGeometry() {
         pageScroll.setTrack(getX() + width - 7, getY() + 2, getY() + height - 2);
         pageScroll.update(contentHeight(), height);
+        if (editingRow >= 0) updateRouteGeometry();
         if (editingRow > 0) updateParameterGeometry(editorDetailsY());
     }
 
@@ -384,12 +417,15 @@ public class RoutingPanel extends AbstractWidget {
 
     private int editorHeight() {
         if (editingRow < 0) return 0;
-        ProviderEditorLayout layout = providerEditorLayout(0);
-        return layout.bottomY() + (editingRow > 0 ? 92 : 8);
+        return editorDetailsY() - editorScreenY() + (editingRow > 0 ? 88 : 4);
     }
 
     private int editorDetailsY() {
-        return providerEditorLayout(editorScreenY()).bottomY() + 4;
+        return routeSettingsY() + (advancedRouteOpen ? 78 : 42);
+    }
+
+    private int routeSettingsY() {
+        return providerEditorLayout(editorScreenY()).bottomY() + 18;
     }
 
     private int rowAt(double mouseX, double mouseY) {
@@ -444,10 +480,8 @@ public class RoutingPanel extends AbstractWidget {
             }
             graphics.drawString(font, ellipsize(getRowLabel(row), columns.purposeWidth()),
                     getX() + 8, rowY + 2, 0xFFFFFF, false);
-            List<String> chain = getRowChain(row);
-            String chainText = chain == null || chain.isEmpty()
-                    ? string("routing.chain_all") : chain.stream().map(this::providerLabel)
-                    .collect(java.util.stream.Collectors.joining("  >  "));
+            LlmRoute route = getRowRoute(row);
+            String chainText = chainDetails(route);
             graphics.drawString(font, ellipsize(chainText, columns.chainWidth()),
                     columns.chainX(), rowY + 2, 0xCCCCCC, false);
             if (row > 0 && width >= 650) {
@@ -479,9 +513,23 @@ public class RoutingPanel extends AbstractWidget {
                                       int hoveredRow, int headerY, int footerY, RowColumns columns) {
         if (mouseX < getX() || mouseX >= getX() + width
                 || mouseY < getY() || mouseY >= getY() + height) return;
-        String hoveredProvider = providerAtEditorPosition(mouseX, mouseY);
+        if (editingRow >= 0) {
+            if (advancedRouteButton().contains(mouseX, mouseY)) {
+                graphics.renderTooltip(font, text("routing.advanced.tip"), mouseX, mouseY);
+                return;
+            }
+            if (deadlineInput.visible && deadlineInput.isMouseOver(mouseX, mouseY)) {
+                graphics.renderTooltip(font, text("routing.deadline.tip"), mouseX, mouseY);
+                return;
+            }
+            if (routeInput.visible && routeInput.isMouseOver(mouseX, mouseY)) {
+                graphics.renderTooltip(font, text("routing.route.tip"), mouseX, mouseY);
+                return;
+            }
+        }
+        Component hoveredProvider = providerAtEditorPosition(mouseX, mouseY);
         if (hoveredProvider != null) {
-            graphics.renderTooltip(font, Component.literal(hoveredProvider), mouseX, mouseY);
+            graphics.renderTooltip(font, hoveredProvider, mouseX, mouseY);
             return;
         }
         if (editingRow > 0) {
@@ -506,6 +554,10 @@ public class RoutingPanel extends AbstractWidget {
         }
         if (editingRow >= 0) {
             ProviderEditorLayout layout = providerEditorLayout(editorScreenY());
+            if (mouseY >= layout.bottomY() + 2 && mouseY < routeSettingsY()) {
+                graphics.renderTooltip(font, text("routing.gestures.tip"), mouseX, mouseY);
+                return;
+            }
             if (mouseY >= editorScreenY() + 12 && mouseY < layout.bottomY()) {
                 boolean activeArea = !usesStackedProviderLayout(width)
                         ? mouseX < getX() + width / 2
@@ -528,7 +580,7 @@ public class RoutingPanel extends AbstractWidget {
         }
         if (hoveredRow >= 0) {
             if (mouseX >= columns.chainX() && mouseX < columns.editX()) {
-                graphics.renderTooltip(font, text("routing.chain.detail", chainDetails(getRowChain(hoveredRow))),
+                graphics.renderTooltip(font, text("routing.chain.detail", chainDetails(getRowRoute(hoveredRow))),
                         mouseX, mouseY);
             } else if (hoveredRow == 0) {
                 graphics.renderTooltip(font, text("routing.default.tip"), mouseX, mouseY);
@@ -574,25 +626,37 @@ public class RoutingPanel extends AbstractWidget {
             int slotY = providerLayout.activeY() + (i / activeGrid.columns()) * PROVIDER_ROW_STEP;
             graphics.fill(slotX, slotY - 1, slotX + activeGrid.slotWidth(),
                     slotY - 1 + PROVIDER_SLOT_HEIGHT, 0xFF333355);
-            String label = (i == 0 ? "[1] " : "[fb] ") + providerLabel(chain.get(i));
-            graphics.drawString(font, ellipsize(label, activeGrid.slotWidth() - 6),
-                    slotX + 2, slotY + 1, 0xFFFFFF, false);
+            String label = targetLabel(i, activeGrid.slotWidth() - 6);
+            graphics.drawString(font, label,
+                    slotX + 2, slotY + 1, advancedRouteOpen ? 0x777777 : 0xFFFFFF, false);
         }
         ProviderGrid availableGrid = providerLayout.availableGrid();
         for (int index = 0; index < providerNames.size(); index++) {
             String name = providerNames.get(index);
             int colX = availableGrid.startX() + (index % availableGrid.columns()) * availableGrid.columnStep();
             int slotY = providerLayout.availableY() + (index / availableGrid.columns()) * PROVIDER_ROW_STEP;
-            boolean inChain = chain.contains(name);
-            int color = inChain ? 0x666666 : 0x55FF55;
             graphics.fill(colX, slotY - 1, colX + availableGrid.slotWidth(),
-                    slotY - 1 + PROVIDER_SLOT_HEIGHT, inChain ? 0xFF222222 : 0xFF223333);
-            graphics.drawString(font, ellipsize((inChain ? "[x] " : "[+] ") + providerLabel(name),
-                    availableGrid.slotWidth() - 6), colX + 2, slotY + 1, color, false);
+                    slotY - 1 + PROVIDER_SLOT_HEIGHT, 0xFF223333);
+            graphics.drawString(font, ellipsize("[+] " + providerLabel(name),
+                    availableGrid.slotWidth() - 6), colX + 2, slotY + 1, advancedRouteOpen ? 0x777777 : 0x55FF55, false);
         }
 
+        updateRouteGeometry();
+        graphics.drawString(font, ellipsize(string("routing.gestures"), width - 20),
+                getX() + 8, providerLayout.bottomY() + 4, 0xAAAAAA, false);
+        renderAdvancedRouteButton(graphics, mouseX, mouseY);
+        int routeY = routeSettingsY();
+        graphics.drawString(font, text("routing.deadline"), deadlineInput.getX(), routeY, 0xAAAAAA, false);
+        if (deadlineInput.visible) deadlineInput.render(graphics, mouseX, mouseY, partialTick);
+        if (advancedRouteOpen) {
+            graphics.drawString(font, text("routing.route"), routeInput.getX(), routeY + 34, 0xAAAAAA, false);
+            if (routeInput.visible) routeInput.render(graphics, mouseX, mouseY, partialTick);
+        }
+        if (!parameterError.isBlank()) graphics.drawString(font, ellipsize(parameterError, width - 20),
+                getX() + 8, editorDetailsY() - 10, 0xFF5555, false);
+
         if (editingRow > 0) {
-            int detailsY = providerLayout.bottomY() + 4;
+            int detailsY = editorDetailsY();
             String purpose = purposes.get(editingRow - 1).id();
             EffectiveValues effective = effectiveValues.get(purpose);
             boolean webSearchAllowed = webSearchPurposes.contains(purpose);
@@ -645,6 +709,71 @@ public class RoutingPanel extends AbstractWidget {
         graphics.drawString(font, label, checkboxX + 18, detailsY + 7, 0xFFFFFF, false);
         graphics.drawString(font, state, stateX, detailsY + 7,
                 allowed ? 0xFF77EEAA : 0xFFBBBBBB, false);
+    }
+
+    private void updateRouteGeometry() {
+        int fieldY = routeSettingsY() + 12;
+        routeInput.setX(getX() + 8);
+        routeInput.setY(fieldY + 34);
+        routeInput.setWidth(Math.max(30, width - 24));
+        deadlineInput.setX(getX() + width - 88);
+        deadlineInput.setY(fieldY);
+        deadlineInput.setWidth(72);
+        for (EditBox input : List.of(routeInput, deadlineInput)) {
+            boolean expanded = input != routeInput || advancedRouteOpen;
+            input.visible = visible && editingRow >= 0 && expanded
+                    && input.getY() < getY() + height && input.getY() + input.getHeight() > getY();
+            if (!input.visible) input.setFocused(false);
+        }
+    }
+
+    private RouteButton advancedRouteButton() {
+        return new RouteButton(getX() + 8, routeSettingsY() + 12, Math.max(36, Math.min(160, width - 108)));
+    }
+
+    private void renderAdvancedRouteButton(GuiGraphics graphics, int mouseX, int mouseY) {
+        RouteButton button = advancedRouteButton();
+        boolean hovered = button.contains(mouseX, mouseY);
+        graphics.fill(button.x(), button.y(), button.x() + button.width(), button.y() + 18,
+                hovered ? 0xFF444444 : 0xFF303030);
+        String label = string(advancedRouteOpen ? "routing.advanced.done" : "routing.advanced");
+        graphics.drawCenteredString(font, ellipsize(label, button.width() - 6),
+                button.x() + button.width() / 2, button.y() + 5, 0x88CCFF);
+    }
+
+    private boolean handleAdvancedRouteButton(double mouseX, double mouseY) {
+        if (advancedRouteButton().contains(mouseX, mouseY)) {
+            if (!commitParameterFields()) return true;
+            advancedRouteOpen = !advancedRouteOpen;
+            lastCandidateButton = -1;
+            editorInputs().forEach(input -> input.setFocused(false));
+            loadRouteFields();
+            updateScrollGeometry();
+            routeInput.setFocused(advancedRouteOpen && routeInput.visible);
+            return true;
+        }
+        return false;
+    }
+
+    private String targetLabel(int flatIndex) {
+        return targetLabel(flatIndex, Integer.MAX_VALUE);
+    }
+
+    private String targetLabel(int flatIndex, int maxWidth) {
+        int index = 0;
+        LlmRoute route = getRowRoute(editingRow);
+        for (int stage = 0; stage < route.stages().size(); stage++) {
+            LlmRoute.Stage step = route.stages().get(stage);
+            for (LlmRoute.Target target : step.candidates()) {
+                if (index++ == flatIndex) {
+                    String prefix = "[" + (stage + 1) + (step.racing() ? "|" : "") + "] ";
+                    String suffix = target.retries() == null ? "" : "*" + target.retries();
+                    return ellipsize(prefix + ellipsize(target.provider(), maxWidth - font.width(prefix + suffix))
+                            + suffix, maxWidth);
+                }
+            }
+        }
+        return "";
     }
 
     private void updateParameterGeometry(int detailsY) {
@@ -720,10 +849,8 @@ public class RoutingPanel extends AbstractWidget {
         return providerName == null || providerName.isBlank() ? string("common.none") : providerName;
     }
 
-    private String chainDetails(List<String> chain) {
-        if (chain == null || chain.isEmpty()) return string("routing.chain_all");
-        return chain.stream().map(this::providerLabel)
-                .collect(java.util.stream.Collectors.joining("  >  "));
+    private String chainDetails(LlmRoute route) {
+        return route.isEmpty() ? string("routing.chain_all") : route.expression();
     }
 
     private String ellipsize(String value, int maxWidth) {
@@ -734,17 +861,21 @@ public class RoutingPanel extends AbstractWidget {
         return font.plainSubstrByWidth(value, prefixWidth) + suffix;
     }
 
-    private String providerAtEditorPosition(double mouseX, double mouseY) {
+    private Component providerAtEditorPosition(double mouseX, double mouseY) {
         if (editingRow < 0) return null;
         List<String> chain = getRowChain(editingRow);
         if (chain == null) chain = List.of();
         ProviderEditorLayout layout = providerEditorLayout(editorScreenY());
         int activeIndex = providerIndexAt(mouseX, mouseY, layout.activeGrid(), layout.activeY(), chain.size());
-        if (activeIndex >= 0) return chain.get(activeIndex);
+        if (activeIndex >= 0) {
+            if (advancedRouteOpen) return text("routing.advanced.tip");
+            return text("routing.target.remove.tip", targetLabel(activeIndex));
+        }
 
         int availableIndex = providerIndexAt(mouseX, mouseY, layout.availableGrid(),
                 layout.availableY(), providerNames.size());
-        if (availableIndex >= 0) return providerNames.get(availableIndex);
+        if (availableIndex >= 0) return text(advancedRouteOpen ? "routing.advanced.tip" : "routing.target.add.tip",
+                providerNames.get(availableIndex));
         return null;
     }
 
@@ -774,29 +905,39 @@ public class RoutingPanel extends AbstractWidget {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
-        if (!visible || !isMouseOver(mouseX, mouseY)) return false;
+        if (!visible || !isMouseOver(mouseX, mouseY) || (button != 0 && button != 1)) return false;
         updateScrollGeometry();
+        // Right-click belongs only to available candidates, never removal or footer actions.
+        if (button == 1) {
+            return editingRow >= 0 && mouseY >= editorScreenY()
+                    && mouseY < editorScreenY() + editorHeight()
+                    && handleEditorClick(mouseX, mouseY, button);
+        }
         if (pageScroll.mouseClicked(mouseX, mouseY, button)) return true;
         int footerY = screenY(footerContentY());
         // Footer actions
         if (mouseY >= footerY && mouseY < footerY + 12) {
+            lastCandidateButton = -1;
             if (inLabel(mouseX, 8, 44)) { save(); return true; }
             if (inLabel(mouseX, 60, 96)) { LLMNetwork.CHANNEL.sendToServer(new C2SStatusRequestPacket()); return true; }
             if (inLabel(mouseX, 110, 168)) { LLMNetwork.CHANNEL.sendToServer(new C2SStatusRequestPacket()); return true; }
         }
-        if (editingRow > 0) {
-            updateParameterGeometry(editorDetailsY());
+        if (editingRow >= 0) {
+            updateRouteGeometry();
+            if (editingRow > 0) updateParameterGeometry(editorDetailsY());
+            if (handleAdvancedRouteButton(mouseX, mouseY)) return true;
             boolean handled = false;
-            for (EditBox input : parameterInputs()) {
+            for (EditBox input : editorInputs()) {
                 boolean clicked = input.visible && input.mouseClicked(mouseX, mouseY, button);
                 input.setFocused(clicked);
                 handled |= clicked;
             }
-            if (handled) return true;
+            if (handled) { lastCandidateButton = -1; return true; }
             int detailsY = editorDetailsY();
-            if (isWebSearchToggleAt(mouseX, mouseY, detailsY)) {
+            if (editingRow > 0 && isWebSearchToggleAt(mouseX, mouseY, detailsY)) {
                 String purpose = purposes.get(editingRow - 1).id();
                 if (!webSearchPurposes.add(purpose)) webSearchPurposes.remove(purpose);
+                lastCandidateButton = -1;
                 dirty = true;
                 return true;
             }
@@ -804,7 +945,7 @@ public class RoutingPanel extends AbstractWidget {
         // Inline editor hit-testing
         if (editingRow >= 0 && mouseY >= editorScreenY()
                 && mouseY < editorScreenY() + editorHeight()) {
-            return handleEditorClick(mouseX, mouseY);
+            return handleEditorClick(mouseX, mouseY, button);
         }
         // Row click -> open/close editor (the Edit button area or anywhere in the row)
         int row = rowAt(mouseX, mouseY);
@@ -821,8 +962,8 @@ public class RoutingPanel extends AbstractWidget {
             updateScrollGeometry();
             return true;
         }
-        if (editingRow > 0) {
-            for (EditBox input : parameterInputs()) {
+        if (editingRow >= 0) {
+            for (EditBox input : editorInputs()) {
                 if (input.visible && input.isFocused()
                         && input.mouseDragged(mouseX, mouseY, button, dragX, dragY)) return true;
             }
@@ -833,9 +974,9 @@ public class RoutingPanel extends AbstractWidget {
     @Override
     public boolean mouseReleased(double mouseX, double mouseY, int button) {
         if (pageScroll.mouseReleased(button)) return true;
-        if (editingRow > 0) {
+        if (editingRow >= 0) {
             boolean handled = false;
-            for (EditBox input : parameterInputs()) {
+            for (EditBox input : editorInputs()) {
                 if (input.visible) handled |= input.mouseReleased(mouseX, mouseY, button);
             }
             if (handled) return true;
@@ -851,33 +992,71 @@ public class RoutingPanel extends AbstractWidget {
         return true;
     }
 
-    private boolean handleEditorClick(double mouseX, double mouseY) {
+    private boolean handleEditorClick(double mouseX, double mouseY, int button) {
         List<String> chain = getRowChain(editingRow);
-        if (chain == null) chain = new ArrayList<>();
         ProviderEditorLayout layout = providerEditorLayout(editorScreenY());
-        // Active chain slots: click removes from chain
         int activeIndex = providerIndexAt(mouseX, mouseY, layout.activeGrid(), layout.activeY(), chain.size());
         if (activeIndex >= 0) {
-            List<String> next = new ArrayList<>(chain);
-            next.remove(activeIndex);
-            setRowChain(editingRow, next);
+            if (button != 0) return false;
+            if (advancedRouteOpen || !commitParameterFields()) return true;
+            LlmRoute route = getRowRoute(editingRow);
+            List<LlmRoute.Stage> stages = new ArrayList<>();
+            int index = 0;
+            for (LlmRoute.Stage stage : route.stages()) {
+                List<LlmRoute.Target> candidates = new ArrayList<>();
+                for (LlmRoute.Target target : stage.candidates()) {
+                    if (index++ != activeIndex) candidates.add(target);
+                }
+                if (!candidates.isEmpty()) stages.add(new LlmRoute.Stage(candidates));
+            }
+            setRowRoute(editingRow, new LlmRoute(stages, route.deadlineOverrideSeconds()));
+            lastCandidateButton = -1;
+            loadRouteFields();
             updateScrollGeometry();
             return true;
         }
-        // Available providers: click appends
         int availableIndex = providerIndexAt(mouseX, mouseY, layout.availableGrid(),
                 layout.availableY(), providerNames.size());
         if (availableIndex >= 0) {
-            String name = providerNames.get(availableIndex);
-            if (!chain.contains(name)) {
-                List<String> next = new ArrayList<>(chain);
-                next.add(name);
-                setRowChain(editingRow, next);
+            if (advancedRouteOpen || !commitParameterFields()) return true;
+            try {
+                LlmRoute route = getRowRoute(editingRow);
+                LlmRoute updated = withCandidateClick(route, providerNames.get(availableIndex), button, lastCandidateButton);
+                if (!updated.equals(route)) setRowRoute(editingRow, updated);
+                lastCandidateButton = button;
+                editorInputs().forEach(input -> input.setFocused(false));
+                loadRouteFields();
                 updateScrollGeometry();
-            }
+            } catch (IllegalArgumentException failure) { parameterError = failure.getMessage(); }
             return true;
         }
-        return true;
+        return button == 0;
+    }
+
+    /** Repeated left clicks count retries; consecutive right clicks append distinct race members. */
+    static LlmRoute withCandidateClick(LlmRoute route, String provider, int button, int previousButton) {
+        if (button != 0 && button != 1) return route;
+        List<LlmRoute.Stage> stages = new ArrayList<>(route.stages());
+        if (button == previousButton && !stages.isEmpty()) {
+            int last = stages.size() - 1;
+            LlmRoute.Stage tail = stages.get(last);
+            if (button == 0 && !tail.racing() && tail.candidates().get(0).provider().equals(provider)) {
+                LlmRoute.Target target = tail.candidates().get(0);
+                // The first click retains automatic key failover; the second and third select *2 and *3.
+                int retries = target.retries() == null ? 2 : target.retries() + 1;
+                stages.set(last, new LlmRoute.Stage(List.of(new LlmRoute.Target(provider, retries))));
+                return new LlmRoute(stages, route.deadlineOverrideSeconds());
+            }
+            if (button == 1) {
+                if (tail.candidates().stream().anyMatch(target -> target.provider().equals(provider))) return route;
+                List<LlmRoute.Target> candidates = new ArrayList<>(tail.candidates());
+                candidates.add(new LlmRoute.Target(provider, null));
+                stages.set(last, new LlmRoute.Stage(candidates));
+                return new LlmRoute(stages, route.deadlineOverrideSeconds());
+            }
+        }
+        stages.add(new LlmRoute.Stage(List.of(new LlmRoute.Target(provider, null))));
+        return new LlmRoute(stages, route.deadlineOverrideSeconds());
     }
 
     private boolean inLabel(double mouseX, int startXRel, int endXRel) {
@@ -885,9 +1064,10 @@ public class RoutingPanel extends AbstractWidget {
     }
 
     private void save() {
+        lastCandidateButton = -1;
         if (!commitParameterFields()) return;
         if (!dirty) return;
-        String json = C2SUpdateRoutingPacket.toJson(editedDefault, edited, editedOptions);
+        String json = RoutingConfigStore.toJsonString(new PriorityRoutingConfig(editedDefault, edited, editedOptions));
         String capabilityJson = CapabilityPolicyStore.toJsonString(
                 LlmCapabilityPolicy.allowingWebSearch(webSearchPurposes));
         LLMNetwork.CHANNEL.sendToServer(new C2SUpdateRoutingPacket(json, capabilityJson));
@@ -896,8 +1076,8 @@ public class RoutingPanel extends AbstractWidget {
 
     @Override
     public boolean keyPressed(int keyCode, int scanCode, int modifiers) {
-        if (editingRow > 0) {
-            for (EditBox input : parameterInputs()) {
+        if (editingRow >= 0) {
+            for (EditBox input : editorInputs()) {
                 if (input.isFocused() && input.keyPressed(keyCode, scanCode, modifiers)) return true;
             }
         }
@@ -906,8 +1086,8 @@ public class RoutingPanel extends AbstractWidget {
 
     @Override
     public boolean charTyped(char codePoint, int modifiers) {
-        if (editingRow > 0) {
-            for (EditBox input : parameterInputs()) {
+        if (editingRow >= 0) {
+            for (EditBox input : editorInputs()) {
                 if (input.isFocused() && input.charTyped(codePoint, modifiers)) return true;
             }
         }

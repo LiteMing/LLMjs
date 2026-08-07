@@ -46,7 +46,7 @@ public final class ConsoleTestExecutor {
         LlmRequest template = new LlmRequest(List.of(), explicitChain, null, null, 0, context, test.overrides());
         List<String> resolvedChain = orchestrator.resolveChain(template);
         String budgetProvider = resolvedChain.isEmpty() ? "" : resolvedChain.get(0);
-        LlmMessageFinalization finalization = orchestrator.finalizeDraft(test.toDraft(), template, budgetProvider,
+        LlmMessageFinalization finalization = orchestrator.finalizeDraftForRoute(test.toDraft(), template,
                 LlmMessageFinalizer.CONSERVATIVE_ESTIMATOR);
         LlmRequest finalRequest = new LlmRequest(finalization.messages(), explicitChain, null, null, 0, context,
                 test.overrides());

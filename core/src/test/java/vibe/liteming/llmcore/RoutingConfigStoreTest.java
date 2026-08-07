@@ -53,6 +53,46 @@ class RoutingConfigStoreTest {
     }
 
     @Test
+    void savesCompositeRoutesWithoutFlatteningThemWhenOnlyParametersChange() {
+        PriorityRoutingConfig config = RoutingConfigStore.parse("""
+                {"schemaVersion":3,"purposes":{"VISION":{"route":"A*3 > (B | C) > A","deadlineSeconds":90}}}
+                """);
+        PriorityRoutingConfig edited = config.withPurposeOptions("VISION", new LlmRouteOptions(0.5, null, null, null, null));
+        PriorityRoutingConfig roundTrip = RoutingConfigStore.parse(RoutingConfigStore.toJsonString(edited));
+        assertEquals(edited, roundTrip);
+        assertEquals("A*3 > (B | C) > A", roundTrip.purposeRoutes().get("VISION").expression());
+        assertEquals(List.of("A", "B", "C", "A"), roundTrip.resolveChain("VISION", List.of()));
+        assertEquals(90, roundTrip.purposeRoutes().get("VISION").deadlineSeconds());
+        assertNotEquals(RoutingConfigStore.fingerprint(config), RoutingConfigStore.fingerprint(edited));
+        assertThrows(IllegalArgumentException.class, () -> LlmRoute.parse("A*3 > (B | B)"));
+        assertThrows(IllegalArgumentException.class, () -> LlmRoute.parse("A*11"));
+        assertThrows(IllegalArgumentException.class, () -> LlmRoute.parse("A >"));
+        assertEquals("quoted > provider", LlmRoute.parse("\"quoted > provider\"*0").providers().get(0));
+    }
+
+    @Test
+    void deadlinesCanOverrideIndependentlyOfInheritedProviders() {
+        PriorityRoutingConfig config = RoutingConfigStore.parse("""
+                {"schemaVersion":3,"default":{"route":"","deadlineSeconds":30},"purposes":{
+                  "CHAT":{"route":"","deadlineSeconds":90},
+                  "VISION":{"route":"A*1"},
+                  "SUMMARY":{"temperature":0.2},
+                  "RESET":{"deadlineSeconds":120}
+                }}
+                """);
+        assertEquals(config, RoutingConfigStore.parse(RoutingConfigStore.toJsonString(config)));
+        assertEquals(30, config.resolveRoute("OTHER", List.of("B")).deadlineSeconds());
+        assertEquals(List.of("B"), config.resolveRoute("CHAT", List.of("B")).providers());
+        assertEquals(90, config.resolveRoute("CHAT", List.of("B")).deadlineSeconds());
+        assertEquals(30, config.resolveRoute("VISION", List.of("B")).deadlineSeconds());
+        assertEquals("A*1", config.resolveRoute("VISION", List.of("B")).expression());
+        assertEquals(30, config.resolveRoute("SUMMARY", List.of("B")).deadlineSeconds());
+        assertEquals(120, config.resolveRoute("RESET", List.of("B")).deadlineSeconds());
+        assertEquals(30, config.withPurposeRoute("CHAT", LlmRoute.empty())
+                .resolveRoute("CHAT", List.of("B")).deadlineSeconds());
+    }
+
+    @Test
     void rejectsInvalidOrAmbiguousValuesExplicitly() {
         IllegalArgumentException range = assertThrows(IllegalArgumentException.class,
                 () -> RoutingConfigStore.parse("""

@@ -96,9 +96,12 @@ default to `SCRIPT_SYSTEM`; a script can delegate explicitly only with a real
 `ServerPlayer` through `billingPlayer` or a builder/session `billTo(player)`.
 Provider fallback and automatic repair reuse the original causal root. Provider-
 reported usage is authoritative. A successful response without usage metadata
-settles its full conservative reservation under `estimatedTokens`; a failed,
-cancelled, or not-started attempt releases its player reservation without a
-second charge. Stale pending reservations have a final TTL recovery path, and a
+settles its full conservative reservation under `estimatedTokens`. Sent attempts
+cancelled by a race, caller, reload or read timeout can still incur provider cost:
+they settle known usage, or the conservative reservation when usage is unknown.
+An attempt rejected before sending, or failed without observed/uncertain usage,
+releases its player reservation. Settlement finishes before a retry or the
+logical response completes. Stale pending reservations have a final TTL recovery path, and a
 late settlement after recovery is idempotently ignored.
 
 The ledger is world-scoped and atomically replaced after each update. Malformed

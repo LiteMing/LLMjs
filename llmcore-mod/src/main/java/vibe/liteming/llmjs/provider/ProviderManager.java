@@ -99,17 +99,20 @@ public class ProviderManager {
             if ("raw".equals(provider.getType())) newProviders.put(name, provider);
         });
 
+        LlmOrchestrator previous = this.orchestrator;
         this.orchestrator = candidate;
         this.providers = new ConcurrentHashMap<>(newProviders);
         this.routingConfig = candidateRouting;
         this.capabilityPolicy = candidatePolicy;
         SharedLlmRuntime.install(candidate);
+        previous.close();
         LlmCoreMod.LOGGER.info("Loaded and published {} providers", providers.size());
     }
 
     public synchronized void close() {
         LlmOrchestrator expected = this.orchestrator;
         SharedLlmRuntime.clear(expected);
+        expected.close();
         this.orchestrator = new LlmOrchestrator(Map.of());
         this.providers = new ConcurrentHashMap<>();
         this.routingConfig = PriorityRoutingConfig.empty();
