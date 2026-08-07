@@ -4,7 +4,6 @@ import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
 import net.minecraftforge.event.server.ServerStoppedEvent;
-import net.minecraft.world.level.storage.LevelResource;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.network.PacketDistributor;
@@ -63,12 +62,15 @@ public final class LlmCoreMod {
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) {
         var server = event.getServer();
-        var gameRoot = server.getServerDirectory().toPath();
+        // Paths come from the Forge FMLPaths API only. MinecraftServer's
+        // directory/world-path accessors differ between 1.20.1 (yarn) and
+        // 1.20.2+ (mojmap) mappings — calling them from a mapping that does
+        // not match the running environment throws NoSuchMethodError.
+        var gameRoot = net.minecraftforge.fml.loading.FMLPaths.GAMEDIR.get();
         var serverConfigDir = gameRoot.resolve("serverconfig");
         GlobalConfig.init(gameRoot);
         ProviderManager.INSTANCE.init(serverConfigDir, gameRoot);
-        PersonalBudgetService.INSTANCE.open(server.getWorldPath(LevelResource.ROOT)
-                .resolve("llmcore/personal-budget.json"));
+        PersonalBudgetService.INSTANCE.open(gameRoot.resolve("llmcore/personal-budget.json"));
         LlmRequestAccounting.install(PersonalBudgetService.INSTANCE);
         if (!LlmRequestAccounting.isInstalled()) {
             LOGGER.error("LLM billing policy failed to install; PLAYER requests will be denied");

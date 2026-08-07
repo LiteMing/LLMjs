@@ -47,7 +47,7 @@ minecraft {
 }
 
 dependencies {
-    minecraft 'net.minecraftforge:forge:1.20.1-47.2.0'
+    minecraft 'net.minecraftforge:forge:1.20.1-47.3.0'
     // Compile against the plain-Java core subproject; its classes are baked into
     // this jar via the `from(...)` below — no runtime dependency on the core jar.
     implementation project(':core')
