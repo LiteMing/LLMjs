@@ -4,6 +4,7 @@ import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.server.ServerStartingEvent;
 import net.minecraftforge.event.server.ServerStoppedEvent;
+import net.minecraft.world.level.storage.LevelResource;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.network.PacketDistributor;
@@ -62,15 +63,25 @@ public final class LlmCoreMod {
     @SubscribeEvent
     public void onServerStarting(ServerStartingEvent event) {
         var server = event.getServer();
-        // Paths come from the Forge FMLPaths API only. MinecraftServer's
-        // directory/world-path accessors differ between 1.20.1 (yarn) and
-        // 1.20.2+ (mojmap) mappings — calling them from a mapping that does
-        // not match the running environment throws NoSuchMethodError.
-        var gameRoot = net.minecraftforge.fml.loading.FMLPaths.GAMEDIR.get();
+        // Game root comes from the Forge FMLPaths API only — MinecraftServer's
+        // directory accessor differs between 1.20.1 and 1.20.2+ mappings and
+        // threw NoSuchMethodError on the dev runtime (LLMCORE-PATH-COMPAT-1).
+        var gameRoot = net.minecraftforge.fml.loading.FMLPaths.GAMEDIR.get()
+                .toAbsolutePath().normalize();
+        // serverconfig lives at the game-instance root (Forge convention for
+        // singleplayer: <gamedir>/serverconfig, NOT inside the world save).
         var serverConfigDir = gameRoot.resolve("serverconfig");
         GlobalConfig.init(gameRoot);
         ProviderManager.INSTANCE.init(serverConfigDir, gameRoot);
-        PersonalBudgetService.INSTANCE.open(gameRoot.resolve("llmcore/personal-budget.json"));
+        // The personal budget is PER-WORLD data: it must live under the world
+        // save (server.getWorldPath(LevelResource.ROOT)), not the game root —
+        // world A and world B keep independent budgets. With the reobf
+        // production artifact this 1.20.1 call remaps correctly.
+        var worldRoot = server.getWorldPath(LevelResource.ROOT)
+                .toAbsolutePath().normalize();
+        var budgetFile = worldRoot.resolve("llmcore/personal-budget.json");
+        migrateGameInstanceBudgetIfNeeded(gameRoot, budgetFile);
+        PersonalBudgetService.INSTANCE.open(budgetFile);
         LlmRequestAccounting.install(PersonalBudgetService.INSTANCE);
         if (!LlmRequestAccounting.isInstalled()) {
             LOGGER.error("LLM billing policy failed to install; PLAYER requests will be denied");
@@ -104,6 +115,34 @@ public final class LlmCoreMod {
         PersonalBudgetService.INSTANCE.close();
         LlmConsoleTestBridge.clear();
         ConsoleTestGrantService.INSTANCE.clear();
+    }
+
+    /**
+     * One-time migration (LLMCORE-PATH-COMPAT-1): a single hotfix build
+     * briefly stored the personal budget at the game-instance root instead
+     * of the world save. When the world file is missing but the legacy
+     * game-instance file exists, it is MOVED (not copied) into the world —
+     * never a silent reset, never a second copy.
+     */
+    private static void migrateGameInstanceBudgetIfNeeded(java.nio.file.Path gameRoot,
+            java.nio.file.Path worldBudgetFile) {
+        try {
+            if (java.nio.file.Files.exists(worldBudgetFile)) {
+                return;
+            }
+            var legacy = gameRoot.resolve("llmcore/personal-budget.json");
+            if (!java.nio.file.Files.exists(legacy)) {
+                return;
+            }
+            java.nio.file.Files.createDirectories(worldBudgetFile.getParent());
+            java.nio.file.Files.move(legacy, worldBudgetFile,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            LOGGER.info("Migrated personal budget from game instance ({}) to world save ({})",
+                    legacy, worldBudgetFile);
+        } catch (Exception failure) {
+            LOGGER.error("Personal budget migration failed; falling back to game-instance file: {}",
+                    failure.getMessage());
+        }
     }
 
     @SubscribeEvent
