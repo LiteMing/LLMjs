@@ -59,6 +59,13 @@ test {
     useJUnitPlatform()
 }
 
+tasks.named('processResources').configure {
+    inputs.property 'version', project.version.toString()
+    filesMatching('META-INF/mods.toml') {
+        expand version: project.version.toString()
+    }
+}
+
 // Pull core's compiled classes (and only classes — gson stays as a runtime
 // dep provided by Forge/Minecraft) into the llmcore-mod jar so the published
 // llmcore-x.y.z.jar is self-contained for the vibe.liteming.llmcore.* types.
@@ -120,7 +127,7 @@ tasks.register('verifyRuntimeSourceBoundary') {
 
 tasks.register('verifyRuntimeJarBoundary') {
     group = 'verification'
-    description = 'Checks that llmcore owns the runtime and Console implementation.'
+    description = 'Checks llmcore runtime ownership and its packaged mod version.'
     dependsOn 'reobfJar'
 
     doLast {
@@ -131,6 +138,7 @@ tasks.register('verifyRuntimeJarBoundary') {
         }
 
         List<String> required = [
+                'META-INF/mods.toml',
                 'vibe/liteming/llmcore/LlmOrchestrator.class',
                 'vibe/liteming/llmcore/mod/LlmCoreMod.class',
                 'vibe/liteming/llmjs/client/screen/LLMConsoleScreen.class',
@@ -147,6 +155,18 @@ tasks.register('verifyRuntimeJarBoundary') {
         }
         if (!missing.isEmpty() || !adapterLeakage.isEmpty()) {
             throw new GradleException("Invalid llmcore jar ownership. Missing: ${missing}; adapter leakage: ${adapterLeakage}")
+        }
+        String metadata = zipTree(artifact).matching { include 'META-INF/mods.toml' }
+                .singleFile.getText('UTF-8')
+        def ownMod = (metadata =~ /(?ms)^\s*\[\[mods\]\]\s*\R(.*?)(?=^\s*\[|\z)/).find { block ->
+            (block[1] =~ /(?m)^\s*modId\s*=\s*["']llmcore["']\s*$/).find()
+        }
+        def declaredVersion = ownMod == null ? null
+                : (ownMod[1] =~ /(?m)^\s*version\s*=\s*["']([^"']+)["']\s*$/)
+        String actualVersion = declaredVersion != null && declaredVersion.find()
+                ? declaredVersion.group(1) : '<missing>'
+        if (actualVersion != project.version.toString()) {
+            throw new GradleException("Invalid llmcore mod version in ${artifact.name}: expected ${project.version}, found ${actualVersion}")
         }
     }
 }
