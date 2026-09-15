@@ -24,6 +24,7 @@ public class ProviderLoader {
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static Path gameRootDir;
+    private static Path serverProvidersFile;
     private static Path secretFilePath;
 
     /**
@@ -78,6 +79,7 @@ public class ProviderLoader {
 
         // Layer 2: server providers override global (same name = replace)
         Path serverFile = serverConfigDir.resolve("providers.json");
+        serverProvidersFile = serverFile;
         if (Files.exists(serverFile)) {
             loadSimpleProviders(serverFile, providers, secrets);
             LlmCoreMod.LOGGER.debug("Loaded server provider overrides from serverconfig/llmcore/providers.json");
@@ -169,17 +171,44 @@ public class ProviderLoader {
     }
 
     public static boolean setup(String name, String url, String model, String key, String format) {
+        return setup(name, url, model, key, format, null);
+    }
+
+    public static boolean setup(String name, String url, String model, String key, String format,
+            vibe.liteming.llmcore.LlmCostRate rate) {
         if (gameRootDir == null) return false;
         String safeFormat = format == null || format.isBlank() ? "openai" : format;
         vibe.liteming.llmcore.ProviderSpec spec = new vibe.liteming.llmcore.ProviderSpec(name, safeFormat, url,
                 model, null, null, java.util.List.of(new vibe.liteming.llmcore.ProviderSpec.Credential(name + "#1", key, 1)));
-        return ProviderFiles.setup(gameRootDir.resolve("config/llmcore/providers.json"),
-                secretFilePath, spec);
+        try {
+            return ProviderFiles.setup(editableProvidersFile(name), secretFilePath, spec, rate);
+        } catch (Exception failure) {
+            LlmCoreMod.LOGGER.error("Failed to save provider {}", name, failure);
+            return false;
+        }
     }
 
     public static boolean updateWithoutKey(String name, String url, String model, String format) {
-        return gameRootDir != null && ProviderFiles.updateProvider(
-                gameRootDir.resolve("config/llmcore/providers.json"), name, url, model, format);
+        return updateWithoutKey(name, url, model, format, null);
+    }
+
+    public static boolean updateWithoutKey(String name, String url, String model, String format,
+            vibe.liteming.llmcore.LlmCostRate rate) {
+        if (gameRootDir == null) return false;
+        try {
+            return ProviderFiles.updateProvider(editableProvidersFile(name), name, url, model, format, true, rate);
+        } catch (Exception failure) {
+            LlmCoreMod.LOGGER.error("Failed to save provider {}", name, failure);
+            return false;
+        }
+    }
+
+    private static Path editableProvidersFile(String name) throws java.io.IOException {
+        if (serverProvidersFile != null && Files.isRegularFile(serverProvidersFile)) {
+            JsonObject overrides = JsonParser.parseString(Files.readString(serverProvidersFile)).getAsJsonObject();
+            if (overrides.has(name)) return serverProvidersFile;
+        }
+        return gameRootDir.resolve("config/llmcore/providers.json");
     }
 
     public static boolean deleteProvider(String name) {

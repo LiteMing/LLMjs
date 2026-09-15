@@ -1,3 +1,10 @@
+LLM Core 1.5.0
+==============
+ - Configure separate input/output cost multipliers per provider/model in Console Setup; budgets now show both raw tokens and weighted cost units.
+ - Use Prefer lower cost in Console Routing to reorder the server route draft while preserving retry and race settings. Administrators still control routing.
+ - Console log details and copied entries now expand message line breaks for readable prompts and replies.
+ - Existing budget ledgers are backed up and migrated automatically; missing usage remains conservatively estimated.
+
 LLM Core 1.4.3 (Hotfix)
 =======================
  - Fixed the Console Setup tab being unable to receive clicks: the Test tab's hidden Request JSON editor (a MultiLineEditBox) is registered as a screen child, and MultiLineEditBox hit-tests with a pure geometry check that ignores the widget's visible flag. While invisible it swallowed every left click inside its large rect, which covered the URL, model, API key, clear-key, and save controls. All mouse handlers of that editor are now gated on visibility, so hidden panels can no longer steal clicks from the Setup tab (or any other tab).

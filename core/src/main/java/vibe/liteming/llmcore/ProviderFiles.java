@@ -21,16 +21,23 @@ public final class ProviderFiles {
     }
 
     public static synchronized boolean setup(Path providersFile, Path secretFile, ProviderSpec spec) {
+        return setup(providersFile, secretFile, spec, null);
+    }
+
+    public static synchronized boolean setup(Path providersFile, Path secretFile, ProviderSpec spec,
+            LlmCostRate rate) {
         if (spec == null || !spec.isValid()) return false;
         try {
             JsonObject providers = loadObject(providersFile);
-            JsonObject definition = new JsonObject();
+            JsonObject definition = providers.has(spec.name()) && providers.get(spec.name()).isJsonObject()
+                    ? providers.getAsJsonObject(spec.name()) : new JsonObject();
             definition.addProperty("type", "simple");
             definition.addProperty("format", spec.format());
             definition.addProperty("url", spec.url());
             definition.addProperty("model", spec.model());
             if (spec.temperature() != null) definition.addProperty("temperature", spec.temperature());
             if (spec.maxTokens() != null) definition.addProperty("max_tokens", spec.maxTokens());
+            putCostRate(definition, rate);
             providers.add(spec.name(), definition);
             writeAtomic(providersFile, providers);
 
@@ -68,6 +75,11 @@ public final class ProviderFiles {
 
     public static synchronized boolean updateProvider(Path providersFile, String name, String url, String model,
             String format, boolean enabled) {
+        return updateProvider(providersFile, name, url, model, format, enabled, null);
+    }
+
+    public static synchronized boolean updateProvider(Path providersFile, String name, String url, String model,
+            String format, boolean enabled, LlmCostRate rate) {
         try {
             JsonObject root = loadObject(providersFile);
             JsonObject provider = root.has(name) && root.get(name).isJsonObject()
@@ -77,6 +89,7 @@ public final class ProviderFiles {
             provider.addProperty("model", model);
             provider.addProperty("format", format == null || format.isBlank() ? "openai" : format);
             provider.addProperty("enabled", enabled);
+            putCostRate(provider, rate);
             root.add(name, provider);
             writeAtomic(providersFile, root);
             return true;
@@ -110,6 +123,14 @@ public final class ProviderFiles {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private static void putCostRate(JsonObject definition, LlmCostRate rate) {
+        if (rate == null) return;
+        JsonObject billing = new JsonObject();
+        billing.addProperty("inputMultiplier", rate.inputMultiplier());
+        billing.addProperty("outputMultiplier", rate.outputMultiplier());
+        definition.add("billing", billing);
     }
 
     private static boolean updateSecret(Path secretFile, String providerName,

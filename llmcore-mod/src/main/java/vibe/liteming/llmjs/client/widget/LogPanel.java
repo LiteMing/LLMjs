@@ -546,10 +546,37 @@ public class LogPanel extends AbstractWidget {
         String trimmed = body.trim();
         if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) return body;
         try {
-            return PRETTY_JSON.toJson(JsonParser.parseString(trimmed));
+            return humanizeEscapedText(PRETTY_JSON.toJson(JsonParser.parseString(trimmed)));
         } catch (Exception ignored) {
             return body;
         }
+    }
+
+    /** Presentation only: decode each JSON string once, preserving literal backslash sequences. */
+    private static String humanizeEscapedText(String value) {
+        StringBuilder readable = new StringBuilder(value.length());
+        for (int index = 0; index < value.length();) {
+            if (value.charAt(index) != '"') {
+                readable.append(value.charAt(index++));
+                continue;
+            }
+            int start = index++;
+            boolean escaped = false;
+            while (index < value.length()) {
+                char character = value.charAt(index++);
+                if (!escaped && character == '"') break;
+                escaped = !escaped && character == '\\';
+            }
+            String token = value.substring(start, index);
+            String decoded = JsonParser.parseString(token).getAsString();
+            if (decoded.indexOf('\n') >= 0 || decoded.indexOf('\r') >= 0 || decoded.indexOf('\t') >= 0) {
+                readable.append('"').append(decoded.replace("\r\n", "\n").replace('\r', '\n')
+                        .replace("\t", "    ")).append('"');
+            } else {
+                readable.append(token);
+            }
+        }
+        return readable.toString();
     }
 
     private void addLineSeg(List<DetailSeg> segs, List<String> unwrapped, String line) {
@@ -634,7 +661,7 @@ public class LogPanel extends AbstractWidget {
                     detailScroll = 0;
                     invalidateDetailCache();
                 }
-                copySelectionToClipboard();
+                copySelectionToClipboard(false);
             }
             return true;
         }
@@ -740,7 +767,7 @@ public class LogPanel extends AbstractWidget {
         return super.mouseReleased(mouseX, mouseY, button);
     }
 
-    private void copySelectionToClipboard() {
+    private void copySelectionToClipboard(boolean raw) {
         int low = selectionLow();
         int high = selectionHigh();
         if (low < 0 || high >= entries.size()) return;
@@ -763,9 +790,9 @@ public class LogPanel extends AbstractWidget {
             sb.append("contentLength: ").append(e.contentLength).append('\n');
             if (e.error != null && !e.error.isBlank()) sb.append("error: ").append(e.error).append('\n');
             sb.append("--- REQUEST ---\n");
-            sb.append(e.requestBody == null || e.requestBody.isBlank() ? "(empty)" : e.requestBody);
+            sb.append(raw ? (e.requestBody == null ? "" : e.requestBody) : formatBodyForDisplay(e.requestBody));
             sb.append("\n--- RESPONSE ---\n");
-            sb.append(e.responseBody == null || e.responseBody.isBlank() ? "(empty)" : e.responseBody);
+            sb.append(raw ? (e.responseBody == null ? "" : e.responseBody) : formatBodyForDisplay(e.responseBody));
         }
         try {
             Minecraft.getInstance().keyboardHandler.setClipboard(sb.toString());
@@ -807,13 +834,17 @@ public class LogPanel extends AbstractWidget {
         if (!visible) return false;
         boolean ctrl = Screen.hasControlDown() || (Minecraft.ON_OSX && Screen.hasAltDown());
         if (!ctrl) return false;
+        if (Screen.hasShiftDown() && selectionLow() >= 0) {
+            copySelectionToClipboard(true);
+            return true;
+        }
         // Detail char-selection takes priority; only copy detail when a non-empty range exists.
         if (detailSelectActive && !detailSelectionEmpty()) {
             copyDetailSelectionToClipboard();
             return true;
         }
         if (selectionLow() >= 0) {
-            copySelectionToClipboard();
+            copySelectionToClipboard(false);
             return true;
         }
         return false;

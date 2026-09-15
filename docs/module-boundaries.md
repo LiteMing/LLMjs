@@ -75,14 +75,18 @@ requested `true`/`false` state.
 ## Personal token budgets
 
 `llmcore-mod` records cumulative input, output, conservatively estimated tokens,
-and optional player-specific limits by UUID in
+weighted cost units, and optional player-specific limits by UUID in
 `<world>/llmcore/personal-budget.json`. A player limit has four states: omitted
 inherits the server default, `-1` is explicitly unlimited, `0` disables personal
-LLM access, and a positive value is a finite token quota. The server default uses
+LLM access, and a positive value is a finite weighted cost-unit quota. The server default uses
 the same `-1` / `0` / positive vocabulary and starts at `-1`; a new server shows
 a prominent Console warning until an owner explicitly confirms or changes it.
-Finite limits include in-flight reservations and reject an over-budget attempt
-before its provider HTTP call.
+Finite personal limits include weighted in-flight reservations and reject an over-budget attempt
+before its provider HTTP call. Server-owned provider/model billing rates default to 1 for input
+and output; each component is rounded up to integer cost units. Raw token counters and causal
+`maxTokens` ceilings remain raw tokens. Schema 1/2 ledgers are backed up before migration to
+schema 3; historical tokens become cost units at rate 1. Changing a rate affects new attempts,
+not settled history or in-flight attempts. See `llm-core-1.5.0-cost-and-console.md`.
 
 Billing is independent from diagnostic context. Every provider-bound
 `LlmRequest` must carry an explicit `LlmBillingContext` with a typed principal,

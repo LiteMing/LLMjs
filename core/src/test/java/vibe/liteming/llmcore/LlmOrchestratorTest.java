@@ -171,7 +171,7 @@ class LlmOrchestratorTest {
                     LlmRequest request, LlmRequestAccounting.AttemptEstimate estimate) {
                 roots.add(request.billingContext().causalRootRequestId());
                 return LlmRequestAccounting.Reservation.allow(
-                        "reservation-" + ids.incrementAndGet(), estimate.totalTokens());
+                        "reservation-" + ids.incrementAndGet(), estimate.totalTokens(), estimate.totalCostUnits());
             }
 
             @Override
@@ -187,13 +187,18 @@ class LlmOrchestratorTest {
                 List.of("bad", "good"), null, 20, 5, LlmRequestContext.chat(),
                 LlmRouteOptions.empty(), billing);
 
-        LlmResponse response = new LlmOrchestrator(specs).send(request).join();
+        LlmOrchestrator orchestrator = new LlmOrchestrator(specs);
+        orchestrator.replaceProviderProfiles(Map.of("good", new ProviderProfile("good",
+                ProviderCapabilities.textOnly(), new LlmCostRate(3, 3))));
+        LlmResponse response = orchestrator.send(request).join();
 
         assertTrue(response.success());
         assertEquals(List.of("shared-root", "shared-root"), roots);
         assertEquals(2, settled.get());
         assertNull(settlements.get(0));
         assertTrue(settlements.get(1).estimatedTokens() > 0L);
+        assertEquals(settlements.get(1).totalTokens() * 3, settlements.get(1).totalCostUnits());
+        orchestrator.close();
     }
 
     @Test
@@ -290,5 +295,57 @@ class LlmOrchestratorTest {
         assertEquals("PLAYER:Alex", context.addressee());
         assertEquals("observer", context.audience());
         assertEquals("social", context.inputKind());
+    }
+    @Test
+    void httpAndStreamingSettleReportedUsageAtTheRateCapturedBeforeSending() throws Exception {
+        server = HttpServer.create(new InetSocketAddress(0), 0);
+        var active = new java.util.concurrent.atomic.AtomicReference<LlmOrchestrator>();
+        server.createContext("/weighted", exchange -> {
+            String requestBody = new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+            active.get().replaceProviderProfiles(Map.of("test", new ProviderProfile("test",
+                    ProviderCapabilities.textOnly(), new LlmCostRate(99, 99))));
+            boolean stream = requestBody.contains("\"stream\":true");
+            String body = stream
+                    ? "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\ndata: [DONE]\n\n"
+                    : "{\"choices\":[{\"message\":{\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}";
+            byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().add("Content-Type", stream ? "text/event-stream" : "application/json");
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        server.start();
+        ProviderSpec spec = new ProviderSpec("test", "openai",
+                "http://localhost:" + server.getAddress().getPort() + "/weighted", "model", null, 20,
+                List.of(new ProviderSpec.Credential("key", "test-key", 1)));
+        var usage = new java.util.concurrent.atomic.AtomicReference<LlmRequestAccounting.AttemptUsage>();
+        AtomicInteger settlements = new AtomicInteger();
+        LlmRequestAccounting.install(new LlmRequestAccounting.Policy() {
+            public LlmRequestAccounting.Reservation reserve(LlmRequest request,
+                    LlmRequestAccounting.AttemptEstimate estimate) {
+                assertEquals(estimate.inputTokens() * 2 + estimate.outputTokens() * 4, estimate.totalCostUnits());
+                return LlmRequestAccounting.Reservation.allow("test", estimate.totalTokens(), estimate.totalCostUnits());
+            }
+            public void settle(LlmRequest request, LlmRequestAccounting.Reservation reservation,
+                    LlmRequestAccounting.AttemptUsage value) {
+                usage.set(value);
+                settlements.incrementAndGet();
+            }
+        });
+        try (LlmOrchestrator orchestrator = new LlmOrchestrator(Map.of("test", spec))) {
+            active.set(orchestrator);
+            LlmRequest request = new LlmRequest(List.of(new LlmMessage("user", "hello")), List.of("test"),
+                    null, 20, 5, LlmRequestContext.chat());
+            for (boolean stream : List.of(false, true)) {
+                orchestrator.replaceProviderProfiles(Map.of("test", new ProviderProfile("test",
+                        ProviderCapabilities.textOnly(), new LlmCostRate(2, 4))));
+                LlmResponse response = stream ? orchestrator.sendStreaming(request, ignored -> {}).join()
+                        : orchestrator.send(request).join();
+                assertTrue(response.success(), response.error());
+                assertEquals(15L, usage.get().totalTokens());
+                assertEquals(40L, usage.get().totalCostUnits());
+            }
+            assertEquals(2, settlements.get());
+        }
     }
 }

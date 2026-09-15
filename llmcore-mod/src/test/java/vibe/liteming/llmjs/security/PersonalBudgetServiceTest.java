@@ -110,7 +110,7 @@ class PersonalBudgetServiceTest {
     }
 
     @Test
-    void readsSchemaOneAsUnsetAndWritesSchemaTwo(@TempDir Path root) throws IOException {
+    void readsSchemaOneAsUnsetAndMigratesWithBackup(@TempDir Path root) throws IOException {
         Path file = root.resolve("personal-budget.json");
         UUID player = UUID.randomUUID();
         Files.writeString(file, """
@@ -125,14 +125,25 @@ class PersonalBudgetServiceTest {
                   }]
                 }
                 """.formatted(player));
+        String original = Files.readString(file);
         PersonalBudgetService service = new PersonalBudgetService(() -> 100L);
         service.open(file);
+        try (var files = Files.list(root)) {
+            Path backup = files.filter(path -> path.toString().endsWith(".bak")).findFirst().orElseThrow();
+            assertEquals(original, Files.readString(backup));
+        }
+        service.close();
+        service.open(file);
+        try (var files = Files.list(root)) {
+            assertEquals(1L, files.filter(path -> path.toString().endsWith(".bak")).count());
+        }
 
+        assertEquals(5L, service.status(player).costUnits());
         assertEquals(5L, service.status(player).totalTokens());
         assertTrue(service.status(player).inheritedLimit());
         assertTrue(service.setLimit(player, -1L));
         String persisted = Files.readString(file);
-        assertTrue(persisted.contains("\"schemaVersion\": 2"));
+        assertTrue(persisted.contains("\"schemaVersion\": 3"));
         assertTrue(persisted.contains("\"limitTokens\": -1"));
     }
 
@@ -285,13 +296,56 @@ class PersonalBudgetServiceTest {
 
         var status = service.statusJson(player);
 
-        assertEquals(13, status.size());
+        assertEquals(15, status.size());
         assertEquals(15L, status.get("totalTokens").getAsLong());
         assertEquals(1L, status.get("requestCount").getAsLong());
         assertEquals(15L, status.get("averageTokens").getAsLong());
         assertTrue(status.get("limitInherited").getAsBoolean());
         assertFalse(status.has("playerId"));
         assertNull(status.get("players"));
+    }
+
+    @Test
+    void personalQuotaUsesWeightedCostWhileChainAndRawCountersKeepTokens(@TempDir Path root) {
+        PersonalBudgetService service = service(root, () -> 79L);
+        UUID player = UUID.randomUUID();
+        LlmRequest request = playerRequest(player, "root", 2, 30L);
+        var estimate = new LlmRequestAccounting.AttemptEstimate("expensive", 10, 5, 40L);
+        var reservation = service.reserve(request, estimate);
+        assertTrue(reservation.allowed(), reservation.reason());
+        assertEquals(15L, service.status(player).reservedTokens());
+        assertEquals(40L, service.status(player).reservedCostUnits());
+        assertDeniedBudget(service.reserve(playerRequest(player, "second", 1, 15L), estimate));
+        service.settle(request, reservation, new LlmRequestAccounting.AttemptUsage(10, 5, 0, 40L));
+        service.close();
+        service.open(root.resolve("personal-budget.json"));
+        assertEquals(15L, service.status(player).totalTokens());
+        assertEquals(40L, service.status(player).costUnits());
+        assertEquals(0L, service.status(player).reservedCostUnits());
+        assertDeniedBudget(service.reserve(request, estimate));
+        assertTrue(service.reserve(systemRequest("system", 1, 15L), estimate).allowed());
+        assertEquals(LlmRequestAccounting.DenyCode.CHAIN_TOKENS_EXHAUSTED,
+                service.reserve(systemRequest("bounded", 1, 14L), estimate).denyCode());
+    }
+
+    @Test
+    void schemaTwoRetainsLimitsAndSchemaThreeRequiresWeightedUsage(@TempDir Path root) throws IOException {
+        Path file = root.resolve("personal-budget.json");
+        UUID player = UUID.randomUUID();
+        String original = """
+                {"schemaVersion":2,"players":[{"playerId":"%s","promptTokens":10,
+                "completionTokens":5,"estimatedTokens":2,"requestCount":3,"limitTokens":50,"updatedAtMs":1}]}
+                """.formatted(player);
+        Files.writeString(file, original);
+        PersonalBudgetService service = service(root, () -> -1L);
+        assertEquals(17L, service.status(player).costUnits());
+        assertEquals(50L, service.status(player).limitTokens());
+        assertEquals(3L, service.status(player).requestCount());
+        service.close();
+        Files.writeString(file, original.replace("schemaVersion\":2", "schemaVersion\":3"));
+        service.open(file);
+        assertFalse(service.storageAvailable());
+        assertTrue(Files.readString(file).contains("schemaVersion\":3"));
     }
 
     private static PersonalBudgetService service(Path root, java.util.function.LongSupplier limit) {

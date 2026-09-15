@@ -85,6 +85,24 @@ class ProviderConfigLoaderTest {
     }
 
     @Test
+    void loadsOptionalBillingMultipliersAndDefaultsMissingFields() throws Exception {
+        Path providers = tempDir.resolve("providers-billing.json");
+        Path secret = tempDir.resolve("llmcore-billing.secret");
+        Files.writeString(providers, """
+                {"cheap":{"format":"openai","url":"http://localhost/cheap","model":"cheap",
+                  "billing":{"inputMultiplier":0.5,"outputMultiplier":2.5}}}
+                """);
+        Files.writeString(secret, """
+                {"providers":{"cheap":"sk-cheap"}}
+                """);
+
+        ProviderProfile profile = ProviderConfigLoader.loadProfiles(null, providers, secret).get("cheap");
+
+        assertEquals(0.5D, profile.costRate().inputMultiplier());
+        assertEquals(2.5D, profile.costRate().outputMultiplier());
+    }
+
+    @Test
     void serverDefinitionOverridesGlobalProfileAndSecretOnlyProviderCanDeclareCapabilities() throws Exception {
         Path global = tempDir.resolve("global.json");
         Path server = tempDir.resolve("server.json");
@@ -114,5 +132,37 @@ class ProviderConfigLoaderTest {
         LlmOrchestrator orchestrator = new LlmOrchestrator(ProviderConfigLoader.load(global, server, secret));
         orchestrator.replaceProviderProfiles(profiles);
         assertFalse(orchestrator.isProviderWebSearchCapable("hosted-deepseek"));
+    }
+    @Test
+    void providerEditsKeepCapabilitiesAndPersistBillingWithOrWithoutKeyReplacement() throws Exception {
+        Path providers = tempDir.resolve("providers.json");
+        Path secret = tempDir.resolve("llmcore.secret");
+        Files.writeString(providers, """
+                {"model":{"format":"openai","url":"http://localhost/chat","model":"test",
+                "context_window_tokens":8000,"capabilities":{"input":["text","image"]}}}
+                """);
+        var rate = new LlmCostRate(0.5, 2.5);
+        assertTrue(ProviderFiles.setup(providers, secret, new ProviderSpec("model", "openai",
+                "http://localhost/chat", "test", null, null,
+                List.of(new ProviderSpec.Credential("one", "test-key", 1))), rate));
+        assertEquals(rate, ProviderConfigLoader.loadProfiles(providers, null, secret).get("model").costRate());
+        assertTrue(ProviderFiles.updateProvider(providers, "model", "http://localhost/chat", "new-model",
+                "openai", true, new LlmCostRate(2, 3)));
+        ProviderProfile profile = ProviderConfigLoader.loadProfiles(providers, null, secret).get("model");
+        assertEquals(new LlmCostRate(2, 3), profile.costRate());
+        assertTrue(profile.capabilities().inputModalities().contains("image"));
+        assertFalse(Files.readString(providers).contains("test-key"));
+        assertEquals(8000, ProviderConfigLoader.load(providers, null, secret).get("model").contextWindowTokens());
+    }
+
+    @Test
+    void invalidExplicitBillingCannotSilentlyBecomeOneTimesCost() {
+        for (String value : List.of("-1", "1000001", "null", "\"NaN\"", "true")) {
+            var definition = com.google.gson.JsonParser.parseString(
+                    "{\"billing\":{\"inputMultiplier\":" + value + "}}").getAsJsonObject();
+            org.junit.jupiter.api.Assertions.assertThrows(IllegalArgumentException.class,
+                    () -> ProviderConfigLoader.readCostRate("model", definition));
+        }
+        assertEquals(LlmCostRate.DEFAULT, ProviderConfigLoader.readCostRate("model", new com.google.gson.JsonObject()));
     }
 }

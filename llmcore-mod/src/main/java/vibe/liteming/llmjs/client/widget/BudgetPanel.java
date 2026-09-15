@@ -20,12 +20,13 @@ import static vibe.liteming.llmjs.client.ConsoleTexts.text;
 /** Read-only projection of the world budget ledger and runtime principal totals. */
 @OnlyIn(Dist.CLIENT)
 public final class BudgetPanel extends AbstractWidget {
-    private record PlayerEntry(String name, String id, long total, long reserved, long limit,
+    private record PlayerEntry(String name, String id, long total, long costUnits, long reservedCost,
+            long limit,
             long requests, long average, boolean inherited, boolean unlimited,
             boolean disabled, boolean exhausted, boolean storageAvailable) {
     }
 
-    private record PrincipalEntry(String kind, long total, long estimated, long requests,
+    private record PrincipalEntry(String kind, long total, long costUnits, long estimated, long requests,
             double estimatedRatio) {
     }
 
@@ -84,7 +85,8 @@ public final class BudgetPanel extends AbstractWidget {
                     if (!element.isJsonObject()) continue;
                     JsonObject value = element.getAsJsonObject();
                     principals.add(new PrincipalEntry(jsonString(value, "principalKind"),
-                            number(value, "totalTokens", 0L), number(value, "estimatedTokens", 0L),
+                            number(value, "totalTokens", 0L), number(value, "costUnits", 0L),
+                            number(value, "estimatedTokens", 0L),
                             number(value, "requestCount", 0L), decimal(value, "estimatedRatio")));
                 }
             }
@@ -142,7 +144,7 @@ public final class BudgetPanel extends AbstractWidget {
             } else {
                 for (PrincipalEntry entry : principals) {
                     lines.add(new DisplayLine(string("budget.principal.row", entry.kind(), entry.total(),
-                            entry.requests(), Math.round(entry.estimatedRatio() * 100.0D)), 0xDDDDDD));
+                            entry.costUnits(), entry.requests(), Math.round(entry.estimatedRatio() * 100.0D)), 0xDDDDDD));
                 }
             }
             lines.add(new DisplayLine("", 0xFFFFFF));
@@ -172,7 +174,8 @@ public final class BudgetPanel extends AbstractWidget {
                 : string("budget.state.available");
         int stateColor = !entry.storageAvailable() || entry.disabled() || entry.exhausted()
                 ? 0xFF5555 : 0x55FF55;
-        lines.add(new DisplayLine(string("budget.player.usage", entry.total(), entry.reserved(),
+        lines.add(new DisplayLine(string("budget.player.usage", entry.total(), entry.costUnits(),
+                entry.reservedCost(),
                 limitText(entry.limit()), state), stateColor));
         lines.add(new DisplayLine(string("budget.player.detail", entry.requests(), entry.average(),
                 entry.inherited() ? string("budget.source.default") : string("budget.source.override")),
@@ -208,7 +211,8 @@ public final class BudgetPanel extends AbstractWidget {
 
     private static PlayerEntry player(JsonObject value, String name, String id) {
         return new PlayerEntry(name, id, number(value, "totalTokens", 0L),
-                number(value, "reservedTokens", 0L), number(value, "limitTokens", -1L),
+                number(value, "costUnits", 0L),
+                number(value, "reservedCostUnits", 0L), number(value, "limitTokens", -1L),
                 number(value, "requestCount", 0L), number(value, "averageTokens", 0L),
                 bool(value, "limitInherited"), bool(value, "unlimited"), bool(value, "disabled"),
                 bool(value, "exhausted"), bool(value, "storageAvailable"));

@@ -16,44 +16,76 @@ public final class LlmRequestAccounting {
         POLICY_UNAVAILABLE
     }
 
-    public record AttemptEstimate(String provider, long inputTokens, long outputTokens) {
+    public record AttemptEstimate(String provider, long inputTokens, long outputTokens,
+            long costUnits) {
+        /** Binary-compatible estimate shape; the default rate is one unit per token. */
+        public AttemptEstimate(String provider, long inputTokens, long outputTokens) {
+            this(provider, inputTokens, outputTokens,
+                    LlmCostRate.DEFAULT.weightedEstimate(inputTokens, outputTokens));
+        }
+
         public AttemptEstimate {
             provider = provider == null ? "" : provider;
             inputTokens = Math.max(0L, inputTokens);
             outputTokens = Math.max(0L, outputTokens);
+            costUnits = Math.max(0L, costUnits);
         }
 
         public long totalTokens() {
             return saturatedAdd(inputTokens, outputTokens);
         }
+
+        public long totalCostUnits() {
+            return costUnits;
+        }
     }
 
-    public record AttemptUsage(long promptTokens, long completionTokens, long estimatedTokens) {
+    public record AttemptUsage(long promptTokens, long completionTokens, long estimatedTokens,
+            long costUnits) {
+        /** Binary-compatible usage shape; the default rate is one unit per token. */
+        public AttemptUsage(long promptTokens, long completionTokens, long estimatedTokens) {
+            this(promptTokens, completionTokens, estimatedTokens,
+                    saturatedAdd(saturatedAdd(Math.max(0L, promptTokens), Math.max(0L, completionTokens)),
+                            Math.max(0L, estimatedTokens)));
+        }
+
         public AttemptUsage {
             promptTokens = Math.max(0L, promptTokens);
             completionTokens = Math.max(0L, completionTokens);
             estimatedTokens = Math.max(0L, estimatedTokens);
+            costUnits = Math.max(0L, costUnits);
         }
 
         public long totalTokens() {
             return saturatedAdd(saturatedAdd(promptTokens, completionTokens), estimatedTokens);
         }
+
+        public long totalCostUnits() {
+            return costUnits;
+        }
     }
 
     public record Reservation(boolean allowed, DenyCode denyCode, String reason,
-            String reservationId, long reservedTokens) {
+            String reservationId, long reservedTokens, long reservedCostUnits) {
+        /** Binary-compatible reservation shape used before weighted billing. */
+        public Reservation(boolean allowed, DenyCode denyCode, String reason,
+                String reservationId, long reservedTokens) {
+            this(allowed, denyCode, reason, reservationId, reservedTokens, reservedTokens);
+        }
+
         public Reservation {
             denyCode = denyCode == null ? DenyCode.NONE : denyCode;
             reason = reason == null ? "" : reason;
             reservationId = reservationId == null ? "" : reservationId;
             reservedTokens = Math.max(0L, reservedTokens);
+            reservedCostUnits = Math.max(0L, reservedCostUnits);
             if (allowed) denyCode = DenyCode.NONE;
         }
 
         /** Binary-compatible reservation shape used before structured denial codes. */
         public Reservation(boolean allowed, String reason, String reservationId, long reservedTokens) {
             this(allowed, allowed ? DenyCode.NONE : DenyCode.POLICY_UNAVAILABLE,
-                    reason, reservationId, reservedTokens);
+                    reason, reservationId, reservedTokens, reservedTokens);
         }
 
         public static Reservation allow() {
@@ -61,7 +93,12 @@ public final class LlmRequestAccounting {
         }
 
         public static Reservation allow(String reservationId, long reservedTokens) {
-            return new Reservation(true, DenyCode.NONE, "", reservationId, reservedTokens);
+            return new Reservation(true, DenyCode.NONE, "", reservationId, reservedTokens, reservedTokens);
+        }
+
+        public static Reservation allow(String reservationId, long reservedTokens, long reservedCostUnits) {
+            return new Reservation(true, DenyCode.NONE, "", reservationId,
+                    reservedTokens, reservedCostUnits);
         }
 
         public static Reservation deny(String reason) {

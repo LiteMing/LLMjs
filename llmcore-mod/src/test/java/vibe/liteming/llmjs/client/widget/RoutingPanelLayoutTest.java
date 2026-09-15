@@ -93,4 +93,15 @@ class RoutingPanelLayoutTest {
         assertEquals("A > ".repeat(15) + "B*2",
                 RoutingPanel.withCandidateClick(full, "B", 0, 0).expression());
     }
+    @Test
+    void costOrderingKeepsRaceGroupsRetrySettingsAndEqualCostOrder() {
+        LlmRoute route = LlmRoute.parse("A*3 > (B | C) > D > E").withDeadline(90);
+        var rates = java.util.Map.of("A", new vibe.liteming.llmcore.LlmCostRate(4, 8),
+                "B", new vibe.liteming.llmcore.LlmCostRate(1, 1),
+                "C", new vibe.liteming.llmcore.LlmCostRate(1, 1));
+        LlmRoute sorted = RoutingPanel.sortByCost(route, rates);
+        assertEquals("D > E > (B | C) > A*3", sorted.expression());
+        assertEquals(90, sorted.deadlineSeconds());
+        assertEquals("A*3 > (B | C) > D > E", route.expression());
+    }
 }

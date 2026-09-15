@@ -96,7 +96,8 @@ public final class ProviderConfigLoader {
             if (definition == null && secrets.has(provider) && secrets.get(provider).isJsonObject()) {
                 definition = secrets.getAsJsonObject(provider);
             }
-            result.put(provider, new ProviderProfile(provider, readCapabilities(provider, definition, sink)));
+            result.put(provider, new ProviderProfile(provider,
+                    readCapabilities(provider, definition, sink), readCostRate(provider, definition)));
         }
         return result;
     }
@@ -125,6 +126,24 @@ public final class ProviderConfigLoader {
         } catch (RuntimeException error) {
             diagnostics.accept("Provider '" + provider + "' capability profile disabled: " + error.getMessage());
             return ProviderCapabilities.textOnly();
+        }
+    }
+
+    /** Missing rates default to one; invalid explicit billing must reject reload. */
+    public static LlmCostRate readCostRate(String provider, JsonObject definition) {
+        if (definition == null || !definition.has("billing")) return LlmCostRate.DEFAULT;
+        try {
+            JsonElement value = definition.get("billing");
+            if (!value.isJsonObject()) throw new IllegalArgumentException("billing must be an object");
+            JsonObject billing = value.getAsJsonObject();
+            rejectUnknownFields(billing,
+                    Set.of("inputMultiplier", "outputMultiplier"), "billing");
+            double input = getDoubleOrDefault(billing, "inputMultiplier", 1.0D);
+            double output = getDoubleOrDefault(billing, "outputMultiplier", input);
+            return new LlmCostRate(input, output);
+        } catch (RuntimeException error) {
+            throw new IllegalArgumentException("Provider '" + provider + "' has invalid billing: "
+                    + error.getMessage(), error);
         }
     }
 
@@ -236,6 +255,15 @@ public final class ProviderConfigLoader {
 
     private static Double getDouble(JsonObject object, String key) {
         return object.has(key) ? object.get(key).getAsDouble() : null;
+    }
+
+    private static double getDoubleOrDefault(JsonObject object, String key, double fallback) {
+        if (!object.has(key)) return fallback;
+        JsonElement value = object.get(key);
+        if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
+            throw new IllegalArgumentException("billing." + key + " must be a number");
+        }
+        return value.getAsDouble();
     }
 
     private static Integer getInteger(JsonObject object, String key) {

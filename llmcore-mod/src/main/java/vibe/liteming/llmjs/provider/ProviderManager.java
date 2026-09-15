@@ -2,6 +2,7 @@ package vibe.liteming.llmjs.provider;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import vibe.liteming.llmcore.LlmMessage;
 import vibe.liteming.llmcore.CapabilityPolicyStore;
 import vibe.liteming.llmcore.LlmBillingContext;
@@ -18,6 +19,7 @@ import vibe.liteming.llmcore.PriorityRoutingConfig;
 import vibe.liteming.llmcore.ProviderConfigLoader;
 import vibe.liteming.llmcore.ProviderCapabilities;
 import vibe.liteming.llmcore.ProviderProfile;
+import vibe.liteming.llmcore.LlmCostRate;
 import vibe.liteming.llmcore.ProviderSpec;
 import vibe.liteming.llmcore.PurposeMeta;
 import vibe.liteming.llmcore.PurposeRegistry;
@@ -45,6 +47,7 @@ import java.util.concurrent.atomic.AtomicLong;
 public class ProviderManager {
     public static final ProviderManager INSTANCE = new ProviderManager();
 
+    private volatile Map<String, LlmCostRate> costRates = Map.of();
     private volatile Map<String, Provider> providers = new ConcurrentHashMap<>();
     private volatile LlmOrchestrator orchestrator = new LlmOrchestrator(Map.of());
     private volatile PriorityRoutingConfig routingConfig = PriorityRoutingConfig.empty();
@@ -73,16 +76,38 @@ public class ProviderManager {
         reload();
     }
 
-    public synchronized void reload() {
-        if (configDir == null || gameRoot == null) return;
+    /** Retained for the released LLMjs script adapter ABI. */
+    public void reload() {
+        tryReload();
+    }
+
+    public synchronized boolean tryReload() {
+        if (configDir == null || gameRoot == null) return false;
         Path globalProviders = GlobalConfig.getGlobalProvidersFile();
         Path serverProviders = configDir.resolve("providers.json");
         Path secretFile = ProviderLoader.resolveSecretFile(gameRoot);
         Map<String, Provider> loadedProviders = ProviderLoader.loadAll(configDir, gameRoot);
         Map<String, ProviderSpec> specs = ProviderConfigLoader.load(globalProviders, serverProviders, secretFile);
-        Map<String, ProviderProfile> profiles = ProviderConfigLoader.loadProfiles(
-                globalProviders, serverProviders, secretFile,
-                warning -> LlmCoreMod.LOGGER.warn("{}", warning));
+        Map<String, ProviderProfile> profiles;
+        Map<String, LlmCostRate> rates = new LinkedHashMap<>();
+        try {
+            profiles = ProviderConfigLoader.loadProfiles(globalProviders, serverProviders, secretFile,
+                    warning -> LlmCoreMod.LOGGER.warn("{}", warning));
+            profiles.forEach((name, profile) -> rates.put(name, profile.costRate()));
+            Path rawFile = configDir.resolve("providers_raw.json");
+            if (java.nio.file.Files.isRegularFile(rawFile)) {
+                JsonObject raw = JsonParser.parseString(java.nio.file.Files.readString(rawFile)).getAsJsonObject();
+                for (Provider provider : loadedProviders.values()) {
+                    if ("raw".equals(provider.getType()) && raw.has(provider.getName())) {
+                        rates.put(provider.getName(), ProviderConfigLoader.readCostRate(provider.getName(),
+                                raw.getAsJsonObject(provider.getName())));
+                    }
+                }
+            }
+        } catch (Exception invalid) {
+            LlmCoreMod.LOGGER.error("Provider reload rejected; keeping the previous runtime: {}", invalid.getMessage());
+            return false;
+        }
         LlmOrchestrator candidate = new LlmOrchestrator(specs);
         candidate.replaceProviderProfiles(profiles);
         candidate.setGlobalDefaults(new LlmRouteOptions(null, null, LLMConfig.TIMEOUT.get(), null, null));
@@ -102,11 +127,13 @@ public class ProviderManager {
         LlmOrchestrator previous = this.orchestrator;
         this.orchestrator = candidate;
         this.providers = new ConcurrentHashMap<>(newProviders);
+        this.costRates = Map.copyOf(rates);
         this.routingConfig = candidateRouting;
         this.capabilityPolicy = candidatePolicy;
         SharedLlmRuntime.install(candidate);
         previous.close();
         LlmCoreMod.LOGGER.info("Loaded and published {} providers", providers.size());
+        return true;
     }
 
     public synchronized void close() {
@@ -115,6 +142,7 @@ public class ProviderManager {
         expected.close();
         this.orchestrator = new LlmOrchestrator(Map.of());
         this.providers = new ConcurrentHashMap<>();
+        this.costRates = Map.of();
         this.routingConfig = PriorityRoutingConfig.empty();
         this.capabilityPolicy = LlmCapabilityPolicy.empty();
         this.statusCache.clear();
@@ -191,6 +219,10 @@ public class ProviderManager {
             pJson.addProperty("maskedKey", entry.getValue().getMaskedKey());
             pJson.addProperty("configured", entry.getValue().isConfigured());
             ProviderProfile profile = orchestrator.getProviderProfile(entry.getKey());
+            JsonObject billing = new JsonObject();
+            billing.addProperty("inputMultiplier", costRates.getOrDefault(entry.getKey(), LlmCostRate.DEFAULT).inputMultiplier());
+            billing.addProperty("outputMultiplier", costRates.getOrDefault(entry.getKey(), LlmCostRate.DEFAULT).outputMultiplier());
+            pJson.add("billing", billing);
             ProviderCapabilities capabilities = profile.capabilities();
             JsonObject capabilitiesJson = new JsonObject();
             JsonArray input = new JsonArray();
@@ -354,6 +386,7 @@ public class ProviderManager {
         boolean coreRouted = provider instanceof CoreProviderAdapter;
         String promptSummary = messages.isEmpty() ? "" : messages.get(messages.size() - 1).content();
         CompletableFuture<LLMResponse> execution;
+        LlmCostRate rate = costRates.getOrDefault(providerName, LlmCostRate.DEFAULT);
         LlmRequest rawAccountingRequest = null;
         LlmRequestAccounting.Reservation rawReservation = null;
         if (provider instanceof CoreProviderAdapter coreProvider) {
@@ -366,7 +399,8 @@ public class ProviderManager {
             Integer boundedOutput = maxTokens != null && maxTokens > 0 ? maxTokens : provider.getMaxTokens();
             long outputTokens = boundedOutput == null ? 0L : Math.max(0, boundedOutput);
             rawReservation = LlmRequestAccounting.reserve(rawAccountingRequest,
-                    new LlmRequestAccounting.AttemptEstimate(providerName, inputTokens, outputTokens));
+                    new LlmRequestAccounting.AttemptEstimate(providerName, inputTokens, outputTokens,
+                            rate.weightedEstimate(inputTokens, outputTokens)));
             if (!rawReservation.allowed()) {
                 String error = "Billing denied: " + rawReservation.reason();
                 attempts.add(new LLMResponse.AttemptRecord(providerName, false, error, 0));
@@ -394,7 +428,9 @@ public class ProviderManager {
                         ? 0L : settledReservation.reservedTokens();
                 LlmRequestAccounting.settle(settledRequest, settledReservation,
                         new LlmRequestAccounting.AttemptUsage(response.getPromptTokens(),
-                                response.getCompletionTokens(), estimated));
+                                response.getCompletionTokens(), estimated, estimated > 0L
+                                        ? settledReservation.reservedCostUnits()
+                                        : rate.weightedTokens(response.getPromptTokens(), response.getCompletionTokens())));
             });
         }
         return execution.handle((response, throwable) -> throwable == null

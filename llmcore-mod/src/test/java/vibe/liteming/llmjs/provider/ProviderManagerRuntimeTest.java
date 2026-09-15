@@ -68,6 +68,23 @@ class ProviderManagerRuntimeTest {
         assertEquals(HostedWebSearchAdapterIds.DASHSCOPE_OPENAI_CHAT,
                 published.getProviderProfile("qwen").capabilities().webSearch().adapterId());
 
+        Path serverProviders = tempDir.resolve("serverconfig/llmcore/providers.json");
+        Files.writeString(serverProviders, """
+                {"qwen":{"format":"openai","url":"http://localhost/server","model":"server-model",
+                  "billing":{"inputMultiplier":2,"outputMultiplier":3}}}
+                """);
+        manager.reload();
+        assertTrue(vibe.liteming.llmjs.config.ProviderLoader.updateWithoutKey("qwen",
+                "http://localhost/server", "updated-model", "openai", new vibe.liteming.llmcore.LlmCostRate(4, 5)));
+        manager.reload();
+        published = SharedLlmRuntime.current().orElseThrow();
+        assertEquals(new vibe.liteming.llmcore.LlmCostRate(4, 5), published.getProviderProfile("qwen").costRate());
+        assertEquals("updated-model", published.getProviderSpec("qwen").model());
+        assertTrue(Files.readString(GlobalConfig.getGlobalProvidersFile()).contains("qwen-plus"));
+        Files.writeString(serverProviders, Files.readString(serverProviders).replace("4.0", "-4.0"));
+        manager.reload();
+        assertSame(published, SharedLlmRuntime.current().orElseThrow());
+        assertEquals(new vibe.liteming.llmcore.LlmCostRate(4, 5), published.getProviderProfile("qwen").costRate());
         manager.close();
 
         assertTrue(SharedLlmRuntime.current().isEmpty());

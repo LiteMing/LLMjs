@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import vibe.liteming.llmjs.client.screen.LLMConsoleScreen;
+import vibe.liteming.llmcore.LlmCostRate;
 import vibe.liteming.llmjs.network.LLMNetwork;
 import vibe.liteming.llmjs.network.packet.C2SDeleteProviderPacket;
 import vibe.liteming.llmjs.network.packet.C2SStatusRequestPacket;
@@ -24,7 +25,7 @@ import static vibe.liteming.llmjs.client.ConsoleTexts.text;
 @OnlyIn(Dist.CLIENT)
 public class ProviderListPanel extends AbstractWidget {
     public record ProviderEntry(String name, String type, String format, String model, String url,
-                                 String maskedKey, String status, String statusKind, boolean configured) {}
+                                 String maskedKey, String status, String statusKind, boolean configured, LlmCostRate rate) {}
 
     private final List<ProviderEntry> providers = new ArrayList<>();
     private final ConsoleScrollBar rowScroll = new ConsoleScrollBar();
@@ -71,8 +72,12 @@ public class ProviderListPanel extends AbstractWidget {
                     status = string("providers.status.untested");
                     statusKind = "untested";
                 }
+                JsonObject billing = p.has("billing") ? p.getAsJsonObject("billing") : new JsonObject();
+                LlmCostRate rate = billing.has("inputMultiplier") && billing.has("outputMultiplier")
+                        ? new LlmCostRate(billing.get("inputMultiplier").getAsDouble(),
+                                billing.get("outputMultiplier").getAsDouble()) : LlmCostRate.DEFAULT;
                 providers.add(new ProviderEntry(name, type, format, model, url, maskedKey,
-                        status, statusKind, configured));
+                        status, statusKind, configured, rate));
             }
         } catch (Exception ignored) {}
         updateScrollRange();
@@ -200,9 +205,13 @@ public class ProviderListPanel extends AbstractWidget {
                     && mouseY >= rowY && mouseY < rowY + ROW_HEIGHT - 2;
             if (overDelete) {
                 graphics.renderTooltip(font, text("providers.delete.tip", hovered.name), mouseX, mouseY);
+            } else if ("raw".equals(hovered.type)) {
+                graphics.renderTooltip(font, text("providers.raw.tip", hovered.rate.inputMultiplier(),
+                        hovered.rate.outputMultiplier()), mouseX, mouseY);
             } else {
                 graphics.renderTooltip(font, text("providers.row.tip", hovered.name, hovered.format,
-                        hovered.model, font.plainSubstrByWidth(hovered.url, 300), hovered.maskedKey), mouseX, mouseY);
+                        hovered.model, font.plainSubstrByWidth(hovered.url, 300), hovered.maskedKey,
+                        hovered.rate.inputMultiplier(), hovered.rate.outputMultiplier()), mouseX, mouseY);
             }
         }
     }
@@ -228,9 +237,10 @@ public class ProviderListPanel extends AbstractWidget {
                     LLMNetwork.CHANNEL.sendToServer(new C2SDeleteProviderPacket(p.name));
                     return true;
                 }
+                if ("raw".equals(p.type)) return true;
                 var screen = Minecraft.getInstance().screen;
                 if (screen instanceof LLMConsoleScreen console) {
-                    console.openSetupFor(p.name, p.format, p.url, p.model, p.maskedKey);
+                    console.openSetupFor(p.name, p.format, p.url, p.model, p.maskedKey, p.rate);
                     return true;
                 }
             }

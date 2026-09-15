@@ -81,13 +81,20 @@ class LlmRouteExecutionTest {
         AtomicInteger sent = new AtomicInteger();
         AtomicInteger settlements = new AtomicInteger();
         AtomicInteger estimatedSettlements = new AtomicInteger();
+        Map<String, LlmRequestAccounting.AttemptEstimate> estimates = new java.util.concurrent.ConcurrentHashMap<>();
+        Map<String, LlmRequestAccounting.AttemptUsage> usages = new java.util.concurrent.ConcurrentHashMap<>();
         LlmRequestAccounting.install(new LlmRequestAccounting.Policy() {
             @Override public LlmRequestAccounting.Reservation reserve(LlmRequest request, LlmRequestAccounting.AttemptEstimate estimate) {
-                return LlmRequestAccounting.Reservation.allow(estimate.provider(), 100);
+                estimates.put(estimate.provider(), estimate);
+                return LlmRequestAccounting.Reservation.allow(estimate.provider(), estimate.totalTokens(),
+                        estimate.totalCostUnits());
             }
             @Override public void settle(LlmRequest request, LlmRequestAccounting.Reservation reservation, LlmRequestAccounting.AttemptUsage usage) {
                 settlements.incrementAndGet();
-                if (usage != null && usage.estimatedTokens() == 100) estimatedSettlements.incrementAndGet();
+                if (usage != null) {
+                    usages.put(reservation.reservationId(), usage);
+                    if (usage.estimatedTokens() > 0) estimatedSettlements.incrementAndGet();
+                }
             }
         });
         server.createContext("/slow", exchange -> {
@@ -110,14 +117,23 @@ class LlmRouteExecutionTest {
             reply(exchange, 200, completion("fast", "stop"));
         });
         List<String> deltas = new CopyOnWriteArrayList<>();
-        LlmResponse result = core("(slow*0 | fast*0)", "slow", "fast")
-                .sendStreaming(request(), deltas::add).get(5, TimeUnit.SECONDS);
+        LlmOrchestrator runtime = core("(slow*0 | fast*0)", "slow", "fast");
+        long rawCeiling = runtime.estimateWorstCaseBudget(request()).maxTokens();
+        runtime.replaceProviderProfiles(Map.of(
+                "slow", new ProviderProfile("slow", ProviderCapabilities.textOnly(), new LlmCostRate(2, 4)),
+                "fast", new ProviderProfile("fast", ProviderCapabilities.textOnly(), new LlmCostRate(0.5, 2))));
+        assertEquals(rawCeiling, runtime.estimateWorstCaseBudget(request()).maxTokens());
+        LlmResponse result = runtime.sendStreaming(request(), deltas::add).get(5, TimeUnit.SECONDS);
         assertEquals("fast", result.content());
         assertEquals(2, sent.get());
         assertTrue(deltas.isEmpty());
         assertTrue(result.attempts().stream().anyMatch(attempt -> attempt.finishReason().equals("cancelled")));
         assertEquals(2, settlements.get());
         assertEquals(1, estimatedSettlements.get(), "a sent loser may still be billed by its provider");
+        assertEquals(estimates.get("slow").totalCostUnits(), usages.get("slow").totalCostUnits());
+        assertEquals(estimates.get("slow").totalTokens(), usages.get("slow").estimatedTokens());
+        assertEquals(16L, usages.get("fast").totalCostUnits()); // ceil(3 * .5) + 7 * 2
+        assertEquals(10L, usages.get("fast").totalTokens());
     }
 
     @Test void emptyAndTruncatedRepliesCannotWinARace() throws Exception {

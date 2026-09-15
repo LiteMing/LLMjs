@@ -48,7 +48,7 @@ public class LLMConfig {
                 "OP level 2 only grants log viewing by default.")
                 .defineListAllowEmpty("admin_uuid_whitelist", List.of(), LLMConfig::isUuid);
         PERSONAL_BUDGET_DEFAULT = BUILDER.comment(
-                "Default cumulative input + output token limit for players without an override.",
+                "Default cumulative weighted cost-unit limit for players without an override.",
                 "-1 = unlimited, 0 = disabled, positive values are finite token quotas.",
                 "Usage is stored per world by UUID. Attempts without provider usage metadata are charged",
                 "their full conservative reservation. Offline-mode UUIDs require a trusted account system.")

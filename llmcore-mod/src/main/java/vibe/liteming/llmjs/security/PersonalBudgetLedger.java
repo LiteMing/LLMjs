@@ -25,12 +25,12 @@ import java.util.UUID;
 
 /** Atomic per-world token usage store. Any malformed content fails closed. */
 final class PersonalBudgetLedger {
-    static final int SCHEMA_VERSION = 2;
+    static final int SCHEMA_VERSION = 3;
     private static final long USAGE_FLUSH_INTERVAL_MS = 5_000L;
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     record Usage(UUID playerId, long promptTokens, long completionTokens, long estimatedTokens,
-            long requestCount, Long limitTokens, long updatedAtMs) {
+            long costUnits, long requestCount, Long limitTokens, long updatedAtMs) {
         long totalTokens() {
             return saturatedAdd(saturatedAdd(promptTokens, completionTokens), estimatedTokens);
         }
@@ -57,7 +57,7 @@ final class PersonalBudgetLedger {
 
     synchronized Usage usage(UUID playerId) {
         Usage usage = playerId == null ? null : usageByPlayer.get(playerId);
-        return usage == null ? new Usage(playerId, 0L, 0L, 0L, 0L, null, 0L) : usage;
+        return usage == null ? new Usage(playerId, 0L, 0L, 0L, 0L, 0L, null, 0L) : usage;
     }
 
     synchronized List<Usage> list() {
@@ -67,7 +67,7 @@ final class PersonalBudgetLedger {
     }
 
     synchronized Usage record(UUID playerId, long promptTokens, long completionTokens,
-            long estimatedTokens, long nowMs) {
+            long estimatedTokens, long costUnits, long nowMs) {
         requireWritable();
         Objects.requireNonNull(playerId, "playerId");
         Usage stored = usageByPlayer.get(playerId);
@@ -76,6 +76,7 @@ final class PersonalBudgetLedger {
                 saturatedAdd(previous.promptTokens(), Math.max(0L, promptTokens)),
                 saturatedAdd(previous.completionTokens(), Math.max(0L, completionTokens)),
                 saturatedAdd(previous.estimatedTokens(), Math.max(0L, estimatedTokens)),
+                saturatedAdd(previous.costUnits(), Math.max(0L, costUnits)),
                 saturatedAdd(previous.requestCount(), 1L),
                 previous.limitTokens(),
                 Math.max(0L, nowMs));
@@ -114,7 +115,7 @@ final class PersonalBudgetLedger {
         if (previous.limitTokens() == null) {
             usageByPlayer.remove(playerId);
         } else {
-            usageByPlayer.put(playerId, new Usage(playerId, 0L, 0L, 0L, 0L,
+            usageByPlayer.put(playerId, new Usage(playerId, 0L, 0L, 0L, 0L, 0L,
                     previous.limitTokens(), previous.updatedAtMs()));
         }
         try {
@@ -142,7 +143,7 @@ final class PersonalBudgetLedger {
             usageByPlayer.remove(playerId);
         } else {
             usageByPlayer.put(playerId, new Usage(playerId, current.promptTokens(),
-                    current.completionTokens(), current.estimatedTokens(), current.requestCount(), limitTokens,
+                    current.completionTokens(), current.estimatedTokens(), current.costUnits(), current.requestCount(), limitTokens,
                     Math.max(0L, nowMs)));
         }
         try {
@@ -160,13 +161,16 @@ final class PersonalBudgetLedger {
 
     private void load() {
         if (!Files.isRegularFile(file)) return;
-        try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
-            JsonObject root = JsonParser.parseReader(reader).getAsJsonObject();
+        try {
+            JsonObject root;
+            try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+                root = JsonParser.parseReader(reader).getAsJsonObject();
+            }
             if (!root.has("schemaVersion")) {
                 throw new IllegalArgumentException("missing schemaVersion");
             }
             int schemaVersion = root.get("schemaVersion").getAsInt();
-            if (schemaVersion != 1 && schemaVersion != SCHEMA_VERSION) {
+            if (schemaVersion != 1 && schemaVersion != 2 && schemaVersion != SCHEMA_VERSION) {
                 throw new IllegalArgumentException("unsupported schemaVersion");
             }
             JsonArray entries = root.has("players") && root.get("players").isJsonArray()
@@ -178,6 +182,11 @@ final class PersonalBudgetLedger {
                         nonNegative(value, "promptTokens"),
                         nonNegative(value, "completionTokens"),
                         nonNegative(value, "estimatedTokens"),
+                        schemaVersion >= 3
+                                ? nonNegative(value, "costUnits")
+                                : saturatedAdd(saturatedAdd(nonNegative(value, "promptTokens"),
+                                        nonNegative(value, "completionTokens")),
+                                        nonNegative(value, "estimatedTokens")),
                         schemaVersion >= 2 && value.has("requestCount")
                                 ? nonNegative(value, "requestCount") : 0L,
                         schemaVersion >= 2 ? optionalLimit(value) : null,
@@ -185,6 +194,12 @@ final class PersonalBudgetLedger {
                 if (usageByPlayer.put(playerId, usage) != null) {
                     throw new IllegalArgumentException("duplicate playerId " + playerId);
                 }
+            }
+            if (schemaVersion < SCHEMA_VERSION) {
+                Path backup = file.resolveSibling(file.getFileName() + ".schema-" + schemaVersion
+                        + "." + UUID.randomUUID() + ".bak");
+                Files.copy(file, backup);
+                persist();
             }
         } catch (IOException | RuntimeException failure) {
             usageByPlayer.clear();
@@ -219,6 +234,7 @@ final class PersonalBudgetLedger {
             value.addProperty("promptTokens", usage.promptTokens());
             value.addProperty("completionTokens", usage.completionTokens());
             value.addProperty("estimatedTokens", usage.estimatedTokens());
+            value.addProperty("costUnits", usage.costUnits());
             value.addProperty("requestCount", usage.requestCount());
             if (usage.limitTokens() != null) value.addProperty("limitTokens", usage.limitTokens());
             value.addProperty("updatedAtMs", usage.updatedAtMs());

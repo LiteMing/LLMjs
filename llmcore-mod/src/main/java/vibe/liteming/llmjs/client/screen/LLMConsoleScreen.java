@@ -313,6 +313,7 @@ public class LLMConsoleScreen extends Screen {
 
     public void onStatusUpdate(String statusJson) {
         readPermissions(statusJson);
+        if (setupPanel != null) setupPanel.onStatusUpdate(statusJson);
         if (providerPanel != null) {
             providerPanel.updateStatus(statusJson);
             if (budgetPanel != null) {
@@ -339,10 +340,11 @@ public class LLMConsoleScreen extends Screen {
         }
     }
 
-    public void openSetupFor(String name, String format, String url, String model, @Nullable String maskedKey) {
+    public void openSetupFor(String name, String format, String url, String model, @Nullable String maskedKey,
+            vibe.liteming.llmcore.LlmCostRate rate) {
         if (!canAdminister) return;
         switchTab(Tab.SETUP);
-        if (setupPanel != null) setupPanel.prefill(name, format, url, model, maskedKey);
+        if (setupPanel != null) setupPanel.prefill(name, format, url, model, maskedKey, rate);
     }
 
     public void onVisionProbeResult(String providerName, boolean supported, String error, long latencyMs) {

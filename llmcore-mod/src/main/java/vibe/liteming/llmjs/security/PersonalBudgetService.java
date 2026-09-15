@@ -19,7 +19,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.function.LongSupplier;
 
-/** Global chain ceilings plus persistent per-player token accounting and limits. */
+/** Global chain ceilings plus persistent per-player token and weighted-cost accounting. */
 public final class PersonalBudgetService implements LlmRequestAccounting.Policy {
     public static final PersonalBudgetService INSTANCE =
             new PersonalBudgetService(() -> LLMConfig.PERSONAL_BUDGET_DEFAULT.get());
@@ -30,14 +30,15 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
     private static final int MAX_CHAIN_STATES_PER_PRINCIPAL = 1_024;
 
     public record Status(UUID playerId, long promptTokens, long completionTokens,
-            long estimatedTokens, long totalTokens, long requestCount, long reservedTokens, long limitTokens,
+            long estimatedTokens, long totalTokens, long costUnits, long requestCount,
+            long reservedTokens, long reservedCostUnits, long limitTokens,
             boolean inheritedLimit, boolean unlimited, boolean disabled,
             boolean exhausted, boolean storageAvailable) {
     }
 
     public record PrincipalStatus(LlmBillingContext.PrincipalKind principalKind,
             long promptTokens, long completionTokens, long estimatedTokens,
-            long totalTokens, long requestCount) {
+            long totalTokens, long costUnits, long requestCount) {
     }
 
     public record DefaultLimitStatus(long limitTokens, boolean fallback) {
@@ -47,6 +48,7 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
         private long promptTokens;
         private long completionTokens;
         private long estimatedTokens;
+        private long costUnits;
         private long requestCount;
     }
 
@@ -71,7 +73,8 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
     private record ChainKey(PrincipalBucket principal, String rootId) {
     }
 
-    private record Pending(ChainKey chainKey, UUID playerId, long reservedTokens, long expiresAtMs) {
+    private record Pending(ChainKey chainKey, UUID playerId, long reservedTokens,
+            long reservedCostUnits, long expiresAtMs) {
     }
 
     private final LongSupplier defaultLimitSupplier;
@@ -80,7 +83,7 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
     private final Map<ChainKey, ChainState> chains = new HashMap<>();
     private final Map<PrincipalBucket, Integer> chainCounts = new HashMap<>();
     private final Map<String, Pending> pendingById = new HashMap<>();
-    private final Map<UUID, Long> reservedByPlayer = new HashMap<>();
+    private final Map<UUID, Long> reservedCostByPlayer = new HashMap<>();
     private final Map<LlmBillingContext.PrincipalKind, PrincipalTotals> usageByPrincipal = new HashMap<>();
     private volatile PersonalBudgetLedger ledger;
     private boolean defaultLimitFallback;
@@ -100,7 +103,7 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
         chains.clear();
         chainCounts.clear();
         pendingById.clear();
-        reservedByPlayer.clear();
+        reservedCostByPlayer.clear();
         usageByPrincipal.clear();
         defaultLimitFallback = false;
     }
@@ -119,7 +122,7 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
         chains.clear();
         chainCounts.clear();
         pendingById.clear();
-        reservedByPlayer.clear();
+        reservedCostByPlayer.clear();
         usageByPrincipal.clear();
         defaultLimitFallback = false;
     }
@@ -154,8 +157,8 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
             return deny(LlmRequestAccounting.DenyCode.BUDGET_EXHAUSTED,
                     "Personal token budget is disabled");
         }
-        long reserved = reservedByPlayer.getOrDefault(playerId, 0L);
-        if (effectiveLimit > 0L && saturatedAdd(usage.totalTokens(), reserved) >= effectiveLimit) {
+        long reserved = reservedCostByPlayer.getOrDefault(playerId, 0L);
+        if (effectiveLimit > 0L && saturatedAdd(usage.costUnits(), reserved) >= effectiveLimit) {
             return deny(LlmRequestAccounting.DenyCode.BUDGET_EXHAUSTED,
                     "Personal token budget exhausted");
         }
@@ -184,8 +187,8 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
             PersonalBudgetLedger.Usage usage = active.usage(playerId);
             long effectiveLimit = effectiveLimit(usage.limitTokens());
             if (effectiveLimit > 0L) {
-                long reserved = reservedByPlayer.getOrDefault(playerId, 0L);
-                if (saturatedAdd(saturatedAdd(usage.totalTokens(), reserved), estimate.totalTokens())
+                long reserved = reservedCostByPlayer.getOrDefault(playerId, 0L);
+                if (saturatedAdd(saturatedAdd(usage.costUnits(), reserved), estimate.totalCostUnits())
                         > effectiveLimit) {
                     return deny(LlmRequestAccounting.DenyCode.BUDGET_EXHAUSTED,
                             "Personal token budget exhausted");
@@ -215,6 +218,7 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
         chain.maxTokens = Math.min(chain.maxTokens, billing.maxTokens());
         chain.touchedAtMs = nowMs;
         long reservationTokens = estimate.totalTokens();
+        long reservationCostUnits = estimate.totalCostUnits();
         if (chain.calls >= chain.maxCalls) {
             return deny(LlmRequestAccounting.DenyCode.CHAIN_CALLS_EXHAUSTED,
                     "Causal chain call budget exhausted");
@@ -229,12 +233,13 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
         chain.calls++;
         chain.reservedTokens = saturatedAdd(chain.reservedTokens, reservationTokens);
         pendingById.put(reservationId, new Pending(chainKey, playerId, reservationTokens,
+                reservationCostUnits,
                 saturatedAdd(nowMs, pendingTtlMs)));
         if (playerId != null) {
-            reservedByPlayer.put(playerId,
-                    saturatedAdd(reservedByPlayer.getOrDefault(playerId, 0L), reservationTokens));
+            reservedCostByPlayer.put(playerId,
+                    saturatedAdd(reservedCostByPlayer.getOrDefault(playerId, 0L), reservationCostUnits));
         }
-        return LlmRequestAccounting.Reservation.allow(reservationId, reservationTokens);
+        return LlmRequestAccounting.Reservation.allow(reservationId, reservationTokens, reservationCostUnits);
     }
 
     @Override
@@ -254,12 +259,12 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
             recordPrincipalUsage(pending.chainKey().principal().kind(), usage);
         }
         if (pending.playerId() == null) return;
-        reducePlayerReservation(pending.playerId(), pending.reservedTokens());
+        reducePlayerReservation(pending.playerId(), pending.reservedCostUnits());
         PersonalBudgetLedger active = ledger;
         if (active == null || usage == null || actualTokens <= 0L) return;
         try {
             active.record(pending.playerId(), usage.promptTokens(), usage.completionTokens(),
-                    usage.estimatedTokens(), now());
+                    usage.estimatedTokens(), usage.totalCostUnits(), now());
         } catch (RuntimeException failure) {
             LlmCoreMod.LOGGER.error("Failed to persist personal token usage for {}: {}",
                     pending.playerId(), failure.toString());
@@ -269,10 +274,16 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
     public synchronized Status status(UUID playerId) {
         pruneExpiredPending(now());
         PersonalBudgetLedger active = ledger;
-        long reserved = playerId == null ? 0L : reservedByPlayer.getOrDefault(playerId, 0L);
+        long reserved = playerId == null ? 0L : reservedCostByPlayer.getOrDefault(playerId, 0L);
+        long reservedTokens = 0L;
+        for (Pending pending : pendingById.values()) {
+            if (playerId != null && playerId.equals(pending.playerId())) {
+                reservedTokens = saturatedAdd(reservedTokens, pending.reservedTokens());
+            }
+        }
         if (active == null || playerId == null) {
             long limit = defaultLimit();
-            return new Status(playerId, 0L, 0L, 0L, 0L, 0L, reserved, limit,
+            return new Status(playerId, 0L, 0L, 0L, 0L, 0L, 0L, 0L, reserved, limit,
                     true, limit == -1L, limit == 0L, limit == 0L, false);
         }
         PersonalBudgetLedger.Usage usage = active.usage(playerId);
@@ -280,9 +291,9 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
         long limit = effectiveLimit(usage.limitTokens());
         long total = usage.totalTokens();
         boolean exhausted = limit == 0L
-                || (limit > 0L && saturatedAdd(total, reserved) >= limit);
+                || (limit > 0L && saturatedAdd(usage.costUnits(), reserved) >= limit);
         return new Status(playerId, usage.promptTokens(), usage.completionTokens(),
-                usage.estimatedTokens(), total, usage.requestCount(), reserved, limit, inherited,
+                usage.estimatedTokens(), total, usage.costUnits(), usage.requestCount(), reservedTokens, reserved, limit, inherited,
                 limit == -1L, limit == 0L, exhausted, active.isWritable());
     }
 
@@ -292,7 +303,7 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
         if (active == null) return List.of();
         Set<UUID> playerIds = new LinkedHashSet<>();
         active.list().forEach(usage -> playerIds.add(usage.playerId()));
-        playerIds.addAll(reservedByPlayer.keySet());
+        playerIds.addAll(reservedCostByPlayer.keySet());
         List<Status> statuses = new ArrayList<>(playerIds.size());
         playerIds.stream().sorted().forEach(playerId -> statuses.add(status(playerId)));
         return List.copyOf(statuses);
@@ -306,8 +317,8 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
             statuses.add(new PrincipalStatus(kind, totals.promptTokens, totals.completionTokens,
                     totals.estimatedTokens,
                     saturatedAdd(saturatedAdd(totals.promptTokens, totals.completionTokens),
-                            totals.estimatedTokens),
-                    totals.requestCount));
+                            totals.estimatedTokens), totals.costUnits,
+                            totals.requestCount));
         }
         return List.copyOf(statuses);
     }
@@ -354,10 +365,12 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
         json.addProperty("completionTokens", status.completionTokens());
         json.addProperty("estimatedTokens", status.estimatedTokens());
         json.addProperty("totalTokens", status.totalTokens());
+        json.addProperty("costUnits", status.costUnits());
         json.addProperty("requestCount", status.requestCount());
         json.addProperty("averageTokens", status.requestCount() == 0L
                 ? 0L : status.totalTokens() / status.requestCount());
         json.addProperty("reservedTokens", status.reservedTokens());
+        json.addProperty("reservedCostUnits", status.reservedCostUnits());
         json.addProperty("limitTokens", status.limitTokens());
         json.addProperty("limitInherited", status.inheritedLimit());
         json.addProperty("unlimited", status.unlimited());
@@ -376,6 +389,7 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
             json.addProperty("completionTokens", status.completionTokens());
             json.addProperty("estimatedTokens", status.estimatedTokens());
             json.addProperty("totalTokens", status.totalTokens());
+            json.addProperty("costUnits", status.costUnits());
             json.addProperty("requestCount", status.requestCount());
             json.addProperty("estimatedRatio", status.totalTokens() == 0L
                     ? 0.0D : (double) status.estimatedTokens() / (double) status.totalTokens());
@@ -436,9 +450,9 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
     }
 
     private void reducePlayerReservation(UUID playerId, long amount) {
-        long remaining = Math.max(0L, reservedByPlayer.getOrDefault(playerId, 0L) - amount);
-        if (remaining == 0L) reservedByPlayer.remove(playerId);
-        else reservedByPlayer.put(playerId, remaining);
+        long remaining = Math.max(0L, reservedCostByPlayer.getOrDefault(playerId, 0L) - amount);
+        if (remaining == 0L) reservedCostByPlayer.remove(playerId);
+        else reservedCostByPlayer.put(playerId, remaining);
     }
 
     private void recordPrincipalUsage(LlmBillingContext.PrincipalKind kind,
@@ -447,6 +461,7 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
         totals.promptTokens = saturatedAdd(totals.promptTokens, usage.promptTokens());
         totals.completionTokens = saturatedAdd(totals.completionTokens, usage.completionTokens());
         totals.estimatedTokens = saturatedAdd(totals.estimatedTokens, usage.estimatedTokens());
+        totals.costUnits = saturatedAdd(totals.costUnits, usage.totalCostUnits());
         totals.requestCount = saturatedAdd(totals.requestCount, 1L);
     }
 
@@ -463,7 +478,7 @@ public final class PersonalBudgetService implements LlmRequestAccounting.Policy 
                 chain.touchedAtMs = nowMs;
             }
             if (pending.playerId() != null) {
-                reducePlayerReservation(pending.playerId(), pending.reservedTokens());
+                reducePlayerReservation(pending.playerId(), pending.reservedCostUnits());
             }
             LlmCoreMod.LOGGER.warn("Released expired LLM token reservation for causal root {}",
                     pending.chainKey().rootId());

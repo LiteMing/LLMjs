@@ -1,6 +1,7 @@
 package vibe.liteming.llmjs.client.widget;
 
 import vibe.liteming.llmjs.network.LLMNetwork;
+import vibe.liteming.llmcore.LlmCostRate;
 import vibe.liteming.llmjs.network.packet.C2SSetupProviderPacket;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
@@ -29,20 +30,23 @@ public class SetupPanel {
     private final EditBox urlInput;
     private final EditBox modelInput;
     private final EditBox keyInput;
+    private final EditBox inputCostInput;
+    private final EditBox outputCostInput;
     private final Button saveButton;
     private final Button clearKeyButton;
     private @Nullable String statusMessage;
     private int statusColor = 0xFFFFFF;
     private boolean visible = true;
     private boolean editMode = false;
+    private String pendingSaveId = "";
     private @Nullable String currentMaskedKey;
 
     private static final int LABEL_W = 70;
     private static final int ROW_H = 26;
     private static final int COMPACT_ROW_H = 20;
-    private static final int NORMAL_MIN_CONTENT_HEIGHT = 224;
-    private static final int COMPACT_MIN_CONTENT_HEIGHT = 150;
-    private static final int STACKED_MIN_CONTENT_HEIGHT = 320;
+    private static final int NORMAL_MIN_CONTENT_HEIGHT = 276;
+    private static final int COMPACT_MIN_CONTENT_HEIGHT = 224;
+    private static final int STACKED_MIN_CONTENT_HEIGHT = 388;
 
     public SetupPanel(int x, int y, int width, int height, Font font) {
         this.x = x;
@@ -82,6 +86,13 @@ public class SetupPanel {
                 "*".repeat(Math.max(0, value.length())), net.minecraft.network.chat.Style.EMPTY));
         row += ROW_H + 6;
 
+        inputCostInput = new EditBox(font, inputX, row, inputW, 18, text("setup.input_cost"));
+        outputCostInput = new EditBox(font, inputX, row, inputW, 18, text("setup.output_cost"));
+        for (EditBox input : List.of(inputCostInput, outputCostInput)) {
+            input.setMaxLength(24);
+            input.setValue("1.0");
+            tooltip(input, "setup.cost.tip");
+        }
         saveButton = tooltip(Button.builder(text("setup.save"), b -> save())
                 .pos(inputX, row).size(100, 20).build(), "setup.save.tip");
         clearKeyButton = tooltip(Button.builder(text("setup.clear_key"), b -> {
@@ -98,7 +109,7 @@ public class SetupPanel {
     }
 
     public List<net.minecraft.client.gui.components.AbstractWidget> getWidgets() {
-        return List.of(nameInput, formatInput, urlInput, modelInput, keyInput, saveButton, clearKeyButton);
+        return List.of(nameInput, formatInput, urlInput, modelInput, keyInput, inputCostInput, outputCostInput, saveButton, clearKeyButton);
     }
 
     public void setBounds(int x, int y, int width, int height) {
@@ -138,22 +149,22 @@ public class SetupPanel {
     }
 
     private int buttonRelativeY() {
-        if (stackedLayout) return 184;
-        if (compactLayout()) return fieldRelativeY(4) + 18 + 6;
-        return 146;
+        if (stackedLayout) return 252;
+        if (compactLayout()) return fieldRelativeY(6) + 18 + 6;
+        return 198;
     }
 
     private int statusRelativeY() {
-        if (stackedLayout) return 238;
+        if (stackedLayout) return 306;
         if (compactLayout()) return buttonRelativeY() + 24;
-        return 176;
+        return 228;
     }
 
     private void layoutWidgets() {
         int inputX = stackedLayout ? x + 8 : x + LABEL_W + 10;
         int inputW = stackedLayout ? Math.max(40, width - 20)
                 : Math.max(60, Math.min(width - LABEL_W - 28, 360));
-        List<EditBox> inputs = List.of(nameInput, formatInput, urlInput, modelInput, keyInput);
+        List<EditBox> inputs = List.of(nameInput, formatInput, urlInput, modelInput, keyInput, inputCostInput, outputCostInput);
         for (int index = 0; index < inputs.size(); index++) {
             place(inputs.get(index), inputX, contentY(fieldRelativeY(index)), inputW, 18);
         }
@@ -186,9 +197,14 @@ public class SetupPanel {
 
     public boolean isVisible() { return visible; }
 
-    public void prefill(String name, String format, String url, String model, @Nullable String maskedKey) {
+    public void prefill(String name, String format, String url, String model, @Nullable String maskedKey,
+            LlmCostRate rate) {
+        pendingSaveId = "";
+        getWidgets().forEach(widget -> widget.active = true);
         editMode = true;
         currentMaskedKey = maskedKey;
+        inputCostInput.setValue(Double.toString(rate.inputMultiplier()));
+        outputCostInput.setValue(Double.toString(rate.outputMultiplier()));
         nameInput.setValue(name == null ? "" : name);
         if (format != null && !format.isEmpty() && !"-".equals(format)) formatInput.setValue(format);
         urlInput.setValue(url == null ? "" : url);
@@ -208,6 +224,7 @@ public class SetupPanel {
     }
 
     private void save() {
+        if (!pendingSaveId.isEmpty()) return;
         String name = nameInput.getValue().strip();
         String format = formatInput.getValue().strip();
         String url = urlInput.getValue().strip();
@@ -230,13 +247,40 @@ public class SetupPanel {
             return;
         }
 
+        LlmCostRate rate;
+        try {
+            rate = new LlmCostRate(Double.parseDouble(inputCostInput.getValue().strip()),
+                    Double.parseDouble(outputCostInput.getValue().strip()));
+        } catch (IllegalArgumentException invalid) {
+            statusMessage = string("setup.validation.cost_rate");
+            statusColor = 0xFF5555;
+            return;
+        }
         String sendKey = key.isEmpty() ? "__KEEP__" : key;
-        LLMNetwork.CHANNEL.sendToServer(new C2SSetupProviderPacket(name, url, model, sendKey, format));
-        statusMessage = string(key.isEmpty() ? "setup.status.saved_unchanged" : "setup.status.saved", name);
-        statusColor = 0x55FF55;
-        keyInput.setValue("");
-        editMode = true;
-        if (!key.isEmpty()) currentMaskedKey = "****";
+        pendingSaveId = java.util.UUID.randomUUID().toString();
+        LLMNetwork.CHANNEL.sendToServer(new C2SSetupProviderPacket(name, url, model, sendKey, format,
+                rate.inputMultiplier(), rate.outputMultiplier(), pendingSaveId));
+        statusMessage = string("setup.status.saving", name);
+        statusColor = 0xFFFF55;
+        getWidgets().forEach(widget -> widget.active = false);
+    }
+
+    public void onStatusUpdate(String statusJson) {
+        if (pendingSaveId.isEmpty()) return;
+        var root = com.google.gson.JsonParser.parseString(statusJson).getAsJsonObject();
+        if (!root.has("providerSave")) return;
+        var result = root.getAsJsonObject("providerSave");
+        if (!pendingSaveId.equals(result.get("requestId").getAsString())) return;
+        pendingSaveId = "";
+        getWidgets().forEach(widget -> widget.active = true);
+        String outcome = result.get("outcome").getAsString();
+        statusMessage = string("setup.status." + outcome, result.get("name").getAsString());
+        statusColor = "applied".equals(outcome) ? 0x55FF55 : 0xFF5555;
+        if ("applied".equals(outcome)) {
+            if (!keyInput.getValue().isEmpty()) currentMaskedKey = "****";
+            keyInput.setValue("");
+            editMode = true;
+        }
     }
 
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float partialTick) {
@@ -248,7 +292,8 @@ public class SetupPanel {
         graphics.enableScissor(x, y, x + width, y + height);
 
         int labelX = x + 8;
-        String[] labelKeys = {"setup.name", "setup.format", "setup.url", "setup.model", "setup.api_key"};
+        String[] labelKeys = {"setup.name", "setup.format", "setup.url", "setup.model", "setup.api_key",
+                "setup.input_cost", "setup.output_cost"};
         for (int index = 0; index < labelKeys.length; index++) {
             graphics.drawString(font, text(labelKeys[index]), labelX, contentY(labelRelativeY(index)), 0xFFFFFF, false);
         }

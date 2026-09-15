@@ -68,7 +68,7 @@ public final class LlmOrchestrator implements AutoCloseable {
         for (String name : providers.keySet()) {
             ProviderProfile profile = profiles == null ? null : profiles.get(name);
             replacement.put(name, profile == null ? ProviderProfile.textOnly(name)
-                    : new ProviderProfile(name, profile.capabilities()));
+                    : new ProviderProfile(name, profile.capabilities(), profile.costRate()));
         }
         providerProfiles.clear();
         providerProfiles.putAll(replacement);
@@ -363,7 +363,7 @@ public final class LlmOrchestrator implements AutoCloseable {
                 if (provider == null || provider.credentials.isEmpty()) continue;
                 int attempts = target.maxAttempts(provider.credentials.size());
                 LlmRequestAccounting.AttemptEstimate estimate = attemptEstimate(
-                        request, provider.spec, resolveParameters(request, target.provider(), purposeOptions));
+                        request, provider.spec, resolveParameters(request, target.provider(), purposeOptions), costRate(provider.spec));
                 calls = saturatedAdd(calls, attempts);
                 tokens = saturatedAdd(tokens, saturatedMultiply(estimate.totalTokens(), attempts));
             }
@@ -454,34 +454,43 @@ public final class LlmOrchestrator implements AutoCloseable {
         return response;
     }
 
-    private static LlmRequestAccounting.AttemptEstimate attemptEstimate(LlmRequest request,
-            ProviderSpec provider, LlmResolvedParameters parameters) {
+    private LlmRequestAccounting.AttemptEstimate attemptEstimate(LlmRequest request,
+            ProviderSpec provider, LlmResolvedParameters parameters, LlmCostRate rate) {
         long inputTokens = 0L;
         for (LlmMessage message : request.messages()) {
             inputTokens = saturatedAdd(inputTokens,
                     Math.max(0, LlmMessageFinalizer.CONSERVATIVE_ESTIMATOR.estimate(message)));
         }
+        long outputTokens = Math.max(0, parameters.outputReserveTokens());
         return new LlmRequestAccounting.AttemptEstimate(provider.name(), inputTokens,
-                Math.max(0, parameters.outputReserveTokens()));
+                outputTokens, rate.weightedEstimate(inputTokens, outputTokens));
+    }
+
+    private LlmCostRate costRate(ProviderSpec provider) {
+        ProviderProfile profile = providerProfiles.get(provider.name());
+        return profile == null ? LlmCostRate.DEFAULT : profile.costRate();
     }
 
     private static LlmRequestAccounting.AttemptUsage attemptUsage(
-            LlmRequestAccounting.Reservation reservation, int promptTokens, int completionTokens) {
+            LlmRequestAccounting.Reservation reservation, LlmCostRate rate,
+            int promptTokens, int completionTokens) {
         if (promptTokens > 0 || completionTokens > 0) {
-            return new LlmRequestAccounting.AttemptUsage(promptTokens, completionTokens, 0L);
+            return new LlmRequestAccounting.AttemptUsage(promptTokens, completionTokens, 0L,
+                    rate.weightedTokens(promptTokens, completionTokens));
         }
-        return new LlmRequestAccounting.AttemptUsage(0L, 0L, reservation.reservedTokens());
+        return new LlmRequestAccounting.AttemptUsage(0L, 0L, reservation.reservedTokens(),
+                reservation.reservedCostUnits());
     }
 
     private static void finishAccounting(LlmRequest request,
             LlmRequestAccounting.Reservation reservation, boolean success,
-            int promptTokens, int completionTokens) {
+            LlmCostRate rate, int promptTokens, int completionTokens) {
         if (!success) {
             LlmRequestAccounting.release(request, reservation);
             return;
         }
         LlmRequestAccounting.settle(request, reservation,
-                attemptUsage(reservation, promptTokens, completionTokens));
+                attemptUsage(reservation, rate, promptTokens, completionTokens));
     }
 
     record AttemptResult(SingleResult result, HostedWebSearchAdapters.Evidence evidence,
@@ -555,8 +564,9 @@ public final class LlmOrchestrator implements AutoCloseable {
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(requestBody));
         applyHeaders(builder, format, credential.key());
+        LlmCostRate rate = costRate(provider);
         LlmRequestAccounting.Reservation reservation = LlmRequestAccounting.reserve(request,
-                attemptEstimate(request, provider, parameters));
+                attemptEstimate(request, provider, parameters, rate));
         if (!reservation.allowed()) {
             return CompletableFuture.completedFuture(
                     SingleResult.policyFailure(reservation.denyCode(), reservation.reason()));
@@ -581,6 +591,7 @@ public final class LlmOrchestrator implements AutoCloseable {
             finishAccounting(request, reservation,
                     throwable == null && result != null && result.success
                             || transport != null && uncertainUsage(throwable),
+                    rate,
                     result == null ? 0 : result.promptTokens, result == null ? 0 : result.completionTokens);
             settled.complete(throwable == null ? result : SingleResult.failure(rootMessage(throwable), 0,
                         System.currentTimeMillis() - startedAt, requestBody, ""));
@@ -603,8 +614,9 @@ public final class LlmOrchestrator implements AutoCloseable {
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(requestBody));
         applyHeaders(builder, format, credential.key());
+        LlmCostRate rate = costRate(provider);
         LlmRequestAccounting.Reservation reservation = LlmRequestAccounting.reserve(request,
-                attemptEstimate(request, provider, parameters));
+                attemptEstimate(request, provider, parameters, rate));
         if (!reservation.allowed()) {
             return CompletableFuture.completedFuture(new SearchSingleResult(
                     SingleResult.policyFailure(reservation.denyCode(), reservation.reason()),
@@ -640,6 +652,7 @@ public final class LlmOrchestrator implements AutoCloseable {
             finishAccounting(request, reservation,
                     throwable == null && result != null && result.result.success
                             || transport != null && uncertainUsage(throwable),
+                    rate,
                     result == null ? 0 : result.result.promptTokens, result == null ? 0 : result.result.completionTokens);
             settled.complete(throwable == null ? result : SearchSingleResult.failure(rootMessage(throwable),
                         System.currentTimeMillis() - startedAt, requestBody));
@@ -661,8 +674,9 @@ public final class LlmOrchestrator implements AutoCloseable {
                 .header("Authorization", "Bearer " + credential.key())
                 .POST(HttpRequest.BodyPublishers.ofString(requestBody))
                 .build();
+        LlmCostRate rate = costRate(provider);
         LlmRequestAccounting.Reservation reservation = LlmRequestAccounting.reserve(request,
-                attemptEstimate(request, provider, parameters));
+                attemptEstimate(request, provider, parameters, rate));
         if (!reservation.allowed()) {
             return CompletableFuture.completedFuture(
                     StreamResult.policyFailure(reservation.denyCode(), reservation.reason()));
@@ -778,6 +792,7 @@ public final class LlmOrchestrator implements AutoCloseable {
                     promptTokens.get() > 0 || completionTokens.get() > 0
                             || throwable == null && result != null && (result.success || result.emittedContent)
                             || transport != null && uncertainUsage(throwable),
+                    rate,
                     promptTokens.get(), completionTokens.get());
             settled.complete(throwable == null ? result : StreamResult.failure(rootMessage(throwable), 0,
                         System.currentTimeMillis() - startedAt, false, requestBody, "")

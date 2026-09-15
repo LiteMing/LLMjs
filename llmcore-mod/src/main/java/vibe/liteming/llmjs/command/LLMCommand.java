@@ -180,14 +180,20 @@ public class LLMCommand {
     }
 
     private static int reloadConfig(CommandSourceStack source) {
-        ProviderManager.INSTANCE.reload();
+        if (!ProviderManager.INSTANCE.tryReload()) {
+            source.sendFailure(Component.translatable("command.llm.reload_failed"));
+            return 0;
+        }
         source.sendSuccess(() -> Component.literal("[LLM Core] Configuration reloaded"), false);
         return 1;
     }
 
     private static int setKey(CommandSourceStack source, String providerName, String apiKey) {
         if (ProviderLoader.setKey(providerName, apiKey)) {
-            ProviderManager.INSTANCE.reload();
+            if (!ProviderManager.INSTANCE.tryReload()) {
+                source.sendFailure(Component.translatable("command.llm.reload_failed"));
+                return 0;
+            }
             source.sendSuccess(() -> Component.literal("[LLM Core] Key set for '" + providerName + "', config reloaded"), false);
             return 1;
         } else {
@@ -358,7 +364,7 @@ public class LLMCommand {
         source.sendSuccess(() -> Component.translatable("command.llm.budget.status",
                 profile.getName(), status.playerId().toString(), status.totalTokens(), limit,
                 status.promptTokens(), status.completionTokens(), status.estimatedTokens(),
-                status.reservedTokens(), state, limitSource), false);
+                status.reservedTokens(), state, limitSource, status.costUnits(), status.reservedCostUnits()), false);
     }
 
     private static void refreshStatus(CommandSourceStack source) {

@@ -7,6 +7,7 @@ import vibe.liteming.llmcore.CapabilityPolicyStore;
 import vibe.liteming.llmcore.LlmCapabilityPolicy;
 import vibe.liteming.llmcore.LlmRouteOptions;
 import vibe.liteming.llmcore.LlmRoute;
+import vibe.liteming.llmcore.LlmCostRate;
 import vibe.liteming.llmcore.PriorityRoutingConfig;
 import vibe.liteming.llmcore.RoutingConfigStore;
 import vibe.liteming.llmjs.network.LLMNetwork;
@@ -74,6 +75,7 @@ public class RoutingPanel extends AbstractWidget {
     private final ConsoleScrollBar pageScroll = new ConsoleScrollBar();
     private List<PurposeRow> purposes = new ArrayList<>();
     private List<String> providerNames = new ArrayList<>();
+    private Map<String, LlmCostRate> costRates = new LinkedHashMap<>();
     private Map<String, LlmRoute> edited = new LinkedHashMap<>();
     private LlmRoute editedDefault = LlmRoute.empty();
     private Map<String, LlmRouteOptions> editedOptions = new LinkedHashMap<>();
@@ -129,6 +131,7 @@ public class RoutingPanel extends AbstractWidget {
     public void updateStatus(String statusJson) {
         List<PurposeRow> newPurposes = new ArrayList<>();
         List<String> newProviders = new ArrayList<>();
+        Map<String, LlmCostRate> newRates = new LinkedHashMap<>();
         Map<String, LlmRoute> serverRoutes = new LinkedHashMap<>();
         LlmRoute serverDefault = LlmRoute.empty();
         Map<String, LlmRouteOptions> serverOptions = new LinkedHashMap<>();
@@ -141,7 +144,14 @@ public class RoutingPanel extends AbstractWidget {
             if (root.has("providers") && root.get("providers").isJsonArray()) {
                 for (JsonElement el : root.getAsJsonArray("providers")) {
                     JsonObject p = el.getAsJsonObject();
-                    newProviders.add(p.get("name").getAsString());
+                    String name = p.get("name").getAsString();
+                    if (p.has("type") && "raw".equals(p.get("type").getAsString())) continue;
+                    newProviders.add(name);
+                    if (p.has("billing")) {
+                        JsonObject billing = p.getAsJsonObject("billing");
+                        newRates.put(name, new LlmCostRate(billing.get("inputMultiplier").getAsDouble(),
+                                billing.get("outputMultiplier").getAsDouble()));
+                    }
                 }
             }
             if (root.has("purposes") && root.get("purposes").isJsonArray()) {
@@ -173,6 +183,7 @@ public class RoutingPanel extends AbstractWidget {
         } catch (Exception ignored) {}
         this.purposes = newPurposes;
         this.providerNames = newProviders;
+        this.costRates = newRates;
         // Always reset local edits to the freshly-arrived server snapshot.
         this.edited = new LinkedHashMap<>(serverRoutes);
         this.editedDefault = serverDefault;
@@ -421,7 +432,7 @@ public class RoutingPanel extends AbstractWidget {
     }
 
     private int editorDetailsY() {
-        return routeSettingsY() + (advancedRouteOpen ? 78 : 42);
+        return routeSettingsY() + (advancedRouteOpen ? 102 : 66);
     }
 
     private int routeSettingsY() {
@@ -514,6 +525,10 @@ public class RoutingPanel extends AbstractWidget {
         if (mouseX < getX() || mouseX >= getX() + width
                 || mouseY < getY() || mouseY >= getY() + height) return;
         if (editingRow >= 0) {
+            if (costSortButton().contains(mouseX, mouseY)) {
+                graphics.renderTooltip(font, text("routing.cost_sort.tip"), mouseX, mouseY);
+                return;
+            }
             if (advancedRouteButton().contains(mouseX, mouseY)) {
                 graphics.renderTooltip(font, text("routing.advanced.tip"), mouseX, mouseY);
                 return;
@@ -645,11 +660,16 @@ public class RoutingPanel extends AbstractWidget {
         graphics.drawString(font, ellipsize(string("routing.gestures"), width - 20),
                 getX() + 8, providerLayout.bottomY() + 4, 0xAAAAAA, false);
         renderAdvancedRouteButton(graphics, mouseX, mouseY);
+        RouteButton costButton = costSortButton();
+        graphics.fill(costButton.x(), costButton.y(), costButton.x() + costButton.width(), costButton.y() + 18,
+                costButton.contains(mouseX, mouseY) ? 0xFF444444 : 0xFF303030);
+        graphics.drawCenteredString(font, ellipsize(string("routing.cost_sort"), costButton.width() - 6),
+                costButton.x() + costButton.width() / 2, costButton.y() + 5, 0x88CCFF);
         int routeY = routeSettingsY();
         graphics.drawString(font, text("routing.deadline"), deadlineInput.getX(), routeY, 0xAAAAAA, false);
         if (deadlineInput.visible) deadlineInput.render(graphics, mouseX, mouseY, partialTick);
         if (advancedRouteOpen) {
-            graphics.drawString(font, text("routing.route"), routeInput.getX(), routeY + 34, 0xAAAAAA, false);
+            graphics.drawString(font, text("routing.route"), routeInput.getX(), routeY + 58, 0xAAAAAA, false);
             if (routeInput.visible) routeInput.render(graphics, mouseX, mouseY, partialTick);
         }
         if (!parameterError.isBlank()) graphics.drawString(font, ellipsize(parameterError, width - 20),
@@ -714,7 +734,7 @@ public class RoutingPanel extends AbstractWidget {
     private void updateRouteGeometry() {
         int fieldY = routeSettingsY() + 12;
         routeInput.setX(getX() + 8);
-        routeInput.setY(fieldY + 34);
+        routeInput.setY(fieldY + 58);
         routeInput.setWidth(Math.max(30, width - 24));
         deadlineInput.setX(getX() + width - 88);
         deadlineInput.setY(fieldY);
@@ -741,7 +761,38 @@ public class RoutingPanel extends AbstractWidget {
                 button.x() + button.width() / 2, button.y() + 5, 0x88CCFF);
     }
 
+    private RouteButton costSortButton() {
+        return new RouteButton(getX() + 8, routeSettingsY() + 36, Math.max(36, Math.min(240, width - 24)));
+    }
+
+    /** Stable sort of whole stages: race membership, retries and deadline are retained. */
+    static LlmRoute sortByCost(LlmRoute route, Map<String, LlmCostRate> rates) {
+        List<LlmRoute.Stage> stages = new ArrayList<>(route.stages());
+        stages.sort(java.util.Comparator.comparingDouble(stage -> stage.candidates().stream()
+                .mapToDouble(target -> {
+                    LlmCostRate rate = rates.getOrDefault(target.provider(), LlmCostRate.DEFAULT);
+                    return rate.inputMultiplier() + rate.outputMultiplier();
+                }).sum()));
+        return new LlmRoute(stages, route.deadlineOverrideSeconds());
+    }
+
     private boolean handleAdvancedRouteButton(double mouseX, double mouseY) {
+        if (costSortButton().contains(mouseX, mouseY)) {
+            if (!commitParameterFields()) return true;
+            try {
+                LlmRoute route = getRowRoute(editingRow);
+                Integer deadline = route.deadlineOverrideSeconds();
+                if (route.isEmpty() && editingRow > 0) route = editedDefault.withDeadline(deadline);
+                if (route.isEmpty()) route = LlmRoute.sequential(providerNames).withDeadline(deadline);
+                setRowRoute(editingRow, sortByCost(route, costRates));
+                lastCandidateButton = -1;
+                loadRouteFields();
+                updateScrollGeometry();
+            } catch (IllegalArgumentException invalid) {
+                parameterError = invalid.getMessage();
+            }
+            return true;
+        }
         if (advancedRouteButton().contains(mouseX, mouseY)) {
             if (!commitParameterFields()) return true;
             advancedRouteOpen = !advancedRouteOpen;
@@ -874,8 +925,11 @@ public class RoutingPanel extends AbstractWidget {
 
         int availableIndex = providerIndexAt(mouseX, mouseY, layout.availableGrid(),
                 layout.availableY(), providerNames.size());
-        if (availableIndex >= 0) return text(advancedRouteOpen ? "routing.advanced.tip" : "routing.target.add.tip",
-                providerNames.get(availableIndex));
+        if (availableIndex >= 0) {
+            String name = providerNames.get(availableIndex);
+            LlmCostRate rate = costRates.getOrDefault(name, LlmCostRate.DEFAULT);
+            return text("routing.provider.cost", name, rate.inputMultiplier(), rate.outputMultiplier());
+        }
         return null;
     }
 

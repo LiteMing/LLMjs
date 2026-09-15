@@ -95,6 +95,19 @@ class LlmRequestAccountingTest {
                 List.class, String.class, String.class, String.class) != null);
     }
 
+    @Test
+    void weightedEstimateUsesProviderCostRateWithoutChangingRawUsage() {
+        LlmCostRate rate = new LlmCostRate(2.0D, 4.0D);
+        LlmRequestAccounting.AttemptEstimate estimate = new LlmRequestAccounting.AttemptEstimate(
+                "expensive", 10, 5, rate.weightedEstimate(10, 5));
+        assertEquals(15L, estimate.totalTokens());
+        assertEquals(40L, estimate.totalCostUnits());
+        LlmRequestAccounting.AttemptUsage usage = new LlmRequestAccounting.AttemptUsage(
+                10, 5, 0, rate.weightedTokens(10, 5));
+        assertEquals(15L, usage.totalTokens());
+        assertEquals(40L, usage.totalCostUnits());
+    }
+
     private static LlmRequest request(LlmBillingContext billing) {
         return LlmRequest.routed(List.of(new LlmMessage("user", "hello")),
                 new LlmRequestContext("request", "CHAT", "", "", "", "", "", false,
