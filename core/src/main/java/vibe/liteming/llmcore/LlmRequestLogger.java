@@ -19,10 +19,14 @@ public final class LlmRequestLogger {
             long latencyMs,
             String error,
             String finishReason,
+            String routeIdentity,
+            String targetIdentity,
+            String cacheDomainIdentity,
             LlmCacheUsage cacheUsage) {
         public AttemptEvent(String purpose, String requestId, String provider, String model,
                 String credentialId, boolean success, long latencyMs, String error, String finishReason) {
             this(purpose, requestId, provider, model, credentialId, success, latencyMs, error, finishReason,
+                    "", provider + "/" + model, "",
                     LlmCacheUsage.unknown("legacy attempt event did not carry cache usage"));
         }
 
@@ -34,6 +38,9 @@ public final class LlmRequestLogger {
             credentialId = clean(credentialId);
             error = clean(error);
             finishReason = clean(finishReason);
+            routeIdentity = clean(routeIdentity);
+            targetIdentity = clean(targetIdentity);
+            cacheDomainIdentity = clean(cacheDomainIdentity);
             cacheUsage = cacheUsage == null
                     ? LlmCacheUsage.unknown("attempt did not report cache usage") : cacheUsage;
         }

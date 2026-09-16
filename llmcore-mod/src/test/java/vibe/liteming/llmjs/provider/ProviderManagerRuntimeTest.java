@@ -9,7 +9,10 @@ import org.junit.jupiter.api.io.TempDir;
 import vibe.liteming.llmcore.CapabilityPolicyStore;
 import vibe.liteming.llmcore.HostedWebSearchAdapterIds;
 import vibe.liteming.llmcore.LlmCapabilityPolicy;
+import vibe.liteming.llmcore.LlmCacheUsage;
+import vibe.liteming.llmcore.LlmCostRate;
 import vibe.liteming.llmcore.LlmOrchestrator;
+import vibe.liteming.llmcore.LlmRequestLogger;
 import vibe.liteming.llmcore.PriorityRoutingConfig;
 import vibe.liteming.llmcore.RoutingConfigStore;
 import vibe.liteming.llmcore.SharedLlmRuntime;
@@ -106,5 +109,39 @@ class ProviderManagerRuntimeTest {
         assertEquals(200L, json.get("averageLatency1hMs").getAsLong());
         assertFalse(json.get("cacheSupported").getAsBoolean());
         assertEquals("boom", json.get("lastError").getAsString());
+    }
+
+    @Test
+    void cacheMetricsAggregateByPurposeAndDomainWithBoundedProtocolPayload() {
+        ProviderManager.CacheUsageMetrics metrics = new ProviderManager.CacheUsageMetrics();
+        long now = 10_000_000L;
+        for (int index = 0; index < 40; index++) {
+            String purpose = index == 0 ? "CHAT" : "PURPOSE_" + index;
+            String domain = "domain-" + index;
+            metrics.record(now, new LlmRequestLogger.AttemptEvent(purpose, "request-" + index,
+                    "provider", "model", "credential", true, 10L, "", "stop",
+                    "provider > fallback", "provider/model", domain,
+                    index == 0 ? LlmCacheUsage.reported(75L, null, 25L, 100L)
+                            : index == 1 ? LlmCacheUsage.unsupported("automatic-only adapter")
+                            : LlmCacheUsage.unknown("usage missing")));
+        }
+
+        var snapshot = metrics.toJson(now, Map.of("provider", new LlmCostRate(1, 1, 0.25, null)));
+        assertEquals(40, snapshot.get("samples").getAsInt());
+        assertEquals(16, snapshot.getAsJsonArray("entries").size());
+        assertEquals(24, snapshot.get("truncatedGroups").getAsInt());
+        var chat = snapshot.getAsJsonArray("entries").asList().stream()
+                .map(com.google.gson.JsonElement::getAsJsonObject)
+                .filter(value -> value.get("purpose").getAsString().equals("CHAT"))
+                .findFirst().orElseThrow();
+        assertEquals(1, chat.get("reportedRequests").getAsInt());
+        assertEquals(75L, chat.get("cacheReadInputTokens").getAsLong());
+        assertEquals(100L, chat.get("totalInputTokens").getAsLong());
+        assertEquals(0.75D, chat.get("hitRatio").getAsDouble());
+        assertEquals(44L, chat.get("cacheAwareInputCostUnits").getAsLong());
+        String payload = snapshot.toString();
+        assertTrue(payload.length() < 32_767);
+        assertFalse(payload.contains("request-0"));
+        assertFalse(payload.contains("credential"));
     }
 }

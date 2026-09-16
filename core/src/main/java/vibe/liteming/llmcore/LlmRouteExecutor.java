@@ -250,7 +250,10 @@ final class LlmRouteExecutor {
                     request.context() == null ? "" : request.context().purpose(),
                     request.context() == null ? "" : request.context().requestId(),
                     provider.spec.name(), provider.spec.model(), key.spec.id(), usable,
-                    base.latencyMs(), error, base.finishReason(), base.cacheUsage()));
+                    base.latencyMs(), error, base.finishReason(), route.expression(),
+                    provider.spec.name() + "/" + provider.spec.model(),
+                    LlmOrchestrator.cacheDomainIdentity(provider.spec.name(), provider.spec.model(), key.spec.id()),
+                    base.cacheUsage()));
             LlmResponse response = new LlmResponse(usable, usable ? base.content() : "", error,
                     provider.spec.name(), provider.spec.model(), key.spec.id(), base.promptTokens(), base.completionTokens(),
                     base.latencyMs(), List.of(), base.requestBody(), base.responseBody(), base.finishReason(),
@@ -313,6 +316,9 @@ final class LlmRouteExecutor {
                             request.context() == null ? "" : request.context().requestId(),
                             provider.spec.name(), provider.spec.model(), credential.spec.id(), false,
                             TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - attemptStart), reason, "cancelled",
+                            route.expression(), provider.spec.name() + "/" + provider.spec.model(),
+                            LlmOrchestrator.cacheDomainIdentity(
+                                    provider.spec.name(), provider.spec.model(), credential.spec.id()),
                             cancelledUsage));
                 }
                 completion.cancel(false);

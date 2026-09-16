@@ -40,7 +40,7 @@ public record LlmCostRate(double inputMultiplier, double outputMultiplier,
         Long read = usage.cacheReadInputTokens();
         Long write = usage.cacheWriteInputTokens();
         Long uncached = usage.uncachedInputTokens();
-        if (read == null || uncached == null) return null;
+        if (read == null || uncached == null || usage.totalInputTokens() == null) return null;
         if (read > 0 && cacheReadInputMultiplier == null) return null;
         if (write != null && write > 0 && cacheWriteInputMultiplier == null) return null;
         long inputCost = saturatedAdd(weight(uncached, inputMultiplier),

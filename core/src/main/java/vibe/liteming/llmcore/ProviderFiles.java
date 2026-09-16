@@ -130,6 +130,12 @@ public final class ProviderFiles {
         JsonObject billing = new JsonObject();
         billing.addProperty("inputMultiplier", rate.inputMultiplier());
         billing.addProperty("outputMultiplier", rate.outputMultiplier());
+        if (rate.cacheReadInputMultiplier() != null) {
+            billing.addProperty("cacheReadInputMultiplier", rate.cacheReadInputMultiplier());
+        }
+        if (rate.cacheWriteInputMultiplier() != null) {
+            billing.addProperty("cacheWriteInputMultiplier", rate.cacheWriteInputMultiplier());
+        }
         definition.add("billing", billing);
     }
 

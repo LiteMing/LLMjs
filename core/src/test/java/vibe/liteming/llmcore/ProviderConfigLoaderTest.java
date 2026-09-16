@@ -90,7 +90,8 @@ class ProviderConfigLoaderTest {
         Path secret = tempDir.resolve("llmcore-billing.secret");
         Files.writeString(providers, """
                 {"cheap":{"format":"openai","url":"http://localhost/cheap","model":"cheap",
-                  "billing":{"inputMultiplier":0.5,"outputMultiplier":2.5}}}
+                  "billing":{"inputMultiplier":0.5,"outputMultiplier":2.5,
+                    "cacheReadInputMultiplier":0.1,"cacheWriteInputMultiplier":1.25}}}
                 """);
         Files.writeString(secret, """
                 {"providers":{"cheap":"sk-cheap"}}
@@ -100,6 +101,8 @@ class ProviderConfigLoaderTest {
 
         assertEquals(0.5D, profile.costRate().inputMultiplier());
         assertEquals(2.5D, profile.costRate().outputMultiplier());
+        assertEquals(0.1D, profile.costRate().cacheReadInputMultiplier());
+        assertEquals(1.25D, profile.costRate().cacheWriteInputMultiplier());
     }
 
     @Test
