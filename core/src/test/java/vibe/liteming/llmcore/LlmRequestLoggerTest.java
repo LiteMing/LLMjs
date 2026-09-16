@@ -10,6 +10,23 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class LlmRequestLoggerTest {
     @Test
+    void publishesEachTransportAttemptToDedicatedListeners() {
+        AtomicReference<LlmRequestLogger.AttemptEvent> captured = new AtomicReference<>();
+        Consumer<LlmRequestLogger.AttemptEvent> listener = captured::set;
+        LlmRequestLogger.addAttemptListener(listener);
+        try {
+            LlmRequestLogger.publishAttempt(new LlmRequestLogger.AttemptEvent(
+                    "CHAT", "request", "deepseek", "deepseek-chat", "deepseek#2",
+                    true, 321L, "", "stop"));
+            assertEquals("deepseek", captured.get().provider());
+            assertEquals("deepseek#2", captured.get().credentialId());
+            assertEquals(321L, captured.get().latencyMs());
+        } finally {
+            LlmRequestLogger.removeAttemptListener(listener);
+        }
+    }
+
+    @Test
     void publishesExplicitPrincipalForAuditConsumers() {
         AtomicReference<LlmRequestLogger.Event> captured = new AtomicReference<>();
         Consumer<LlmRequestLogger.Event> listener = captured::set;

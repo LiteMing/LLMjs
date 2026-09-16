@@ -43,6 +43,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.time.Instant;
+import java.util.function.Consumer;
 
 public class ProviderManager {
     public static final ProviderManager INSTANCE = new ProviderManager();
@@ -53,6 +55,15 @@ public class ProviderManager {
     private volatile PriorityRoutingConfig routingConfig = PriorityRoutingConfig.empty();
     private volatile LlmCapabilityPolicy capabilityPolicy = LlmCapabilityPolicy.empty();
     private final Map<String, ConnectionStatus> statusCache = new ConcurrentHashMap<>();
+    private final Map<String, RuntimeMetrics> runtimeMetrics = new ConcurrentHashMap<>();
+    private final Map<UUID, Map<String, vibe.liteming.llmcore.LlmRoute>> playerRoutes = new ConcurrentHashMap<>();
+    private final Consumer<vibe.liteming.llmcore.LlmRequestLogger.AttemptEvent> metricsListener = event -> {
+        if (event.provider() == null || event.provider().isBlank()) return;
+        RuntimeMetrics metrics = runtimeMetrics.computeIfAbsent(event.provider(), ignored -> new RuntimeMetrics());
+        metrics.record(System.currentTimeMillis(), event.latencyMs(), event.success(), event.error());
+    };
+    private boolean metricsHookInstalled;
+    private Path playerRoutingFile;
     private Path configDir;
 
     private final AtomicInteger requestCount = new AtomicInteger(0);
@@ -68,11 +79,60 @@ public class ProviderManager {
         }
     }
 
+    static final class RuntimeMetrics {
+        private static final long WINDOW_MILLIS = 60L * 60L * 1_000L;
+        private static final int MAX_SAMPLES = 4_096;
+        private record Sample(long time, long latencyMs, boolean success) { }
+        private final Deque<Sample> samples = new ArrayDeque<>();
+        volatile long lastSuccessTime;
+        volatile long lastRequestTime;
+        volatile boolean lastRequestSuccessful;
+        volatile String lastError = "";
+
+        synchronized void record(long now, long latencyMs, boolean success, String error) {
+            prune(now);
+            samples.addLast(new Sample(now, Math.max(0L, latencyMs), success));
+            while (samples.size() > MAX_SAMPLES) samples.removeFirst();
+            lastRequestTime = now;
+            lastRequestSuccessful = success;
+            if (success) lastSuccessTime = now;
+            else lastError = error == null ? "" : error;
+        }
+
+        synchronized JsonObject toJson(long now) {
+            prune(now);
+            long count = samples.size();
+            long ok = samples.stream().filter(Sample::success).count();
+            long totalLatencyMs = samples.stream().mapToLong(Sample::latencyMs).sum();
+            JsonObject json = new JsonObject();
+            json.addProperty("requests1h", count);
+            json.addProperty("successes1h", ok);
+            json.addProperty("failures1h", Math.max(0L, count - ok));
+            json.addProperty("successRate1h", count == 0 ? 0.0D : (double) ok / count);
+            json.addProperty("averageLatency1hMs", count == 0 ? 0L : totalLatencyMs / count);
+            if (lastSuccessTime > 0) json.addProperty("lastSuccessTime", Instant.ofEpochMilli(lastSuccessTime).toString());
+            if (lastRequestTime > 0) json.addProperty("lastRequestTime", Instant.ofEpochMilli(lastRequestTime).toString());
+            if (lastRequestTime > 0) json.addProperty("lastRequestSuccessful", lastRequestSuccessful);
+            if (!lastError.isBlank()) json.addProperty("lastError", lastError);
+            // There is no response cache in the current runtime; expose that fact instead of inventing a rate.
+            json.addProperty("cacheSupported", false);
+            return json;
+        }
+
+        private void prune(long now) {
+            long cutoff = now - WINDOW_MILLIS;
+            while (!samples.isEmpty() && samples.peekFirst().time() < cutoff) samples.removeFirst();
+        }
+    }
+
     private Path gameRoot;
 
     public void init(Path serverConfigDir, Path gameRoot) {
         this.configDir = GlobalConfig.resolveServerDirectory(serverConfigDir);
         this.gameRoot = gameRoot;
+        this.playerRoutingFile = GlobalConfig.getGlobalProvidersFile().getParent().resolve("player-routing.json");
+        loadPlayerRoutes();
+        installMetricsHook();
         reload();
     }
 
@@ -113,6 +173,20 @@ public class ProviderManager {
         candidate.setGlobalDefaults(new LlmRouteOptions(null, null, LLMConfig.TIMEOUT.get(), null, null));
         PriorityRoutingConfig candidateRouting = RoutingConfigStore.load(getRoutingFile());
         candidate.setRoutingConfig(candidateRouting);
+        boolean preferencesChanged = false;
+        for (var playerEntry : playerRoutes.entrySet()) {
+            var routeIterator = playerEntry.getValue().entrySet().iterator();
+            while (routeIterator.hasNext()) {
+                var routeEntry = routeIterator.next();
+                try {
+                    candidate.setPlayerRoutePreference(playerEntry.getKey(), routeEntry.getKey(), routeEntry.getValue());
+                } catch (IllegalArgumentException invalid) {
+                    routeIterator.remove();
+                    preferencesChanged = true;
+                }
+            }
+        }
+        if (preferencesChanged) savePlayerRoutes();
         LlmCapabilityPolicy candidatePolicy = CapabilityPolicyStore.load(getCapabilityPolicyFile(), error ->
                 LlmCoreMod.LOGGER.error("Invalid capability-policy.json; optional capabilities are disabled: {}",
                         error));
@@ -146,6 +220,13 @@ public class ProviderManager {
         this.routingConfig = PriorityRoutingConfig.empty();
         this.capabilityPolicy = LlmCapabilityPolicy.empty();
         this.statusCache.clear();
+        this.runtimeMetrics.clear();
+        this.playerRoutes.clear();
+        if (metricsHookInstalled) {
+            vibe.liteming.llmcore.LlmRequestLogger.removeAttemptListener(metricsListener);
+            metricsHookInstalled = false;
+        }
+        this.playerRoutingFile = null;
         this.configDir = null;
         this.gameRoot = null;
     }
@@ -240,8 +321,14 @@ public class ProviderManager {
             capabilitiesJson.add("webSearch", webSearch);
             pJson.add("capabilities", capabilitiesJson);
             ConnectionStatus cached = statusCache.get(entry.getKey());
-            if (cached != null) pJson.add("status", cached.toJson());
-            else pJson.addProperty("status", "untested");
+            RuntimeMetrics metrics = runtimeMetrics.get(entry.getKey());
+            JsonObject status = metrics == null ? new JsonObject() : metrics.toJson(System.currentTimeMillis());
+            if (cached != null) {
+                status.addProperty("lastProbeConnected", cached.connected());
+                status.addProperty("lastProbeLatencyMs", cached.latencyMs());
+                if (cached.lastError() != null && !cached.lastError().isBlank()) status.addProperty("lastProbeError", cached.lastError());
+            }
+            pJson.add("status", status);
             providerArray.add(pJson);
         }
         result.add("providers", providerArray);
@@ -297,6 +384,129 @@ public class ProviderManager {
         }
         result.add("purposes", purposes);
         return result;
+    }
+
+    /** Safe snapshot for a normal player: route choices and pricing metadata only. */
+    public synchronized JsonObject getPersonalRoutingStatusJson(UUID playerId) {
+        JsonObject result = new JsonObject();
+        JsonArray providerArray = new JsonArray();
+        for (Map.Entry<String, Provider> entry : providers.entrySet()) {
+            JsonObject provider = new JsonObject();
+            provider.addProperty("name", entry.getKey());
+            provider.addProperty("format", Objects.requireNonNullElse(entry.getValue().getFormat(), ""));
+            provider.addProperty("model", entry.getValue().getModel());
+            LlmCostRate rate = costRates.getOrDefault(entry.getKey(), LlmCostRate.DEFAULT);
+            JsonObject billing = new JsonObject();
+            billing.addProperty("inputMultiplier", rate.inputMultiplier());
+            billing.addProperty("outputMultiplier", rate.outputMultiplier());
+            provider.add("billing", billing);
+            providerArray.add(provider);
+        }
+        result.add("providers", providerArray);
+        JsonObject routes = new JsonObject();
+        Map<String, vibe.liteming.llmcore.LlmRoute> own = playerRoutes.getOrDefault(playerId, Map.of());
+        for (Map.Entry<String, vibe.liteming.llmcore.LlmRoute> entry : own.entrySet()) {
+            JsonObject route = new JsonObject();
+            route.addProperty("route", entry.getValue().expression());
+            if (entry.getValue().deadlineOverrideSeconds() != null) {
+                route.addProperty("deadlineSeconds", entry.getValue().deadlineOverrideSeconds());
+            }
+            routes.add(entry.getKey(), route);
+        }
+        result.add("personalRoutes", routes);
+        JsonArray purposes = new JsonArray();
+        for (PurposeMeta meta : PurposeRegistry.snapshot()) {
+            JsonObject purpose = new JsonObject();
+            purpose.addProperty("id", meta.id());
+            purpose.addProperty("displayName", meta.displayName());
+            purposes.add(purpose);
+        }
+        result.add("purposes", purposes);
+        return result;
+    }
+
+    public synchronized boolean setPlayerRoute(UUID playerId, String purpose, vibe.liteming.llmcore.LlmRoute route) {
+        if (playerId == null) throw new IllegalArgumentException("playerId is required");
+        if (purpose == null || purpose.isBlank()) throw new IllegalArgumentException("purpose is required");
+        boolean knownPurpose = PurposeRegistry.snapshot().stream().anyMatch(meta -> meta.id().equals(purpose.trim()));
+        if (!knownPurpose) throw new IllegalArgumentException("unknown purpose: " + purpose);
+        if (route == null || route.isUnset()) {
+            orchestrator.clearPlayerRoutePreference(playerId, purpose.trim());
+            Map<String, vibe.liteming.llmcore.LlmRoute> routes = playerRoutes.get(playerId);
+            if (routes != null) {
+                routes.remove(purpose.trim());
+                if (routes.isEmpty()) playerRoutes.remove(playerId);
+            }
+        } else {
+            orchestrator.setPlayerRoutePreference(playerId, purpose, route);
+            playerRoutes.computeIfAbsent(playerId, ignored -> new LinkedHashMap<>()).put(purpose.trim(), route);
+        }
+        return savePlayerRoutes();
+    }
+
+    private void installMetricsHook() {
+        if (metricsHookInstalled) return;
+        metricsHookInstalled = true;
+        vibe.liteming.llmcore.LlmRequestLogger.addAttemptListener(metricsListener);
+    }
+
+    private void loadPlayerRoutes() {
+        playerRoutes.clear();
+        if (playerRoutingFile == null || !java.nio.file.Files.isRegularFile(playerRoutingFile)) return;
+        try {
+            JsonObject root = JsonParser.parseString(java.nio.file.Files.readString(playerRoutingFile)).getAsJsonObject();
+            JsonObject players = root.has("players") && root.get("players").isJsonObject()
+                    ? root.getAsJsonObject("players") : new JsonObject();
+            for (Map.Entry<String, com.google.gson.JsonElement> player : players.entrySet()) {
+                UUID id;
+                try { id = UUID.fromString(player.getKey()); } catch (IllegalArgumentException ignored) { continue; }
+                if (!player.getValue().isJsonObject()) continue;
+                Map<String, vibe.liteming.llmcore.LlmRoute> routes = new LinkedHashMap<>();
+                for (Map.Entry<String, com.google.gson.JsonElement> route : player.getValue().getAsJsonObject().entrySet()) {
+                    try {
+                        String expression = route.getValue().isJsonObject() && route.getValue().getAsJsonObject().has("route")
+                                ? route.getValue().getAsJsonObject().get("route").getAsString() : route.getValue().getAsString();
+                        vibe.liteming.llmcore.LlmRoute parsed = vibe.liteming.llmcore.LlmRoute.parse(expression);
+                        if (route.getValue().isJsonObject() && route.getValue().getAsJsonObject().has("deadlineSeconds")) {
+                            parsed = parsed.withDeadline(route.getValue().getAsJsonObject().get("deadlineSeconds").getAsInt());
+                        }
+                        if (!parsed.isUnset()) routes.put(route.getKey(), parsed);
+                    } catch (RuntimeException ignored) { }
+                }
+                if (!routes.isEmpty()) playerRoutes.put(id, routes);
+            }
+        } catch (Exception error) {
+            LlmCoreMod.LOGGER.warn("Failed to load player-routing.json: {}", error.getMessage());
+        }
+    }
+
+    private boolean savePlayerRoutes() {
+        if (playerRoutingFile == null) return false;
+        try {
+            JsonObject root = new JsonObject();
+            root.addProperty("schemaVersion", 1);
+            JsonObject players = new JsonObject();
+            playerRoutes.forEach((id, routes) -> {
+                JsonObject values = new JsonObject();
+                routes.forEach((purpose, route) -> {
+                    JsonObject value = new JsonObject();
+                    value.addProperty("route", route.expression());
+                    if (route.deadlineOverrideSeconds() != null) value.addProperty("deadlineSeconds", route.deadlineOverrideSeconds());
+                    values.add(purpose, value);
+                });
+                if (values.size() > 0) players.add(id.toString(), values);
+            });
+            root.add("players", players);
+            java.nio.file.Files.createDirectories(playerRoutingFile.toAbsolutePath().normalize().getParent());
+            java.nio.file.Path temp = playerRoutingFile.resolveSibling(playerRoutingFile.getFileName() + ".tmp");
+            java.nio.file.Files.writeString(temp, new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(root));
+            try { java.nio.file.Files.move(temp, playerRoutingFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING, java.nio.file.StandardCopyOption.ATOMIC_MOVE); }
+            catch (java.nio.file.AtomicMoveNotSupportedException ignored) { java.nio.file.Files.move(temp, playerRoutingFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING); }
+            return true;
+        } catch (Exception error) {
+            LlmCoreMod.LOGGER.warn("Failed to save player-routing.json: {}", error.getMessage());
+            return false;
+        }
     }
 
     private static JsonObject effectiveParametersJson(LlmResolvedParameters parameters) {

@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -43,6 +44,7 @@ public final class LlmOrchestrator implements AutoCloseable {
     private volatile PriorityRoutingConfig routingConfig = PriorityRoutingConfig.empty();
     private volatile LlmCapabilityPolicy capabilityPolicy = LlmCapabilityPolicy.empty();
     private volatile LlmRouteOptions globalDefaults = new LlmRouteOptions(null, null, 30, null, null);
+    private final Map<UUID, Map<String, LlmRoute>> playerRoutePreferences = new ConcurrentHashMap<>();
 
     public LlmOrchestrator(Map<String, ProviderSpec> providerSpecs) {
         this.httpClient = HttpClient.newBuilder()
@@ -127,7 +129,52 @@ public final class LlmOrchestrator implements AutoCloseable {
             return LlmRoute.sequential(request.providerChain())
                     .withDeadline(Math.max(LlmRoute.DEFAULT_DEADLINE_SECONDS, request.timeoutSeconds()));
         }
+        LlmBillingContext billing = request.billingContext();
+        if (billing != null && billing.principalKind() == LlmBillingContext.PrincipalKind.PLAYER) {
+            try {
+                UUID playerId = UUID.fromString(billing.principalId());
+                String purpose = request.context() == null ? "CHAT" : request.context().purpose();
+                LlmRoute preferred = getPlayerRoutePreference(playerId, purpose);
+                if (preferred != null && routeProvidersExist(preferred)) return preferred;
+            } catch (IllegalArgumentException ignored) {
+                // Billing validation owns invalid player identities; route resolution falls back safely.
+            }
+        }
         return routingConfig.resolveRoute(request.context().purpose(), new ArrayList<>(providers.keySet()));
+    }
+
+    /** Install one player's route preference. Provider membership remains server-owned. */
+    public void setPlayerRoutePreference(UUID playerId, String purpose, LlmRoute route) {
+        if (playerId == null) throw new IllegalArgumentException("playerId is required");
+        String key = purpose == null ? "" : purpose.trim();
+        if (key.isEmpty()) throw new IllegalArgumentException("purpose is required");
+        if (route == null || route.isUnset()) {
+            clearPlayerRoutePreference(playerId, key);
+            return;
+        }
+        if (!routeProvidersExist(route)) throw new IllegalArgumentException("route contains an unavailable provider");
+        playerRoutePreferences.computeIfAbsent(playerId, ignored -> new ConcurrentHashMap<>()).put(key, route);
+    }
+
+    public void clearPlayerRoutePreference(UUID playerId, String purpose) {
+        if (playerId == null) return;
+        Map<String, LlmRoute> routes = playerRoutePreferences.get(playerId);
+        if (routes == null) return;
+        routes.remove(purpose == null ? "" : purpose.trim());
+        if (routes.isEmpty()) playerRoutePreferences.remove(playerId, routes);
+    }
+
+    public LlmRoute getPlayerRoutePreference(UUID playerId, String purpose) {
+        if (playerId == null) return null;
+        Map<String, LlmRoute> routes = playerRoutePreferences.get(playerId);
+        return routes == null ? null : routes.get(purpose == null ? "" : purpose.trim());
+    }
+
+    private boolean routeProvidersExist(LlmRoute route) {
+        if (route == null) return false;
+        Set<String> seen = new java.util.HashSet<>();
+        return route.stages().stream().allMatch(stage -> stage.candidates().stream().allMatch(target ->
+                providers.containsKey(target.provider()) && seen.add(target.provider())));
     }
 
     Map<String, ProviderRuntime> providerSnapshot() { return Map.copyOf(providers); }
@@ -388,6 +435,19 @@ public final class LlmOrchestrator implements AutoCloseable {
                     Math.max(maximum.maxTokens(), Math.max(budget.maxTokens(), configured.maxTokens())));
         }
         return maximum;
+    }
+
+    /** Estimate using the same player preference that execution will resolve after billing is attached. */
+    public LlmCallBudget estimateMaximumRouteBudget(LlmRequest template,
+            LlmBillingContext.PrincipalKind principalKind, String principalId) {
+        LlmBillingContext.PrincipalKind kind = principalKind == null
+                ? LlmBillingContext.PrincipalKind.UNSPECIFIED : principalKind;
+        LlmBillingContext routingIdentity = kind == LlmBillingContext.PrincipalKind.PLAYER
+                ? LlmBillingContext.player(principalId, "route-estimate", 1, 1L)
+                : kind == LlmBillingContext.PrincipalKind.UNSPECIFIED
+                        ? LlmBillingContext.unspecified()
+                        : LlmBillingContext.system(kind, "route-estimate", 1, 1L);
+        return estimateMaximumRouteBudget(template.withBillingContext(routingIdentity));
     }
 
     /** Preferred search may consume the route again as text, sharing one deadline and attempt ceiling. */

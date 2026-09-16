@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -359,6 +360,29 @@ class LlmRouteExecutionTest {
         LlmRequest smallReply = new LlmRequest(request().messages(), List.of(), null, 8, 0,
                 LlmRequestContext.chat(), LlmRouteOptions.empty());
         assertTrue(core.estimateMaximumRouteBudget(smallReply).maxTokens() >= 2L * 4096);
+    }
+
+    @Test void playerPreferenceCanOnlyReorderEnabledProvidersAndPreservesItsRoute() {
+        LlmOrchestrator core = core("A > B > C", "A", "B", "C");
+        UUID player = UUID.fromString("a78cc4bd-861b-45dc-87ec-4699aab476e5");
+        LlmRoute preference = LlmRoute.parse("C*2 > B").withDeadline(45);
+        core.setPlayerRoutePreference(player, "CHAT", preference);
+        LlmRequest playerRequest = request().withBillingContext(
+                LlmBillingContext.player(player.toString(), "root", 10, 10000));
+
+        assertEquals("C*2 > B", core.resolveRoute(playerRequest).expression());
+        assertEquals(45, core.resolveRoute(playerRequest).deadlineSeconds());
+        assertEquals("A > B > C", core.resolveRoute(request()).expression());
+        assertThrows(IllegalArgumentException.class,
+                () -> core.setPlayerRoutePreference(player, "CHAT", LlmRoute.parse("D")));
+        assertThrows(IllegalArgumentException.class,
+                () -> core.setPlayerRoutePreference(player, "CHAT", LlmRoute.parse("C > C")));
+
+        LlmRequest explicit = new LlmRequest(request().messages(), List.of("A"), null, null, 0,
+                request().context(), LlmRouteOptions.empty(), playerRequest.billingContext());
+        assertEquals(List.of("A"), core.resolveChain(explicit));
+        core.replaceProviders(Map.of("A", core.getProviderSpec("A"), "B", core.getProviderSpec("B")));
+        assertEquals("A > B > C", core.resolveRoute(playerRequest).expression());
     }
 
     private static LlmRequestAccounting.Policy recordingPolicy(List<LlmRequestAccounting.AttemptUsage> settlements) {

@@ -34,7 +34,8 @@ public class C2SStatusRequestPacket {
     public static void handle(C2SStatusRequestPacket msg, Supplier<NetworkEvent.Context> ctx) {
         ctx.get().enqueueWork(() -> {
             ServerPlayer player = ctx.get().getSender();
-            if (player == null || (!PermissionCheck.canUse(player) && !PermissionCheck.canTest(player))) return;
+            if (player == null || (!PermissionCheck.canConfigurePersonalRoute(player)
+                    && !PermissionCheck.canUse(player) && !PermissionCheck.canTest(player))) return;
             String statusJson = PermissionCheck.statusFor(player).toString();
             LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                     new S2CStatusResponsePacket(statusJson, msg.openConsole));

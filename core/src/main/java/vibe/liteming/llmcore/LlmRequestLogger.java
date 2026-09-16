@@ -9,6 +9,27 @@ import java.util.function.Consumer;
  * without depending on a specific host (LLMjs, CreatureChat, etc.).
  */
 public final class LlmRequestLogger {
+    public record AttemptEvent(
+            String purpose,
+            String requestId,
+            String provider,
+            String model,
+            String credentialId,
+            boolean success,
+            long latencyMs,
+            String error,
+            String finishReason) {
+        public AttemptEvent {
+            purpose = clean(purpose);
+            requestId = clean(requestId);
+            provider = clean(provider);
+            model = clean(model);
+            credentialId = clean(credentialId);
+            error = clean(error);
+            finishReason = clean(finishReason);
+        }
+    }
+
     public record Event(
             String source,
             String purpose,
@@ -77,6 +98,7 @@ public final class LlmRequestLogger {
     }
 
     private static final List<Consumer<Event>> LISTENERS = new CopyOnWriteArrayList<>();
+    private static final List<Consumer<AttemptEvent>> ATTEMPT_LISTENERS = new CopyOnWriteArrayList<>();
 
     private LlmRequestLogger() {
     }
@@ -87,6 +109,24 @@ public final class LlmRequestLogger {
 
     public static void removeListener(Consumer<Event> listener) {
         LISTENERS.remove(listener);
+    }
+
+    public static void addAttemptListener(Consumer<AttemptEvent> listener) {
+        if (listener != null) ATTEMPT_LISTENERS.add(listener);
+    }
+
+    public static void removeAttemptListener(Consumer<AttemptEvent> listener) {
+        ATTEMPT_LISTENERS.remove(listener);
+    }
+
+    public static void publishAttempt(AttemptEvent event) {
+        if (event == null || event.provider().isEmpty() || ATTEMPT_LISTENERS.isEmpty()) return;
+        for (Consumer<AttemptEvent> listener : ATTEMPT_LISTENERS) {
+            try {
+                listener.accept(event);
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     public static void publish(Event event) {
@@ -137,5 +177,9 @@ public final class LlmRequestLogger {
         if (value == null || value.isBlank()) return "";
         String clean = value.replace('\n', ' ').replace('\r', ' ');
         return clean.length() <= 240 ? clean : clean.substring(0, 237) + "...";
+    }
+
+    private static String clean(String value) {
+        return value == null ? "" : value.trim();
     }
 }

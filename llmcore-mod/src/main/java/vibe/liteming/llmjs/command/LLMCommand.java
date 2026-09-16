@@ -118,20 +118,18 @@ public class LLMCommand {
             source.sendFailure(Component.literal("Console can only be opened by players"));
             return 0;
         }
-        if (!PermissionCheck.canUse(player)) {
-            source.sendFailure(Component.literal("No permission to use LLM features"));
-            return 0;
-        }
         String statusJson = PermissionCheck.statusFor(player).toString();
         LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
                 new S2CStatusResponsePacket(statusJson, true));
-        // Dump full recent buffer so logs received while console was closed still appear
-        List<String> history = new ArrayList<>();
-        for (LLMLogger.LogEntry entry : LLMLogger.INSTANCE.getRecentEntries(200)) {
-            history.add(entry.toJson().toString());
+        // Complete prompts and responses remain visible only to authorized log viewers.
+        if (PermissionCheck.canUse(player)) {
+            List<String> history = new ArrayList<>();
+            for (LLMLogger.LogEntry entry : LLMLogger.INSTANCE.getRecentEntries(200)) {
+                history.add(entry.toJson().toString());
+            }
+            LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
+                    new S2CLogHistoryPacket(history));
         }
-        LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player),
-                new S2CLogHistoryPacket(history));
         if (PermissionCheck.canManageAdministrators(player)
                 && !LLMConfig.PERSONAL_BUDGET_DEFAULT_CONFIRMED.get()) {
             player.sendSystemMessage(Component.translatable("command.llm.budget.confirm_warning")

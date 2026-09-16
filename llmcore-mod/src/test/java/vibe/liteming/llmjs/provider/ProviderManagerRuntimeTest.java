@@ -24,6 +24,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 class ProviderManagerRuntimeTest {
     @TempDir
@@ -89,5 +90,21 @@ class ProviderManagerRuntimeTest {
 
         assertTrue(SharedLlmRuntime.current().isEmpty());
         manager = null;
+    }
+
+    @Test
+    void rollingMetricsExpireOldSamplesAndExposeRealAverage() {
+        ProviderManager.RuntimeMetrics metrics = new ProviderManager.RuntimeMetrics();
+        long now = 10_000_000L;
+        metrics.record(now - 3_600_001L, 900L, true, "");
+        metrics.record(now - 1000L, 100L, true, "");
+        metrics.record(now, 300L, false, "boom");
+
+        var json = metrics.toJson(now);
+        assertEquals(2, json.get("requests1h").getAsInt());
+        assertEquals(0.5D, json.get("successRate1h").getAsDouble());
+        assertEquals(200L, json.get("averageLatency1hMs").getAsLong());
+        assertFalse(json.get("cacheSupported").getAsBoolean());
+        assertEquals("boom", json.get("lastError").getAsString());
     }
 }

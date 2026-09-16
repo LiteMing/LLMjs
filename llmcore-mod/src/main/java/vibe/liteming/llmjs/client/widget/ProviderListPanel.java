@@ -25,7 +25,8 @@ import static vibe.liteming.llmjs.client.ConsoleTexts.text;
 @OnlyIn(Dist.CLIENT)
 public class ProviderListPanel extends AbstractWidget {
     public record ProviderEntry(String name, String type, String format, String model, String url,
-                                 String maskedKey, String status, String statusKind, boolean configured, LlmCostRate rate) {}
+                                 String maskedKey, String status, String statusKind, String lastSuccess,
+                                 boolean configured, LlmCostRate rate) {}
 
     private final List<ProviderEntry> providers = new ArrayList<>();
     private final ConsoleScrollBar rowScroll = new ConsoleScrollBar();
@@ -62,22 +63,30 @@ public class ProviderListPanel extends AbstractWidget {
                 if (!configured) {
                     status = string("providers.status.no_key");
                     statusKind = "no_key";
-                } else if (p.has("status") && p.get("status").isJsonObject()) {
+                } else if (p.has("status") && p.get("status").isJsonObject()
+                        && p.getAsJsonObject("status").has("requests1h")
+                        && p.getAsJsonObject("status").get("requests1h").getAsLong() > 0) {
                     JsonObject st = p.getAsJsonObject("status");
-                    boolean connected = st.get("connected").getAsBoolean();
-                    status = connected ? string("providers.status.ok", st.get("latency").getAsLong())
-                            : string("providers.status.error");
+                    boolean connected = !st.has("lastRequestSuccessful")
+                            || st.get("lastRequestSuccessful").getAsBoolean();
+                    status = string("providers.status.rate",
+                            String.format(java.util.Locale.ROOT, "%.1f", st.get("successRate1h").getAsDouble() * 100.0),
+                            st.get("averageLatency1hMs").getAsLong(), st.get("requests1h").getAsLong());
                     statusKind = connected ? "ok" : "error";
                 } else {
-                    status = string("providers.status.untested");
+                    status = string("providers.status.no_data");
                     statusKind = "untested";
                 }
+                String lastSuccess = p.has("status") && p.get("status").isJsonObject()
+                        && p.getAsJsonObject("status").has("lastSuccessTime")
+                        ? p.getAsJsonObject("status").get("lastSuccessTime").getAsString()
+                        : string("common.none");
                 JsonObject billing = p.has("billing") ? p.getAsJsonObject("billing") : new JsonObject();
                 LlmCostRate rate = billing.has("inputMultiplier") && billing.has("outputMultiplier")
                         ? new LlmCostRate(billing.get("inputMultiplier").getAsDouble(),
                                 billing.get("outputMultiplier").getAsDouble()) : LlmCostRate.DEFAULT;
                 providers.add(new ProviderEntry(name, type, format, model, url, maskedKey,
-                        status, statusKind, configured, rate));
+                        status, statusKind, lastSuccess, configured, rate));
             }
         } catch (Exception ignored) {}
         updateScrollRange();
@@ -211,7 +220,8 @@ public class ProviderListPanel extends AbstractWidget {
             } else {
                 graphics.renderTooltip(font, text("providers.row.tip", hovered.name, hovered.format,
                         hovered.model, font.plainSubstrByWidth(hovered.url, 300), hovered.maskedKey,
-                        hovered.rate.inputMultiplier(), hovered.rate.outputMultiplier()), mouseX, mouseY);
+                        hovered.rate.inputMultiplier(), hovered.rate.outputMultiplier(), hovered.status,
+                        hovered.lastSuccess), mouseX, mouseY);
             }
         }
     }

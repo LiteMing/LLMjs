@@ -238,6 +238,11 @@ final class LlmRouteExecutor {
                 error = "Hosted Web Search was requested but no invocation evidence was returned";
             }
             record(key.spec.id(), usable, error, base.finishReason());
+            LlmRequestLogger.publishAttempt(new LlmRequestLogger.AttemptEvent(
+                    request.context() == null ? "" : request.context().purpose(),
+                    request.context() == null ? "" : request.context().requestId(),
+                    provider.spec.name(), provider.spec.model(), key.spec.id(), usable,
+                    base.latencyMs(), error, base.finishReason()));
             LlmResponse response = new LlmResponse(usable, usable ? base.content() : "", error,
                     provider.spec.name(), provider.spec.model(), key.spec.id(), base.promptTokens(), base.completionTokens(),
                     base.latencyMs(), List.of(), base.requestBody(), base.responseBody(), base.finishReason(), base.denyCode());

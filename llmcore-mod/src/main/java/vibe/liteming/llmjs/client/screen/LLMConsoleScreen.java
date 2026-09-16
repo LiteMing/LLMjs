@@ -5,6 +5,7 @@ import vibe.liteming.llmjs.client.ClientEventHandler;
 import vibe.liteming.llmjs.client.widget.LogPanel;
 import vibe.liteming.llmjs.client.widget.BudgetPanel;
 import vibe.liteming.llmjs.client.widget.ProviderListPanel;
+import vibe.liteming.llmjs.client.widget.PersonalRoutingPanel;
 import vibe.liteming.llmjs.client.widget.RoutingPanel;
 import vibe.liteming.llmjs.client.widget.SetupPanel;
 import vibe.liteming.llmjs.client.widget.TestPanel;
@@ -26,12 +27,13 @@ import static vibe.liteming.llmjs.client.ConsoleTexts.tooltip;
 
 @OnlyIn(Dist.CLIENT)
 public class LLMConsoleScreen extends Screen {
-    private enum Tab { LOG, BUDGET, PROVIDERS, ROUTING, TEST, SETUP }
+    private enum Tab { LOG, BUDGET, PROVIDERS, PREFERENCES, ROUTING, TEST, SETUP }
 
     private Tab activeTab = Tab.LOG;
     private LogPanel logPanel;
     private BudgetPanel budgetPanel;
     private ProviderListPanel providerPanel;
+    private PersonalRoutingPanel personalRoutingPanel;
     private RoutingPanel routingPanel;
     private TestPanel testPanel;
     private SetupPanel setupPanel;
@@ -46,6 +48,7 @@ public class LLMConsoleScreen extends Screen {
     private Button logTab;
     private Button budgetTab;
     private Button providersTab;
+    private Button preferencesTab;
     private Button routingTab;
     private Button testTab;
     private Button setupTab;
@@ -72,8 +75,8 @@ public class LLMConsoleScreen extends Screen {
     protected void init() {
         int tabY = tabY();
         int gap = width < 340 ? 2 : 4;
-        int tabW = Math.max(28, Math.min(64, (width - 20 - gap * 5) / 6));
-        int totalW = tabW * 6 + gap * 5;
+        int tabW = Math.max(26, Math.min(62, (width - 16 - gap * 6) / 7));
+        int totalW = tabW * 7 + gap * 6;
         int startX = Math.max(4, (width - totalW) / 2);
 
         logTab = tooltip(Button.builder(text("tab.log"), b -> switchTab(Tab.LOG))
@@ -82,15 +85,18 @@ public class LLMConsoleScreen extends Screen {
                 .pos(startX + (tabW + gap), tabY).size(tabW, 20).build(), "tab.budget.tip");
         providersTab = tooltip(Button.builder(text("tab.providers"), b -> switchTab(Tab.PROVIDERS))
                 .pos(startX + (tabW + gap) * 2, tabY).size(tabW, 20).build(), "tab.providers.tip");
+        preferencesTab = tooltip(Button.builder(text("tab.preferences"), b -> switchTab(Tab.PREFERENCES))
+                .pos(startX + (tabW + gap) * 3, tabY).size(tabW, 20).build(), "tab.preferences.tip");
         routingTab = tooltip(Button.builder(text("tab.routing"), b -> switchTab(Tab.ROUTING))
-                .pos(startX + (tabW + gap) * 3, tabY).size(tabW, 20).build(), "tab.routing.tip");
+                .pos(startX + (tabW + gap) * 4, tabY).size(tabW, 20).build(), "tab.routing.tip");
         testTab = tooltip(Button.builder(text("tab.test"), b -> switchTab(Tab.TEST))
-                .pos(startX + (tabW + gap) * 4, tabY).size(tabW, 20).build(), "tab.test.tip");
+                .pos(startX + (tabW + gap) * 5, tabY).size(tabW, 20).build(), "tab.test.tip");
         setupTab = tooltip(Button.builder(text("tab.setup"), b -> switchTab(Tab.SETUP))
-                .pos(startX + (tabW + gap) * 5, tabY).size(tabW, 20).build(), "tab.setup.tip");
+                .pos(startX + (tabW + gap) * 6, tabY).size(tabW, 20).build(), "tab.setup.tip");
         addRenderableWidget(logTab);
         addRenderableWidget(budgetTab);
         addRenderableWidget(providersTab);
+        addRenderableWidget(preferencesTab);
         addRenderableWidget(routingTab);
         addRenderableWidget(testTab);
         addRenderableWidget(setupTab);
@@ -110,10 +116,12 @@ public class LLMConsoleScreen extends Screen {
         logPanel = new LogPanel(panelX, panelY, panelW, panelH);
         budgetPanel = new BudgetPanel(panelX, panelY, panelW, panelH, initialStatusJson);
         providerPanel = new ProviderListPanel(panelX, panelY, panelW, panelH, initialStatusJson);
+        personalRoutingPanel = new PersonalRoutingPanel(panelX, panelY, panelW, panelH, font, initialStatusJson);
         routingPanel = new RoutingPanel(panelX, panelY, panelW, panelH, font, initialStatusJson);
         addRenderableWidget(logPanel);
         addRenderableWidget(budgetPanel);
         addRenderableWidget(providerPanel);
+        addRenderableWidget(personalRoutingPanel);
         addRenderableWidget(routingPanel);
 
         testPanel = new TestPanel(panelX, panelY, panelW, panelH, font);
@@ -139,10 +147,10 @@ public class LLMConsoleScreen extends Screen {
         }
         int tabY = tabY();
         int gap = width < 340 ? 2 : 4;
-        int tabW = Math.max(28, Math.min(64, (width - 20 - gap * 5) / 6));
-        int totalW = tabW * 6 + gap * 5;
+        int tabW = Math.max(26, Math.min(62, (width - 16 - gap * 6) / 7));
+        int totalW = tabW * 7 + gap * 6;
         int startX = Math.max(4, (width - totalW) / 2);
-        List<Button> tabs = List.of(logTab, budgetTab, providersTab, routingTab, testTab, setupTab);
+        List<Button> tabs = List.of(logTab, budgetTab, providersTab, preferencesTab, routingTab, testTab, setupTab);
         for (int index = 0; index < tabs.size(); index++) {
             Button tab = tabs.get(index);
             tab.setX(startX + (tabW + gap) * index);
@@ -163,6 +171,7 @@ public class LLMConsoleScreen extends Screen {
         logPanel.setBounds(panelX, panelY, panelW, panelH);
         budgetPanel.setBounds(panelX, panelY, panelW, panelH);
         providerPanel.setBounds(panelX, panelY, panelW, panelH);
+        personalRoutingPanel.setBounds(panelX, panelY, panelW, panelH);
         routingPanel.setBounds(panelX, panelY, panelW, panelH);
         testPanel.setBounds(panelX, panelY, panelW, panelH);
         setupPanel.setBounds(panelX, panelY, panelW, panelH);
@@ -172,6 +181,7 @@ public class LLMConsoleScreen extends Screen {
     private void switchTab(Tab tab) {
         if ((tab == Tab.LOG && !canView)
                 || (tab == Tab.BUDGET && !(canView || canTest))
+                || (tab == Tab.PREFERENCES && !canView)
                 || (tab == Tab.TEST && !canTest)
                 || ((tab == Tab.PROVIDERS || tab == Tab.ROUTING || tab == Tab.SETUP) && !canAdminister)) {
             tab = canTest ? Tab.TEST : Tab.LOG;
@@ -180,6 +190,7 @@ public class LLMConsoleScreen extends Screen {
         logPanel.visible = (tab == Tab.LOG);
         budgetPanel.visible = (tab == Tab.BUDGET);
         providerPanel.visible = (tab == Tab.PROVIDERS);
+        personalRoutingPanel.setPanelVisible(tab == Tab.PREFERENCES);
         routingPanel.setPanelVisible(tab == Tab.ROUTING);
         testPanel.setVisible(tab == Tab.TEST);
         setupPanel.setVisible(tab == Tab.SETUP);
@@ -200,6 +211,7 @@ public class LLMConsoleScreen extends Screen {
             case LOG -> logTab;
             case BUDGET -> budgetTab;
             case PROVIDERS -> providersTab;
+            case PREFERENCES -> preferencesTab;
             case ROUTING -> routingTab;
             case TEST -> testTab;
             case SETUP -> setupTab;
@@ -326,6 +338,7 @@ public class LLMConsoleScreen extends Screen {
         if (routingPanel != null) {
             routingPanel.updateStatus(statusJson);
         }
+        if (personalRoutingPanel != null) personalRoutingPanel.updateStatus(statusJson);
         if (logTab != null) repositionElements();
         applyAccessState();
     }
@@ -356,13 +369,16 @@ public class LLMConsoleScreen extends Screen {
         logTab.active = canView;
         budgetTab.active = canView || canTest;
         providersTab.active = canAdminister;
+        preferencesTab.active = canView;
         routingTab.active = canAdminister;
         testTab.active = canTest;
         setupTab.active = canAdminister;
         confirmBudgetButton.visible = canManageBudgets && budgetDefaultConfirmationRequired;
         if (logPanel != null) logPanel.setCanManage(canAdminister);
         if (testPanel != null) testPanel.setRestricted(!canAdminister);
-        if (!canAdminister && logPanel != null) switchTab(canTest ? Tab.TEST : Tab.LOG);
+        if (!canAdminister && (activeTab == Tab.PROVIDERS || activeTab == Tab.ROUTING || activeTab == Tab.SETUP)) {
+            switchTab(canView ? Tab.PREFERENCES : canTest ? Tab.TEST : Tab.LOG);
+        }
     }
 
     private void readPermissions(String statusJson) {

@@ -21,6 +21,11 @@ public class PermissionCheck {
         return player.hasPermissions(LLMConfig.REQUIRE_OP_LEVEL.get());
     }
 
+    /** Every connected player may configure only their own route over the server-enabled provider set. */
+    public static boolean canConfigurePersonalRoute(ServerPlayer player) {
+        return player != null;
+    }
+
     /** Administrator permission: permits provider, routing, and test operations. */
     public static boolean canAdminister(ServerPlayer player) {
         return canManageAdministrators(player)
@@ -69,6 +74,7 @@ public class PermissionCheck {
         result.addProperty("budgetDefaultConfirmationRequired",
                 canManageBudgets && !LLMConfig.PERSONAL_BUDGET_DEFAULT_CONFIRMED.get());
         result.add("personalBudget", PersonalBudgetService.INSTANCE.statusJson(player.getUUID()));
+        result.addProperty("canPersonalRoute", canConfigurePersonalRoute(player));
         if (canViewBudgets) {
             JsonArray players = new JsonArray();
             for (PersonalBudgetService.Status status : PersonalBudgetService.INSTANCE.list()) {
@@ -82,6 +88,8 @@ public class PermissionCheck {
             result.add("personalBudgets", players);
             result.add("principalUsage", PersonalBudgetService.INSTANCE.principalUsageJson());
         }
+        if (canConfigurePersonalRoute(player)) result.add("personalRouting", ProviderManager.INSTANCE
+                .getPersonalRoutingStatusJson(player.getUUID()));
         return result;
     }
 
