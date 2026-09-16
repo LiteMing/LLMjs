@@ -29,7 +29,7 @@ class LlmMessageFinalizerStabilityTest {
     }
 
     @Test
-    void dynamicLengthCannotChangeEarlierStableSelectionOrPrefixHash() {
+    void optionalDynamicLengthCannotChangeEarlierStableSelectionOrPrefixHash() {
         LlmMessageFinalization shortDynamic = finalizeWithDynamic("dddd");
         LlmMessageFinalization longDynamic = finalizeWithDynamic("dddddddd");
 
@@ -48,6 +48,24 @@ class LlmMessageFinalizerStabilityTest {
         assertEquals(shortDynamic.messages().stream().map(LlmMessage::content).toList(),
                 repeated.messages().stream().map(LlmMessage::content).toList());
         assertEquals(shortDynamic.wireDiagnostics(), repeated.wireDiagnostics());
+    }
+
+    @Test
+    void reservesRequiredCurrentTurnFactsBeforeOptionalStablePersona() {
+        LlmMessageFinalization result = LlmMessageFinalizer.finalize(new LlmMessageDraft(List.of(
+                new LlmMessageDraft.Entry("rules", "system", new LlmMessage("system", "s".repeat(20)),
+                        true, 0, LlmPromptStability.GLOBAL_STATIC),
+                new LlmMessageDraft.Entry("persona", "persona", new LlmMessage("system", "p".repeat(70)),
+                        false, 100, LlmPromptStability.NPC_STABLE),
+                new LlmMessageDraft.Entry("focus", "turn", new LlmMessage("user", "f".repeat(30)),
+                        true, 0, LlmPromptStability.TURN_DYNAMIC))), 100, TEXT_LENGTH);
+
+        assertTrue(result.withinBudget());
+        assertEquals(50, result.estimatedInputTokens());
+        assertEquals(List.of("rules", "focus"), result.entries().stream()
+                .map(LlmMessageFinalization.FinalEntry::entryId).toList());
+        assertEquals("budget_excluded", result.decisions().get(1).reason());
+        assertEquals("required", result.decisions().get(2).reason());
     }
 
     @Test

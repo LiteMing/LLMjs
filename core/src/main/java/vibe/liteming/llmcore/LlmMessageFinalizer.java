@@ -45,8 +45,10 @@ public final class LlmMessageFinalizer {
         boolean[] included = new boolean[indexed.size()];
         String[] reasons = new String[indexed.size()];
         long used = 0;
+        // Reserve every required fact before optimizing optional entries for prefix stability;
+        // stable optional content must never consume the budget needed by current-turn facts.
         for (IndexedEntry item : indexed) {
-            if (!item.entry.required() || !item.entry.stability().stableAcrossTurns()) continue;
+            if (!item.entry.required()) continue;
             included[item.index] = true;
             used += item.tokens;
             reasons[item.index] = used > budget ? "required_over_budget" : "required";
@@ -67,13 +69,6 @@ public final class LlmMessageFinalizer {
             }
         }
 
-        // Dynamic size cannot change which earlier stable entries are selected.
-        for (IndexedEntry item : indexed) {
-            if (!item.entry.required() || item.entry.stability().stableAcrossTurns()) continue;
-            included[item.index] = true;
-            used += item.tokens;
-            reasons[item.index] = used > budget ? "required_over_budget" : "required";
-        }
         List<IndexedEntry> dynamicOptional = indexed.stream()
                 .filter(item -> !item.entry.required() && !item.entry.stability().stableAcrossTurns())
                 .sorted(Comparator.comparingInt((IndexedEntry item) -> item.entry.priority()).reversed()
