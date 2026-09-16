@@ -12,7 +12,17 @@ public record LlmRequest(
         LlmRouteOptions overrides,
         LlmBillingContext billingContext,
         List<LlmMessageFinalization.FinalEntry> typedEntries,
-        LlmWireDiagnostics wireDiagnostics) {
+        LlmWireDiagnostics wireDiagnostics,
+        Integer adaptiveOutputSeedTokens) {
+
+    /** Retains the accepted 1.5.1 cache request constructor for cross-repository consumers. */
+    public LlmRequest(List<LlmMessage> messages, List<String> providerChain, Double temperature,
+            Integer maxTokens, int timeoutSeconds, LlmRequestContext context, LlmRouteOptions overrides,
+            LlmBillingContext billingContext, List<LlmMessageFinalization.FinalEntry> typedEntries,
+            LlmWireDiagnostics wireDiagnostics) {
+        this(messages, providerChain, temperature, maxTokens, timeoutSeconds, context, overrides,
+                billingContext, typedEntries, wireDiagnostics, null);
+    }
 
     public LlmRequest(List<LlmMessage> messages, List<String> providerChain, Double temperature,
             Integer maxTokens, int timeoutSeconds, LlmRequestContext context, LlmRouteOptions overrides,
@@ -35,6 +45,10 @@ public record LlmRequest(
     }
 
     public LlmRequest {
+        if (adaptiveOutputSeedTokens != null
+                && (adaptiveOutputSeedTokens < 1 || adaptiveOutputSeedTokens > 32000)) {
+            throw new IllegalArgumentException("Adaptive output seed must be between 1 and 32000 tokens");
+        }
         messages = messages == null ? List.of() : List.copyOf(messages);
         providerChain = providerChain == null ? List.of() : List.copyOf(providerChain);
         timeoutSeconds = Math.max(0, timeoutSeconds);
@@ -73,7 +87,13 @@ public record LlmRequest(
 
     public LlmRequest withBillingContext(LlmBillingContext billing) {
         return new LlmRequest(messages, providerChain, temperature, maxTokens, timeoutSeconds,
-                context, overrides, billing, typedEntries, wireDiagnostics);
+                context, overrides, billing, typedEntries, wireDiagnostics, adaptiveOutputSeedTokens);
+    }
+
+    /** Sets an automatic budget floor; explicit routing/request limits still take precedence. */
+    public LlmRequest withAdaptiveOutputBudget(int seedTokens) {
+        return new LlmRequest(messages, providerChain, temperature, maxTokens, timeoutSeconds,
+                context, overrides, billingContext, typedEntries, wireDiagnostics, seedTokens);
     }
 
     LlmRouteOptions requestOverrides() {

@@ -33,7 +33,7 @@ public final class LlmProviderWire {
         Prepared prepared = prepare(request);
         return new LlmRequest(prepared.messages(), request.providerChain(), request.temperature(),
                 request.maxTokens(), request.timeoutSeconds(), request.context(), request.overrides(),
-                request.billingContext(), prepared.sourceEntries(), prepared.diagnostics());
+                request.billingContext(), prepared.sourceEntries(), prepared.diagnostics(), request.adaptiveOutputSeedTokens());
     }
 
     public static List<LlmMessage> mergeLeadingSystemMessages(List<LlmMessage> messages) {

@@ -161,6 +161,10 @@ final class LlmRouteExecutor {
         CompletableFuture<LlmOrchestrator.AttemptResult> transport;
         ScheduledFuture<?> retry;
         LlmOrchestrator.CredentialRuntime credential;
+        boolean adaptiveOutput;
+        int adaptiveOutputTokens;
+        int adaptiveOutputRetries;
+        boolean reuseCredentialForOutput;
         long attemptStart;
         int sent;
         boolean emitted;
@@ -178,10 +182,13 @@ final class LlmRouteExecutor {
         void start() {
             if (completion.isDone() || expired()) return;
             if (provider == null) { unavailable("Provider not found"); return; }
-            if (sent >= target.maxAttempts(provider.credentials.size())) { unavailable("No healthy credential"); return; }
+            if (sent >= maxAttempts()) { unavailable("No healthy credential"); return; }
             long now = System.currentTimeMillis();
-            credential = provider.selectAvailable(now, tried);
-            if (credential == null && target.retries() != null) credential = provider.selectAvailable(now, Set.of());
+            if (!reuseCredentialForOutput) {
+                credential = provider.selectAvailable(now, tried);
+                if (credential == null && target.retries() != null) credential = provider.selectAvailable(now, Set.of());
+            } else if (credential.disabled || credential.cooldownUntil > now) credential = null;
+            reuseCredentialForOutput = false;
             if (credential == null) {
                 long readyAt = provider.credentials.stream()
                         .filter(key -> !key.disabled && (target.retries() != null || !tried.contains(key)))
@@ -193,6 +200,14 @@ final class LlmRouteExecutor {
             if (calls >= LlmRoute.MAX_ATTEMPTS) {
                 completion.complete(new CandidateResult(LlmResponse.failure("Route attempt limit reached", List.of(),
                         LlmRequestAccounting.DenyCode.CHAIN_CALLS_EXHAUSTED), HostedWebSearchAdapters.Evidence.none(), true));
+                return;
+            }
+            if (sent == 0) {
+                adaptiveOutput = orchestrator.usesAdaptiveOutputBudget(request, provider.spec);
+                adaptiveOutputTokens = orchestrator.resolveParameters(request, target.provider()).maxOutputTokens();
+            }
+            if (adaptiveOutput && orchestrator.adaptiveOutputCeiling(request, provider.spec) == 0) {
+                unavailable("Provider context window leaves no output capacity");
                 return;
             }
             calls++;
@@ -218,7 +233,12 @@ final class LlmRouteExecutor {
                                 ? LlmCacheUsage.unknown("stream reported no cache usage") : observed;
                     }
                 };
-                transport = orchestrator.sendRouteAttempt(request, provider.spec, credential.spec, delta, usage,
+                LlmRequest attemptRequest = adaptiveOutput
+                        ? new LlmRequest(request.messages(), request.providerChain(), request.temperature(),
+                                adaptiveOutputTokens, request.timeoutSeconds(), request.context(), request.overrides(),
+                                request.billingContext(), request.typedEntries(), request.wireDiagnostics(),
+                                request.adaptiveOutputSeedTokens()) : request;
+                transport = orchestrator.sendRouteAttempt(attemptRequest, provider.spec, credential.spec, delta, usage,
                         searching ? searchAdapters.get(target.provider()) : null, racing);
             } catch (RuntimeException failure) {
                 transport = CompletableFuture.failedFuture(failure);
@@ -249,6 +269,16 @@ final class LlmRouteExecutor {
             String error = base.error();
             if (!base.success() && base.httpStatus() > 0) error = "HTTP " + base.httpStatus() + ": " + error;
             if (base.success() && !usable) error = "Provider returned no usable text";
+            boolean truncated = "length".equals(base.finishReason());
+            if (truncated) {
+                if (adaptiveOutput || racing || !usable) {
+                    usable = false;
+                    error = "Provider output reached its token budget";
+                }
+                if (adaptiveOutput && !base.policyRejected()) {
+                    orchestrator.recordTruncatedOutputBudget(request, provider, provider.spec.model(), adaptiveOutputTokens);
+                }
+            }
             if (usable && racing && !"stop".equals(base.finishReason())) {
                 usable = false;
                 error = "Race candidate did not finish normally: " + base.finishReason();
@@ -280,13 +310,30 @@ final class LlmRouteExecutor {
                 completion.complete(new CandidateResult(response, value.evidence(), true));
                 return;
             }
+            if (truncated && adaptiveOutput) {
+                int nextOutputTokens = Math.min(adaptiveOutputTokens + LlmOrchestrator.ADAPTIVE_OUTPUT_STEP,
+                        orchestrator.adaptiveOutputCeiling(request, provider.spec));
+                boolean mayRetry = target.retries() == null
+                        ? adaptiveOutputRetries < LlmOrchestrator.DEFAULT_ADAPTIVE_OUTPUT_RETRIES
+                        : sent < maxAttempts();
+                if (nextOutputTokens > adaptiveOutputTokens && mayRetry) {
+                    adaptiveOutputTokens = nextOutputTokens;
+                    adaptiveOutputRetries++;
+                    reuseCredentialForOutput = true;
+                    lastFailure = response;
+                    start();
+                    return;
+                }
+                completion.complete(new CandidateResult(response, value.evidence(), false));
+                return;
+            }
             if (base.success()) {
                 // A complete but unusable reply has already been billed. Identical retries do not repair its contract.
                 completion.complete(new CandidateResult(response, value.evidence(), false));
                 return;
             }
             LlmOrchestrator.applyFailure(key, base.httpStatus(), value.retryAfterMs());
-            if (!LlmOrchestrator.isCredentialRetryable(base.httpStatus()) || sent >= target.maxAttempts(provider.credentials.size())) {
+            if (!LlmOrchestrator.isCredentialRetryable(base.httpStatus()) || sent >= maxAttempts()) {
                 completion.complete(new CandidateResult(response, value.evidence(), false));
                 return;
             }
@@ -297,6 +344,11 @@ final class LlmRouteExecutor {
             else if (!schedule(Math.min(5000L, 500L << Math.min(sent - 1, 4)) + ThreadLocalRandom.current().nextLong(100))) {
                 completion.complete(new CandidateResult(response, value.evidence(), false));
             }
+        }
+
+        int maxAttempts() {
+            return Math.min(LlmRoute.MAX_ATTEMPTS, target.maxAttempts(provider.credentials.size())
+                    + (target.retries() == null ? adaptiveOutputRetries : 0));
         }
 
         boolean schedule(long delayMs) {

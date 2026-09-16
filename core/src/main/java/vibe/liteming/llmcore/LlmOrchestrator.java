@@ -34,6 +34,9 @@ import java.util.function.Consumer;
 public final class LlmOrchestrator implements AutoCloseable {
     private static final long RATE_LIMIT_COOLDOWN_MS = 60_000L;
     private static final int DEFAULT_MAX_OUTPUT_TOKENS = 1_000;
+    static final int ADAPTIVE_OUTPUT_STEP = 1_000;
+    static final int MAX_ADAPTIVE_OUTPUT_TOKENS = 32_000;
+    static final int DEFAULT_ADAPTIVE_OUTPUT_RETRIES = 3;
     private static final Gson GSON = new Gson();
 
     private final HttpClient httpClient;
@@ -183,6 +186,7 @@ public final class LlmOrchestrator implements AutoCloseable {
         closed = true;
         activeRequests.forEach(future -> future.cancel(true));
         activeRequests.clear();
+        providers.values().forEach(ProviderRuntime::clearOutputBudgets);
     }
 
     public Set<String> getProviderNames() {
@@ -217,26 +221,55 @@ public final class LlmOrchestrator implements AutoCloseable {
             LlmRouteOptions purposeOverrides) {
         LlmRequest safeRequest = request == null ? LlmRequest.routed(List.of(), LlmRequestContext.chat()) : request;
         ProviderSpec provider = getProviderSpec(providerName);
-        LlmRouteOptions providerDefaults = provider == null
-                ? LlmRouteOptions.empty()
-                : new LlmRouteOptions(provider.temperature(), provider.maxTokens(), null, null, null);
-        LlmRouteOptions effective = globalDefaults.overlay(providerDefaults)
-                .overlay(purposeOverrides)
-                .overlay(safeRequest.requestOverrides());
+        LlmRouteOptions effective = effectiveOptions(safeRequest, provider, purposeOverrides);
 
         int timeout = effective.timeoutSeconds() == null ? 30 : effective.timeoutSeconds();
         int maxOutput = effective.maxOutputTokens() == null
-                ? DEFAULT_MAX_OUTPUT_TOKENS : effective.maxOutputTokens();
+                ? adaptiveOutputTokens(safeRequest, provider) : effective.maxOutputTokens();
         int reserve = effective.outputReserveTokens() == null
                 ? maxOutput : effective.outputReserveTokens();
         int inputBudget = effective.inputBudgetTokens() == null
                 ? LlmResolvedParameters.UNBOUNDED_INPUT : effective.inputBudgetTokens();
         Integer contextWindow = provider == null ? null : provider.contextWindowTokens();
         if (contextWindow != null) {
-            inputBudget = Math.min(inputBudget, Math.max(0, contextWindow - reserve));
+            inputBudget = Math.min(inputBudget, Math.max(0, contextWindow - Math.max(reserve, maxOutput)));
         }
         return new LlmResolvedParameters(providerName, effective.temperature(), maxOutput,
                 timeout, inputBudget, reserve, contextWindow);
+    }
+
+    private LlmRouteOptions effectiveOptions(LlmRequest request, ProviderSpec provider,
+            LlmRouteOptions purposeOptions) {
+        LlmRouteOptions providerDefaults = provider == null ? LlmRouteOptions.empty()
+                : new LlmRouteOptions(provider.temperature(), provider.maxTokens(), null, null, null);
+        return globalDefaults.overlay(providerDefaults).overlay(purposeOptions).overlay(request.requestOverrides());
+    }
+
+    boolean usesAdaptiveOutputBudget(LlmRequest request, ProviderSpec provider) {
+        return effectiveOptions(request, provider,
+                routingConfig.resolveOptions(request.context().purpose())).maxOutputTokens() == null;
+    }
+
+    private int adaptiveOutputTokens(LlmRequest request, ProviderSpec provider) {
+        ProviderRuntime runtime = provider == null ? null : providers.get(provider.name());
+        int learned = runtime == null ? DEFAULT_MAX_OUTPUT_TOKENS
+                : runtime.outputBudget(request.context().purpose(), provider.model());
+        int seed = request.adaptiveOutputSeedTokens() == null
+                ? DEFAULT_MAX_OUTPUT_TOKENS : request.adaptiveOutputSeedTokens();
+        return Math.max(1, Math.min(Math.max(seed, learned), adaptiveOutputCeiling(request, provider)));
+    }
+
+    int adaptiveOutputCeiling(LlmRequest request, ProviderSpec provider) {
+        if (provider == null || provider.contextWindowTokens() == null) return MAX_ADAPTIVE_OUTPUT_TOKENS;
+        long inputTokens = estimateInputTokens(request);
+        return (int) Math.max(0L, Math.min(MAX_ADAPTIVE_OUTPUT_TOKENS,
+                provider.contextWindowTokens().longValue() - inputTokens));
+    }
+
+    void recordTruncatedOutputBudget(LlmRequest request, ProviderRuntime runtime, String model,
+            int attemptedTokens) {
+        if (!closed && providers.get(runtime.spec.name()) == runtime) runtime.recordTruncatedOutputBudget(
+                request.context().purpose(), model, attemptedTokens);
     }
 
     public LlmResolvedParameters resolveParameters(String purpose, String providerName) {
@@ -254,8 +287,22 @@ public final class LlmOrchestrator implements AutoCloseable {
     public LlmMessageFinalization finalizeDraftForRoute(LlmMessageDraft draft, LlmRequest request,
             LlmMessageFinalizer.TokenEstimator estimator) {
         int budget = resolveParameters(request, "").inputBudgetTokens();
-        for (String provider : resolveChain(request)) {
-            if (providers.containsKey(provider)) budget = Math.min(budget, resolveParameters(request, provider).inputBudgetTokens());
+        for (LlmRoute.Stage stage : resolveRoute(request).stages()) {
+            for (LlmRoute.Target target : stage.candidates()) {
+                ProviderRuntime runtime = providers.get(target.provider());
+                if (runtime == null) continue;
+                ProviderSpec selected = runtime.spec;
+                LlmResolvedParameters parameters = resolveParameters(request, target.provider());
+                int inputBudget = parameters.inputBudgetTokens();
+                if (usesAdaptiveOutputBudget(request, selected) && parameters.contextWindowTokens() != null) {
+                    int retries = target.retries() == null ? DEFAULT_ADAPTIVE_OUTPUT_RETRIES : target.retries();
+                    int outputHeadroom = Math.min(MAX_ADAPTIVE_OUTPUT_TOKENS,
+                            parameters.maxOutputTokens() + retries * ADAPTIVE_OUTPUT_STEP);
+                    inputBudget = Math.min(inputBudget, Math.max(0,
+                            parameters.contextWindowTokens() - Math.max(parameters.outputReserveTokens(), outputHeadroom)));
+                }
+                budget = Math.min(budget, inputBudget);
+            }
         }
         return LlmMessageFinalizer.finalize(draft, budget, estimator);
     }
@@ -409,8 +456,20 @@ public final class LlmOrchestrator implements AutoCloseable {
                 ProviderRuntime provider = providers.get(target.provider());
                 if (provider == null || provider.credentials.isEmpty()) continue;
                 int attempts = target.maxAttempts(provider.credentials.size());
-                LlmRequestAccounting.AttemptEstimate estimate = attemptEstimate(
-                        request, provider.spec, resolveParameters(request, target.provider(), purposeOptions), costRate(provider.spec));
+                boolean adaptive = effectiveOptions(request, provider.spec, purposeOptions).maxOutputTokens() == null;
+                if (adaptive && target.retries() == null) {
+                    attempts = Math.min(LlmRoute.MAX_ATTEMPTS, attempts + DEFAULT_ADAPTIVE_OUTPUT_RETRIES);
+                }
+                LlmResolvedParameters parameters = resolveParameters(request, target.provider(), purposeOptions);
+                if (adaptive) {
+                    // Learning may increase between causal budget declaration and the actual attempt.
+                    parameters = new LlmResolvedParameters(parameters.provider(), parameters.temperature(),
+                            parameters.maxOutputTokens(), parameters.timeoutSeconds(), parameters.inputBudgetTokens(),
+                            Math.max(parameters.outputReserveTokens(), adaptiveOutputCeiling(request, provider.spec)),
+                            parameters.contextWindowTokens());
+                }
+                LlmRequestAccounting.AttemptEstimate estimate = attemptEstimate(request, provider.spec,
+                        parameters, costRate(provider.spec));
                 calls = saturatedAdd(calls, attempts);
                 tokens = saturatedAdd(tokens, saturatedMultiply(estimate.totalTokens(), attempts));
             }
@@ -425,7 +484,9 @@ public final class LlmOrchestrator implements AutoCloseable {
         purposes.addAll(routingConfig.purposeOptions().keySet());
         // Resolve the default directly: an empty request purpose would normalize to CHAT.
         purposes.add(null);
-        LlmRequest configuredRequest = LlmRequest.routed(template.messages(), template.context());
+        LlmRequest configuredRequest = new LlmRequest(template.messages(), List.of(), null, null, 0,
+                template.context(), LlmRouteOptions.empty(), template.billingContext(),
+                template.typedEntries(), template.wireDiagnostics(), template.adaptiveOutputSeedTokens());
         for (String purpose : purposes) {
             LlmRoute route = routingConfig.resolveRoute(purpose, new ArrayList<>(providers.keySet()));
             LlmRouteOptions options = routingConfig.resolveOptions(purpose);
@@ -516,14 +577,19 @@ public final class LlmOrchestrator implements AutoCloseable {
 
     private LlmRequestAccounting.AttemptEstimate attemptEstimate(LlmRequest request,
             ProviderSpec provider, LlmResolvedParameters parameters, LlmCostRate rate) {
+        long inputTokens = estimateInputTokens(request);
+        long outputTokens = Math.max(parameters.maxOutputTokens(), parameters.outputReserveTokens());
+        return new LlmRequestAccounting.AttemptEstimate(provider.name(), inputTokens,
+                outputTokens, rate.weightedEstimate(inputTokens, outputTokens));
+    }
+
+    private static long estimateInputTokens(LlmRequest request) {
         long inputTokens = 0L;
         for (LlmMessage message : request.messages()) {
             inputTokens = saturatedAdd(inputTokens,
                     Math.max(0, LlmMessageFinalizer.CONSERVATIVE_ESTIMATOR.estimate(message)));
         }
-        long outputTokens = Math.max(0, parameters.outputReserveTokens());
-        return new LlmRequestAccounting.AttemptEstimate(provider.name(), inputTokens,
-                outputTokens, rate.weightedEstimate(inputTokens, outputTokens));
+        return inputTokens;
     }
 
     private LlmCostRate costRate(ProviderSpec provider) {
@@ -600,7 +666,8 @@ public final class LlmOrchestrator implements AutoCloseable {
                             wireRequest.wireDiagnostics()));
         }
         return mapCancellable(sendSingle(wireRequest, provider, credential, racing), value -> {
-            if (onDelta != null && value.success && !value.content.isBlank()) onDelta.accept(value.content);
+            if (onDelta != null && value.success && !value.content.isBlank()
+                    && !"length".equals(value.finishReason)) onDelta.accept(value.content);
             return new AttemptResult(value, HostedWebSearchAdapters.Evidence.none(), false, value.retryAfterMs,
                     wireRequest.wireDiagnostics());
         });
@@ -891,7 +958,8 @@ public final class LlmOrchestrator implements AutoCloseable {
             finishAccounting(request, reservation,
                     promptTokens.get() > 0 || completionTokens.get() > 0
                             || hasReportedUsage(cacheUsage.get())
-                            || throwable == null && result != null && (result.success || result.emittedContent)
+                            || throwable == null && result != null && (result.success || result.emittedContent
+                                    || "length".equals(result.finishReason))
                             || transport != null && uncertainUsage(throwable),
                     provider, credential, rate,
                     promptTokens.get(), completionTokens.get(), cacheUsage.get());
@@ -1275,6 +1343,7 @@ public final class LlmOrchestrator implements AutoCloseable {
         final ProviderSpec spec;
         final List<CredentialRuntime> credentials;
         private final AtomicInteger cursor = new AtomicInteger();
+        private final Map<OutputBudgetKey, Integer> learnedOutputBudgets = new LinkedHashMap<>();
 
         private ProviderRuntime(ProviderSpec spec) {
             this.spec = spec;
@@ -1295,6 +1364,23 @@ public final class LlmOrchestrator implements AutoCloseable {
             }
             return best;
         }
+
+        synchronized int outputBudget(String purpose, String model) {
+            return learnedOutputBudgets.getOrDefault(new OutputBudgetKey(purpose, model), DEFAULT_MAX_OUTPUT_TOKENS);
+        }
+
+        synchronized void clearOutputBudgets() { learnedOutputBudgets.clear(); }
+
+        synchronized void recordTruncatedOutputBudget(String purpose, String model, int attemptedTokens) {
+            OutputBudgetKey key = new OutputBudgetKey(purpose, model);
+            int next = Math.min(MAX_ADAPTIVE_OUTPUT_TOKENS, attemptedTokens + ADAPTIVE_OUTPUT_STEP);
+            learnedOutputBudgets.merge(key, next, Math::max);
+            while (learnedOutputBudgets.size() > 256) {
+                learnedOutputBudgets.remove(learnedOutputBudgets.keySet().iterator().next());
+            }
+        }
+
+        private record OutputBudgetKey(String purpose, String model) { }
 
     }
 
