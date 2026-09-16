@@ -99,11 +99,87 @@ class LlmRouteExecutionTest {
             assertEquals(response.cacheUsage(), response.attempts().get(0).cacheUsage());
             assertEquals(response.cacheUsage(), events.get(0).cacheUsage());
             assertEquals(response.cacheUsage(), settlements.get(0).cacheUsage());
+            assertEquals(64, response.wireDiagnostics().finalMessageShapeHash().length());
+            assertEquals(response.wireDiagnostics(), response.attempts().get(0).wireDiagnostics());
+            assertEquals(response.wireDiagnostics(), events.get(0).wireDiagnostics());
+            assertEquals(settlements.get(0).cacheDomainIdentity(),
+                    response.wireDiagnostics().cacheDomainIdentity());
             assertEquals(response.provider(), settlements.get(0).provider());
             assertEquals(response.model(), settlements.get(0).model());
             assertEquals(response.credentialId(), settlements.get(0).credentialId());
             assertEquals(64, settlements.get(0).cacheDomainIdentity().length());
             assertFalse(settlements.get(0).cacheDomainIdentity().contains("test-key"));
+        } finally {
+            LlmRequestLogger.removeAttemptListener(listener);
+        }
+    }
+
+    @Test void retryKeepsFailedAttemptDiagnosticAndReturnsOnlyWinnerUsage() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        server.createContext("/A", exchange -> {
+            readBody(exchange);
+            if (calls.incrementAndGet() == 1) reply(exchange, 503, "{\"error\":\"temporary\"}");
+            else reply(exchange, 200, cachedCompletion("winner", 60, 100));
+        });
+        List<LlmRequestLogger.AttemptEvent> events = new CopyOnWriteArrayList<>();
+        List<LlmRequestAccounting.AttemptUsage> billed = new CopyOnWriteArrayList<>();
+        AtomicInteger released = new AtomicInteger();
+        java.util.function.Consumer<LlmRequestLogger.AttemptEvent> listener = events::add;
+        LlmRequestLogger.addAttemptListener(listener);
+        LlmRequestAccounting.install(new LlmRequestAccounting.Policy() {
+            @Override public LlmRequestAccounting.Reservation reserve(LlmRequest request,
+                    LlmRequestAccounting.AttemptEstimate estimate) {
+                return LlmRequestAccounting.Reservation.allow("retry", estimate.totalTokens());
+            }
+            @Override public void settle(LlmRequest request, LlmRequestAccounting.Reservation reservation,
+                    LlmRequestAccounting.AttemptUsage usage) {
+                if (usage == null) released.incrementAndGet();
+                else billed.add(usage);
+            }
+        });
+        try {
+            LlmResponse response = core("A*1", "A").send(request()).get(5, TimeUnit.SECONDS);
+
+            assertTrue(response.success(), response.error());
+            assertEquals("winner", response.content());
+            assertEquals(2, response.attempts().size());
+            assertEquals(LlmCacheUsage.Status.UNKNOWN, response.attempts().get(0).cacheUsage().status());
+            assertEquals(LlmCacheUsage.reported(60L, null, 40L, 100L), response.cacheUsage());
+            assertEquals(response.cacheUsage(), response.attempts().get(1).cacheUsage());
+            assertEquals(2, events.size());
+            assertEquals(LlmCacheUsage.Status.UNKNOWN, events.get(0).cacheUsage().status());
+            assertEquals(response.cacheUsage(), events.get(1).cacheUsage());
+            assertEquals(1, released.get());
+            assertEquals(1, billed.size());
+            assertEquals(response.cacheUsage(), billed.get(0).cacheUsage());
+        } finally {
+            LlmRequestLogger.removeAttemptListener(listener);
+        }
+    }
+
+    @Test void fallbackSeparatesCacheDomainsAndWinnerUsage() throws Exception {
+        server.createContext("/A", exchange -> {
+            readBody(exchange);
+            reply(exchange, 503, "{\"error\":\"temporary\"}");
+        });
+        server.createContext("/B", exchange -> {
+            readBody(exchange);
+            reply(exchange, 200, cachedCompletion("fallback", 25, 100));
+        });
+        List<LlmRequestLogger.AttemptEvent> events = new CopyOnWriteArrayList<>();
+        java.util.function.Consumer<LlmRequestLogger.AttemptEvent> listener = events::add;
+        LlmRequestLogger.addAttemptListener(listener);
+        try {
+            LlmResponse response = core("A*0 > B*0", "A", "B").send(request()).get(5, TimeUnit.SECONDS);
+
+            assertTrue(response.success(), response.error());
+            assertEquals("B", response.provider());
+            assertEquals(LlmCacheUsage.reported(25L, null, 75L, 100L), response.cacheUsage());
+            assertEquals(2, events.size());
+            assertNotEquals(events.get(0).cacheDomainIdentity(), events.get(1).cacheDomainIdentity());
+            assertEquals(events.get(1).cacheDomainIdentity(), response.wireDiagnostics().cacheDomainIdentity());
+            assertEquals(LlmCacheUsage.Status.UNKNOWN, events.get(0).cacheUsage().status());
+            assertEquals(response.cacheUsage(), events.get(1).cacheUsage());
         } finally {
             LlmRequestLogger.removeAttemptListener(listener);
         }
@@ -136,11 +212,110 @@ class LlmRouteExecutionTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"anthropic", "gemini"})
+    void singleResponseAdaptersKeepUsageThroughSendAndStreamingFacade(String format) throws Exception {
+        String responseBody;
+        LlmCacheUsage expected;
+        if ("anthropic".equals(format)) {
+            responseBody = """
+                    {"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn",
+                     "usage":{"input_tokens":20,"output_tokens":7,
+                       "cache_read_input_tokens":70,"cache_creation_input_tokens":10}}
+                    """;
+            expected = LlmCacheUsage.reported(70L, 10L, 20L, 100L);
+        } else {
+            responseBody = """
+                    {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],
+                     "usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":7,
+                       "cachedContentTokenCount":80}}
+                    """;
+            expected = LlmCacheUsage.reported(80L, null, 40L, 120L);
+        }
+        server.createContext("/P", exchange -> {
+            readBody(exchange);
+            reply(exchange, 200, responseBody);
+        });
+        LlmOrchestrator runtime = coreWithFormat("P", format);
+
+        LlmResponse direct = runtime.send(request()).get(5, TimeUnit.SECONDS);
+        List<String> deltas = new CopyOnWriteArrayList<>();
+        LlmResponse streamingFacade = runtime.sendStreaming(request(), deltas::add).get(5, TimeUnit.SECONDS);
+
+        assertTrue(direct.success(), direct.error());
+        assertTrue(streamingFacade.success(), streamingFacade.error());
+        assertEquals(expected, direct.cacheUsage());
+        assertEquals(expected, streamingFacade.cacheUsage());
+        assertEquals(List.of("ok"), deltas);
+    }
+
+    @Test void unknownAdapterReportsUnsupportedOnARealTransport() throws Exception {
+        server.createContext("/P", exchange -> {
+            readBody(exchange);
+            reply(exchange, 200, completion("ok", "stop"));
+        });
+
+        LlmResponse response = coreWithFormat("P", "custom").send(request()).get(5, TimeUnit.SECONDS);
+
+        assertTrue(response.success(), response.error());
+        assertEquals(LlmCacheUsage.Status.UNSUPPORTED, response.cacheUsage().status());
+        assertTrue(response.cacheUsage().reason().contains("custom"));
+    }
+
+    @Test void malformedCacheUsageDoesNotDiscardSuccessfulContent() throws Exception {
+        server.createContext("/A", exchange -> {
+            readBody(exchange);
+            reply(exchange, 200, """
+                    {"choices":[{"message":{"content":"kept"},"finish_reason":"stop"}],
+                     "usage":{"prompt_tokens":10,"completion_tokens":2,
+                       "prompt_tokens_details":{"cached_tokens":-1}}}
+                    """);
+        });
+
+        LlmResponse response = core("A*0", "A").send(request()).get(5, TimeUnit.SECONDS);
+
+        assertTrue(response.success(), response.error());
+        assertEquals("kept", response.content());
+        assertEquals(LlmCacheUsage.Status.UNKNOWN, response.cacheUsage().status());
+        assertTrue(response.cacheUsage().reason().contains("negative"));
+    }
+
+    @Test void streamingAndNonStreamingShareLeadingSystemNormalization() throws Exception {
+        List<com.google.gson.JsonObject> bodies = new CopyOnWriteArrayList<>();
+        server.createContext("/A", exchange -> {
+            var body = readBody(exchange);
+            bodies.add(body);
+            if (body.has("stream") && body.get("stream").getAsBoolean()) {
+                reply(exchange, 200, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},"
+                        + "\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n");
+            } else {
+                reply(exchange, 200, completion("ok", "stop"));
+            }
+        });
+        LlmRequest request = LlmRequest.routed(List.of(
+                new LlmMessage("system", "one"),
+                new LlmMessage("system", "two"),
+                new LlmMessage("user", "question")), LlmRequestContext.chat());
+        LlmOrchestrator runtime = core("A*0", "A");
+
+        assertTrue(runtime.send(request).get(5, TimeUnit.SECONDS).success());
+        assertTrue(runtime.sendStreaming(request, ignored -> { }).get(5, TimeUnit.SECONDS).success());
+
+        assertEquals(2, bodies.size());
+        for (var body : bodies) {
+            assertEquals(2, body.getAsJsonArray("messages").size());
+            assertEquals("one\n\ntwo", body.getAsJsonArray("messages").get(0).getAsJsonObject()
+                    .get("content").getAsString());
+        }
+    }
+
     @Test void raceUsesFirstCompleteBodyAndCancelsTheOtherTransportWithoutDeltas() throws Exception {
         CountDownLatch started = new CountDownLatch(2);
         AtomicInteger sent = new AtomicInteger();
         AtomicInteger settlements = new AtomicInteger();
         AtomicInteger estimatedSettlements = new AtomicInteger();
+        List<LlmRequestLogger.AttemptEvent> events = new CopyOnWriteArrayList<>();
+        java.util.function.Consumer<LlmRequestLogger.AttemptEvent> listener = events::add;
         Map<String, LlmRequestAccounting.AttemptEstimate> estimates = new java.util.concurrent.ConcurrentHashMap<>();
         Map<String, LlmRequestAccounting.AttemptUsage> usages = new java.util.concurrent.ConcurrentHashMap<>();
         LlmRequestAccounting.install(new LlmRequestAccounting.Policy() {
@@ -174,7 +349,7 @@ class LlmRouteExecutionTest {
             sent.incrementAndGet();
             started.countDown();
             await(started);
-            reply(exchange, 200, completion("fast", "stop"));
+            reply(exchange, 200, cachedCompletion("fast", 2, 3));
         });
         List<String> deltas = new CopyOnWriteArrayList<>();
         LlmOrchestrator runtime = core("(slow*0 | fast*0)", "slow", "fast");
@@ -183,17 +358,31 @@ class LlmRouteExecutionTest {
                 "slow", new ProviderProfile("slow", ProviderCapabilities.textOnly(), new LlmCostRate(2, 4)),
                 "fast", new ProviderProfile("fast", ProviderCapabilities.textOnly(), new LlmCostRate(0.5, 2))));
         assertEquals(rawCeiling, runtime.estimateWorstCaseBudget(request()).maxTokens());
-        LlmResponse result = runtime.sendStreaming(request(), deltas::add).get(5, TimeUnit.SECONDS);
-        assertEquals("fast", result.content());
-        assertEquals(2, sent.get());
-        assertTrue(deltas.isEmpty());
-        assertTrue(result.attempts().stream().anyMatch(attempt -> attempt.finishReason().equals("cancelled")));
-        assertEquals(2, settlements.get());
-        assertEquals(1, estimatedSettlements.get(), "a sent loser may still be billed by its provider");
-        assertEquals(estimates.get("slow").totalCostUnits(), usages.get("slow").totalCostUnits());
-        assertEquals(estimates.get("slow").totalTokens(), usages.get("slow").estimatedTokens());
-        assertEquals(16L, usages.get("fast").totalCostUnits()); // ceil(3 * .5) + 7 * 2
-        assertEquals(10L, usages.get("fast").totalTokens());
+        LlmRequestLogger.addAttemptListener(listener);
+        try {
+            LlmResponse result = runtime.sendStreaming(request(), deltas::add).get(5, TimeUnit.SECONDS);
+            assertEquals("fast", result.content());
+            assertEquals(LlmCacheUsage.reported(2L, null, 1L, 3L), result.cacheUsage());
+            assertEquals(2, sent.get());
+            assertTrue(deltas.isEmpty());
+            assertTrue(result.attempts().stream().anyMatch(attempt -> attempt.finishReason().equals("cancelled")));
+            assertEquals(result.cacheUsage(), result.attempts().stream()
+                    .filter(LlmResponse.Attempt::success).findFirst().orElseThrow().cacheUsage());
+            assertEquals(2, events.size());
+            assertEquals(result.cacheUsage(), events.stream()
+                    .filter(LlmRequestLogger.AttemptEvent::success).findFirst().orElseThrow().cacheUsage());
+            assertEquals(LlmCacheUsage.Status.UNKNOWN, events.stream()
+                    .filter(event -> !event.success()).findFirst().orElseThrow().cacheUsage().status());
+            assertEquals(2, settlements.get());
+            assertEquals(1, estimatedSettlements.get(), "a sent loser may still be billed by its provider");
+            assertEquals(estimates.get("slow").totalCostUnits(), usages.get("slow").totalCostUnits());
+            assertEquals(estimates.get("slow").totalTokens(), usages.get("slow").estimatedTokens());
+            assertEquals(16L, usages.get("fast").totalCostUnits()); // ceil(3 * .5) + 7 * 2
+            assertEquals(10L, usages.get("fast").totalTokens());
+            assertEquals(result.cacheUsage(), usages.get("fast").cacheUsage());
+        } finally {
+            LlmRequestLogger.removeAttemptListener(listener);
+        }
     }
 
     @Test void emptyAndTruncatedRepliesCannotWinARace() throws Exception {
@@ -229,6 +418,8 @@ class LlmRouteExecutionTest {
 
     @Test void routeDeadlineCancelsAStalledStreamWithoutStartingTheFallback() throws Exception {
         AtomicInteger fallback = new AtomicInteger();
+        List<LlmRequestLogger.AttemptEvent> events = new CopyOnWriteArrayList<>();
+        java.util.function.Consumer<LlmRequestLogger.AttemptEvent> listener = events::add;
         server.createContext("/A", exchange -> {
             readBody(exchange);
             exchange.getResponseHeaders().add("Content-Type", "text/event-stream");
@@ -244,10 +435,21 @@ class LlmRouteExecutionTest {
         });
         LlmOrchestrator core = core("A*3 > B*0", "A", "B");
         core.setRoutingConfig(core.getRoutingConfig().withDefaultRoute(LlmRoute.parse("A*3 > B*0").withDeadline(1)));
-        LlmResponse result = core.sendStreaming(request(), ignored -> { }).get(5, TimeUnit.SECONDS);
-        assertFalse(result.success());
-        assertTrue(result.error().contains("deadline"));
-        assertEquals(0, fallback.get());
+        LlmRequestLogger.addAttemptListener(listener);
+        try {
+            LlmResponse result = core.sendStreaming(request(), ignored -> { }).get(5, TimeUnit.SECONDS);
+            assertFalse(result.success());
+            assertTrue(result.error().contains("deadline"));
+            assertEquals(0, fallback.get());
+            assertEquals(1, result.attempts().size());
+            assertEquals(LlmCacheUsage.Status.UNKNOWN, result.attempts().get(0).cacheUsage().status());
+            assertEquals(result.attempts().get(0).wireDiagnostics(), result.wireDiagnostics());
+            assertEquals(64, result.wireDiagnostics().finalMessageShapeHash().length());
+            assertEquals(1, events.size());
+            assertEquals(LlmCacheUsage.Status.UNKNOWN, events.get(0).cacheUsage().status());
+        } finally {
+            LlmRequestLogger.removeAttemptListener(listener);
+        }
     }
 
     @Test void emittedStreamFailureNeverRetriesOrFallsBack() throws Exception {
@@ -308,6 +510,9 @@ class LlmRouteExecutionTest {
     @ValueSource(booleans = {false, true})
     void cancellationStopsAStreamAndSettlesKnownUsageOnce(boolean closeRuntime) throws Exception {
         List<LlmRequestAccounting.AttemptUsage> settlements = new CopyOnWriteArrayList<>();
+        List<LlmRequestLogger.AttemptEvent> events = new CopyOnWriteArrayList<>();
+        java.util.function.Consumer<LlmRequestLogger.AttemptEvent> listener = events::add;
+        LlmRequestLogger.addAttemptListener(listener);
         LlmRequestAccounting.install(recordingPolicy(settlements));
         CountDownLatch received = new CountDownLatch(1);
         AtomicInteger calls = new AtomicInteger();
@@ -315,25 +520,33 @@ class LlmRouteExecutionTest {
             readBody(exchange);
             calls.incrementAndGet();
             exchange.sendResponseHeaders(200, 0);
-            exchange.getResponseBody().write(("data: {\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":7},"
+            exchange.getResponseBody().write(("data: {\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":7,"
+                    + "\"prompt_tokens_details\":{\"cached_tokens\":2}},"
                     + "\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n").getBytes(StandardCharsets.UTF_8));
             exchange.getResponseBody().flush();
             await(releaseSlow);
             exchange.close();
         });
         LlmOrchestrator core = core("A*3 > A", "A");
-        var pending = core.sendStreaming(request(), delta -> received.countDown());
-        assertTrue(received.await(5, TimeUnit.SECONDS));
-        if (closeRuntime) core.close();
-        else assertTrue(pending.cancel(true));
-        assertTrue(pending.isCompletedExceptionally());
-        assertEquals(1, settlements.size());
-        assertEquals(3, settlements.get(0).promptTokens());
-        assertEquals(7, settlements.get(0).completionTokens());
-        assertEquals(1, calls.get());
-        core.close();
-        assertFalse(core.send(request()).join().success());
-        assertEquals(1, settlements.size());
+        try {
+            var pending = core.sendStreaming(request(), delta -> received.countDown());
+            assertTrue(received.await(5, TimeUnit.SECONDS));
+            if (closeRuntime) core.close();
+            else assertTrue(pending.cancel(true));
+            assertTrue(pending.isCompletedExceptionally());
+            assertEquals(1, settlements.size());
+            assertEquals(3, settlements.get(0).promptTokens());
+            assertEquals(7, settlements.get(0).completionTokens());
+            assertEquals(LlmCacheUsage.reported(2L, null, 1L, 3L), settlements.get(0).cacheUsage());
+            assertEquals(1, events.size());
+            assertEquals(settlements.get(0).cacheUsage(), events.get(0).cacheUsage());
+            assertEquals(1, calls.get());
+            core.close();
+            assertFalse(core.send(request()).join().success());
+            assertEquals(1, settlements.size());
+        } finally {
+            LlmRequestLogger.removeAttemptListener(listener);
+        }
     }
 
     @Test void preferredSearchFallbackReservesAfterSettlementWithinTheExchangeBudget() throws Exception {
@@ -383,6 +596,9 @@ class LlmRouteExecutionTest {
     @Test void billingDenialEndsTheRaceAndDoesNotStartLaterStages() throws Exception {
         AtomicInteger httpCalls = new AtomicInteger();
         AtomicInteger reservations = new AtomicInteger();
+        List<LlmRequestLogger.AttemptEvent> events = new CopyOnWriteArrayList<>();
+        java.util.function.Consumer<LlmRequestLogger.AttemptEvent> listener = events::add;
+        LlmRequestLogger.addAttemptListener(listener);
         for (String name : List.of("A", "B", "C")) server.createContext("/" + name, exchange -> {
             httpCalls.incrementAndGet();
             reply(exchange, 200, completion("wrong", "stop"));
@@ -395,12 +611,17 @@ class LlmRouteExecutionTest {
             }
             @Override public void settle(LlmRequest request, LlmRequestAccounting.Reservation reservation, LlmRequestAccounting.AttemptUsage usage) { fail("denied requests have no reservation"); }
         });
-        LlmResponse result = core("(A*3 | B*3) > C*0", "A", "B", "C").send(request()).get(5, TimeUnit.SECONDS);
-        assertFalse(result.success());
-        assertEquals(LlmRequestAccounting.DenyCode.BUDGET_EXHAUSTED, result.denyCode());
-        assertEquals(0, httpCalls.get());
-        assertEquals(1, reservations.get());
-        assertTrue(result.attempts().stream().noneMatch(attempt -> attempt.provider().equals("C")));
+        try {
+            LlmResponse result = core("(A*3 | B*3) > C*0", "A", "B", "C").send(request()).get(5, TimeUnit.SECONDS);
+            assertFalse(result.success());
+            assertEquals(LlmRequestAccounting.DenyCode.BUDGET_EXHAUSTED, result.denyCode());
+            assertEquals(0, httpCalls.get());
+            assertEquals(1, reservations.get());
+            assertTrue(result.attempts().isEmpty());
+            assertTrue(events.isEmpty());
+        } finally {
+            LlmRequestLogger.removeAttemptListener(listener);
+        }
     }
 
     @Test void routeBudgetAndDraftUseEveryStageWithoutLosingPurposeLimits() {
@@ -470,6 +691,16 @@ class LlmRouteExecutionTest {
         return core;
     }
 
+    private LlmOrchestrator coreWithFormat(String name, String format) {
+        ProviderSpec spec = new ProviderSpec(name, format,
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/" + name,
+                "test-model", null, 64, List.of(new ProviderSpec.Credential("key", "test-key", 1)));
+        LlmOrchestrator core = new LlmOrchestrator(Map.of(name, spec));
+        core.setRoutingConfig(PriorityRoutingConfig.empty().withDefaultRoute(LlmRoute.parse(name + "*0")));
+        runtimes.add(core);
+        return core;
+    }
+
     private static LlmRequest request() {
         return LlmRequest.routed(List.of(new LlmMessage("user", "hello")), LlmRequestContext.chat());
     }
@@ -481,6 +712,13 @@ class LlmRouteExecutionTest {
     private static String completion(String text, String finishReason) {
         return "{\"choices\":[{\"message\":{\"content\":\"" + text + "\"},\"finish_reason\":\"" + finishReason
                 + "\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":7}}";
+    }
+
+    private static String cachedCompletion(String text, int cachedTokens, int promptTokens) {
+        return "{\"choices\":[{\"message\":{\"content\":\"" + text
+                + "\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":" + promptTokens
+                + ",\"completion_tokens\":7,\"prompt_tokens_details\":{\"cached_tokens\":"
+                + cachedTokens + "}}}";
     }
 
     private static void reply(HttpExchange exchange, int status, String body) throws IOException {

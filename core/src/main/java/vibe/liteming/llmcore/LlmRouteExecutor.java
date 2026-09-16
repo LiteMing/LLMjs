@@ -140,10 +140,14 @@ final class LlmRouteExecutor {
     }
 
     static LlmResponse withAttempts(LlmResponse response, List<LlmResponse.Attempt> attempts, long elapsedMs) {
+        LlmWireDiagnostics diagnostics = response.wireDiagnostics();
+        if (diagnostics.finalMessageShapeHash().isEmpty() && !attempts.isEmpty()) {
+            diagnostics = attempts.get(attempts.size() - 1).wireDiagnostics();
+        }
         return new LlmResponse(response.success(), response.content(), response.error(), response.provider(),
                 response.model(), response.credentialId(), response.promptTokens(), response.completionTokens(),
                 elapsedMs, attempts, response.requestBody(), response.responseBody(), response.finishReason(),
-                response.denyCode(), response.cacheUsage());
+                response.denyCode(), response.cacheUsage(), diagnostics);
     }
 
     private final class Candidate {
@@ -161,6 +165,7 @@ final class LlmRouteExecutor {
         int sent;
         boolean emitted;
         boolean attemptRecorded;
+        LlmCacheUsage observedCacheUsage = LlmCacheUsage.unknown("attempt has not reported usage");
 
         Candidate(LlmRoute.Target target, boolean racing, int stageIndex) {
             this.target = target;
@@ -196,6 +201,7 @@ final class LlmRouteExecutor {
             visitedProviders.add(target.provider());
             attemptStart = System.nanoTime();
             attemptRecorded = false;
+            observedCacheUsage = LlmCacheUsage.unknown("attempt has not reported usage");
             credential.inflight.incrementAndGet();
             LlmOrchestrator.CredentialRuntime usedCredential = credential;
             try {
@@ -206,7 +212,13 @@ final class LlmRouteExecutor {
                         onDelta.accept(text);
                     }
                 } : null;
-                transport = orchestrator.sendRouteAttempt(request, provider.spec, credential.spec, delta,
+                Consumer<LlmCacheUsage> usage = observed -> {
+                    synchronized (LlmRouteExecutor.this) {
+                        observedCacheUsage = observed == null
+                                ? LlmCacheUsage.unknown("stream reported no cache usage") : observed;
+                    }
+                };
+                transport = orchestrator.sendRouteAttempt(request, provider.spec, credential.spec, delta, usage,
                         searching ? searchAdapters.get(target.provider()) : null, racing);
             } catch (RuntimeException failure) {
                 transport = CompletableFuture.failedFuture(failure);
@@ -228,7 +240,8 @@ final class LlmRouteExecutor {
             if (base.policyRejected()) {
                 LlmResponse denied = new LlmResponse(false, "", base.error(), provider.spec.name(),
                         provider.spec.model(), "", 0, 0, base.latencyMs(), List.of(), base.requestBody(),
-                        base.responseBody(), base.finishReason(), base.denyCode(), base.cacheUsage());
+                        base.responseBody(), base.finishReason(), base.denyCode(), base.cacheUsage(),
+                        request.wireDiagnostics());
                 completion.complete(new CandidateResult(denied, value.evidence(), true));
                 return;
             }
@@ -245,7 +258,11 @@ final class LlmRouteExecutor {
                 missingSearch = true;
                 error = "Hosted Web Search was requested but no invocation evidence was returned";
             }
-            record(key.spec.id(), usable, error, base.finishReason(), base.cacheUsage());
+            LlmWireDiagnostics wireDiagnostics = (value.wireDiagnostics() == null
+                    ? request.wireDiagnostics() : value.wireDiagnostics()).withCacheDomainIdentity(
+                            LlmOrchestrator.cacheDomainIdentity(
+                                    provider.spec.name(), provider.spec.model(), key.spec.id()));
+            record(key.spec.id(), usable, error, base.finishReason(), base.cacheUsage(), wireDiagnostics);
             LlmRequestLogger.publishAttempt(new LlmRequestLogger.AttemptEvent(
                     request.context() == null ? "" : request.context().purpose(),
                     request.context() == null ? "" : request.context().requestId(),
@@ -253,11 +270,11 @@ final class LlmRouteExecutor {
                     base.latencyMs(), error, base.finishReason(), route.expression(),
                     provider.spec.name() + "/" + provider.spec.model(),
                     LlmOrchestrator.cacheDomainIdentity(provider.spec.name(), provider.spec.model(), key.spec.id()),
-                    base.cacheUsage()));
+                    base.cacheUsage(), wireDiagnostics));
             LlmResponse response = new LlmResponse(usable, usable ? base.content() : "", error,
                     provider.spec.name(), provider.spec.model(), key.spec.id(), base.promptTokens(), base.completionTokens(),
                     base.latencyMs(), List.of(), base.requestBody(), base.responseBody(), base.finishReason(),
-                    base.denyCode(), base.cacheUsage());
+                    base.denyCode(), base.cacheUsage(), wireDiagnostics);
             if (usable || base.policyRejected() || emitted || value.emittedContent()) {
                 if (usable) key.consecutiveFailures.set(0);
                 completion.complete(new CandidateResult(response, value.evidence(), true));
@@ -293,23 +310,28 @@ final class LlmRouteExecutor {
                     HostedWebSearchAdapters.Evidence.none(), false));
         }
 
-        void record(String keyId, boolean success, String error, String finishReason, LlmCacheUsage cacheUsage) {
+        void record(String keyId, boolean success, String error, String finishReason, LlmCacheUsage cacheUsage,
+                LlmWireDiagnostics wireDiagnostics) {
             if (attemptRecorded) return;
             attemptRecorded = true;
             long latency = attemptStart == 0 ? 0 : TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - attemptStart);
             attempts.add(new LlmResponse.Attempt(target.provider(), keyId, success, error, latency, finishReason,
                     provider == null ? "" : provider.spec.model(),
-                    cacheUsage));
+                    cacheUsage, wireDiagnostics));
         }
 
         void cancel(String reason) {
             if (completion.isDone()) return;
             if (retry != null) retry.cancel(false);
             if (transport != null && !transport.isDone()) {
-                LlmCacheUsage cancelledUsage = LlmCacheUsage.unknown(
-                        "attempt was cancelled before usage was available");
+                LlmCacheUsage cancelledUsage = observedCacheUsage.status() == LlmCacheUsage.Status.REPORTED
+                        ? observedCacheUsage
+                        : LlmCacheUsage.unknown("attempt was cancelled before usage was available");
+                LlmWireDiagnostics wireDiagnostics = request.wireDiagnostics().withCacheDomainIdentity(
+                        credential == null || provider == null ? "" : LlmOrchestrator.cacheDomainIdentity(
+                                provider.spec.name(), provider.spec.model(), credential.spec.id()));
                 record(credential == null ? "" : credential.spec.id(), false, reason, "cancelled",
-                        cancelledUsage);
+                        cancelledUsage, wireDiagnostics);
                 if (credential != null && provider != null) {
                     LlmRequestLogger.publishAttempt(new LlmRequestLogger.AttemptEvent(
                             request.context() == null ? "" : request.context().purpose(),
@@ -319,7 +341,7 @@ final class LlmRouteExecutor {
                             route.expression(), provider.spec.name() + "/" + provider.spec.model(),
                             LlmOrchestrator.cacheDomainIdentity(
                                     provider.spec.name(), provider.spec.model(), credential.spec.id()),
-                            cancelledUsage));
+                            cancelledUsage, wireDiagnostics));
                 }
                 completion.cancel(false);
                 transport.cancel(true);

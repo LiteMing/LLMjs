@@ -10,7 +10,16 @@ public record LlmRequest(
         int timeoutSeconds,
         LlmRequestContext context,
         LlmRouteOptions overrides,
-        LlmBillingContext billingContext) {
+        LlmBillingContext billingContext,
+        List<LlmMessageFinalization.FinalEntry> typedEntries,
+        LlmWireDiagnostics wireDiagnostics) {
+
+    public LlmRequest(List<LlmMessage> messages, List<String> providerChain, Double temperature,
+            Integer maxTokens, int timeoutSeconds, LlmRequestContext context, LlmRouteOptions overrides,
+            LlmBillingContext billingContext) {
+        this(messages, providerChain, temperature, maxTokens, timeoutSeconds, context, overrides, billingContext,
+                List.of(), null);
+    }
 
     /** Binary-compatible request shape used before explicit billing was introduced. */
     public LlmRequest(List<LlmMessage> messages, List<String> providerChain, Double temperature,
@@ -32,6 +41,11 @@ public record LlmRequest(
         context = context == null ? LlmRequestContext.chat() : context;
         overrides = overrides == null ? LlmRouteOptions.empty() : overrides;
         billingContext = billingContext == null ? LlmBillingContext.unspecified() : billingContext;
+        typedEntries = typedEntries == null || typedEntries.isEmpty()
+                ? legacyEntries(messages) : List.copyOf(typedEntries);
+        wireDiagnostics = wireDiagnostics == null
+                ? LlmWireDiagnostics.fromEntries(typedEntries, LlmMessageFinalizer.CONSERVATIVE_ESTIMATOR)
+                : wireDiagnostics;
     }
 
     /** Purpose-routed production request with no one-shot parameter override. */
@@ -45,14 +59,33 @@ public record LlmRequest(
                 LlmRouteOptions.empty(), billingContext);
     }
 
+    public static LlmRequest routed(LlmMessageFinalization finalization, LlmRequestContext context) {
+        return routed(finalization, context, LlmBillingContext.unspecified());
+    }
+
+    public static LlmRequest routed(LlmMessageFinalization finalization, LlmRequestContext context,
+            LlmBillingContext billingContext) {
+        LlmMessageFinalization safe = finalization == null
+                ? new LlmMessageFinalization(List.of(), List.of(), 0, 0, true) : finalization;
+        return new LlmRequest(safe.messages(), List.of(), null, null, 0, context,
+                LlmRouteOptions.empty(), billingContext, safe.entries(), safe.wireDiagnostics());
+    }
+
     public LlmRequest withBillingContext(LlmBillingContext billing) {
         return new LlmRequest(messages, providerChain, temperature, maxTokens, timeoutSeconds,
-                context, overrides, billing);
+                context, overrides, billing, typedEntries, wireDiagnostics);
     }
 
     LlmRouteOptions requestOverrides() {
         LlmRouteOptions legacy = new LlmRouteOptions(temperature, maxTokens,
                 timeoutSeconds > 0 ? timeoutSeconds : null, null, null);
         return legacy.overlay(overrides);
+    }
+
+    private static List<LlmMessageFinalization.FinalEntry> legacyEntries(List<LlmMessage> messages) {
+        return java.util.stream.IntStream.range(0, messages.size())
+                .mapToObj(index -> new LlmMessageFinalization.FinalEntry(index, "message-" + index, "legacy",
+                        messages.get(index), true, 0, LlmPromptStability.TURN_DYNAMIC))
+                .toList();
     }
 }

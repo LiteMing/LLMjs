@@ -20,11 +20,17 @@ public record LlmMessageDraft(List<Entry> entries) {
             String provenance,
             LlmMessage message,
             boolean required,
-            int priority) {
+            int priority,
+            LlmPromptStability stability) {
+        public Entry(String entryId, String provenance, LlmMessage message, boolean required, int priority) {
+            this(entryId, provenance, message, required, priority, LlmPromptStability.TURN_DYNAMIC);
+        }
+
         public Entry {
             entryId = entryId == null ? "" : entryId;
             provenance = provenance == null ? "" : provenance;
             message = message == null ? new LlmMessage("user", "") : message;
+            stability = stability == null ? LlmPromptStability.TURN_DYNAMIC : stability;
         }
     }
 }

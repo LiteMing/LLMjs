@@ -573,31 +573,36 @@ public final class LlmOrchestrator implements AutoCloseable {
     }
 
     record AttemptResult(SingleResult result, HostedWebSearchAdapters.Evidence evidence,
-            boolean emittedContent, long retryAfterMs) {
+            boolean emittedContent, long retryAfterMs, LlmWireDiagnostics wireDiagnostics) {
         static AttemptResult failure(String error) {
             return new AttemptResult(SingleResult.failure(error == null ? "Provider request failed" : error, 0, 0),
-                    HostedWebSearchAdapters.Evidence.none(), false, -1);
+                    HostedWebSearchAdapters.Evidence.none(), false, -1, null);
         }
     }
 
     CompletableFuture<AttemptResult> sendRouteAttempt(LlmRequest request, ProviderSpec provider,
             ProviderSpec.Credential credential, Consumer<String> onDelta,
+            Consumer<LlmCacheUsage> onUsage,
             HostedWebSearchAdapters.HostedWebSearchAdapter adapter, boolean racing) {
+        LlmRequest wireRequest = LlmProviderWire.prepareRequest(request);
         if (adapter != null) {
-            return mapCancellable(sendSearchSingle(request, provider, credential, adapter), value ->
-                    new AttemptResult(value.result, value.evidence, false, value.result.retryAfterMs));
+            return mapCancellable(sendSearchSingle(wireRequest, provider, credential, adapter), value ->
+                    new AttemptResult(value.result, value.evidence, false, value.result.retryAfterMs,
+                            wireRequest.wireDiagnostics()));
         }
         if (onDelta != null && "openai".equals(provider.format())) {
-            return mapCancellable(sendSingleStreaming(request, provider, credential, onDelta), value ->
+            return mapCancellable(sendSingleStreaming(wireRequest, provider, credential, onDelta, onUsage), value ->
                     new AttemptResult(new SingleResult(value.success, value.content, value.error, value.httpStatus,
                             value.promptTokens, value.completionTokens, value.latencyMs, value.requestBody,
                             value.responseBody, value.finishReason, value.policyRejected, value.denyCode,
                             value.retryAfterMs, value.cacheUsage),
-                            HostedWebSearchAdapters.Evidence.none(), value.emittedContent, value.retryAfterMs));
+                            HostedWebSearchAdapters.Evidence.none(), value.emittedContent, value.retryAfterMs,
+                            wireRequest.wireDiagnostics()));
         }
-        return mapCancellable(sendSingle(request, provider, credential, racing), value -> {
+        return mapCancellable(sendSingle(wireRequest, provider, credential, racing), value -> {
             if (onDelta != null && value.success && !value.content.isBlank()) onDelta.accept(value.content);
-            return new AttemptResult(value, HostedWebSearchAdapters.Evidence.none(), false, value.retryAfterMs);
+            return new AttemptResult(value, HostedWebSearchAdapters.Evidence.none(), false, value.retryAfterMs,
+                    wireRequest.wireDiagnostics());
         });
     }
 
@@ -750,7 +755,7 @@ public final class LlmOrchestrator implements AutoCloseable {
     }
 
     private CompletableFuture<StreamResult> sendSingleStreaming(LlmRequest request, ProviderSpec provider,
-            ProviderSpec.Credential credential, Consumer<String> onDelta) {
+            ProviderSpec.Credential credential, Consumer<String> onDelta, Consumer<LlmCacheUsage> onUsage) {
         LlmResolvedParameters parameters = resolveParameters(request, provider.name());
         JsonObject body = buildOpenAiBody(provider.model(), request.messages(),
                 parameters.temperature(), parameters.maxOutputTokens(), false);
@@ -825,7 +830,9 @@ public final class LlmOrchestrator implements AutoCloseable {
                         if (usage.has("completion_tokens") && !usage.get("completion_tokens").isJsonNull()) {
                             completionTokens.accumulateAndGet(usage.get("completion_tokens").getAsInt(), Math::max);
                         }
-                        cacheUsage.set(parseCacheUsage("openai", usage));
+                        LlmCacheUsage parsedCacheUsage = parseCacheUsage("openai", usage);
+                        cacheUsage.set(parsedCacheUsage);
+                        if (onUsage != null) onUsage.accept(parsedCacheUsage);
                     }
                     JsonArray choices = chunk.getAsJsonArray("choices");
                     if (choices == null || choices.isEmpty()) continue;
@@ -919,7 +926,7 @@ public final class LlmOrchestrator implements AutoCloseable {
         return GSON.toJson(body);
     }
 
-    private static JsonObject buildBody(String format, ProviderSpec provider, LlmRequest request,
+    static JsonObject buildBody(String format, ProviderSpec provider, LlmRequest request,
             LlmResolvedParameters parameters) {
         Double temperature = parameters.temperature();
         Integer maxTokens = parameters.maxOutputTokens();
@@ -978,14 +985,14 @@ public final class LlmOrchestrator implements AutoCloseable {
         body.addProperty("model", model);
         body.addProperty("max_tokens", maxTokens == null ? 512 : maxTokens);
         if (temperature != null) body.addProperty("temperature", temperature);
-        StringBuilder system = new StringBuilder();
         JsonArray array = new JsonArray();
-        for (LlmMessage message : messages) {
-            if ("system".equals(message.role())) {
-                if (!system.isEmpty()) system.append('\n');
-                system.append(message.content());
-                continue;
-            }
+        int start = 0;
+        if (!messages.isEmpty() && "system".equals(messages.get(0).role()) && !messages.get(0).hasImage()) {
+            body.addProperty("system", messages.get(0).content());
+            start = 1;
+        }
+        for (int index = start; index < messages.size(); index++) {
+            LlmMessage message = messages.get(index);
             JsonObject item = new JsonObject();
             item.addProperty("role", "assistant".equals(message.role()) ? "assistant" : "user");
             JsonArray content = new JsonArray();
@@ -1000,14 +1007,14 @@ public final class LlmOrchestrator implements AutoCloseable {
                     contentPart.add("source", source);
                 } else {
                     contentPart.addProperty("type", "text");
-                    contentPart.addProperty("text", part.asText());
+                    contentPart.addProperty("text", "system".equals(message.role())
+                            ? "[System]\n" + part.asText() : part.asText());
                 }
                 content.add(contentPart);
             }
             item.add("content", content);
             array.add(item);
         }
-        if (!system.isEmpty()) body.addProperty("system", system.toString());
         body.add("messages", array);
         return body;
     }
@@ -1015,7 +1022,19 @@ public final class LlmOrchestrator implements AutoCloseable {
     private static JsonObject buildGeminiBody(List<LlmMessage> messages, Double temperature, Integer maxTokens) {
         JsonObject body = new JsonObject();
         JsonArray contents = new JsonArray();
-        for (LlmMessage message : messages) {
+        int start = 0;
+        if (!messages.isEmpty() && "system".equals(messages.get(0).role()) && !messages.get(0).hasImage()) {
+            JsonObject instruction = new JsonObject();
+            JsonArray instructionParts = new JsonArray();
+            JsonObject text = new JsonObject();
+            text.addProperty("text", messages.get(0).content());
+            instructionParts.add(text);
+            instruction.add("parts", instructionParts);
+            body.add("systemInstruction", instruction);
+            start = 1;
+        }
+        for (int index = start; index < messages.size(); index++) {
+            LlmMessage message = messages.get(index);
             JsonObject item = new JsonObject();
             item.addProperty("role", "assistant".equals(message.role()) ? "model" : "user");
             JsonArray parts = new JsonArray();

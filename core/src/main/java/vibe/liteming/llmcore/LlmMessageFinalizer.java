@@ -46,18 +46,40 @@ public final class LlmMessageFinalizer {
         String[] reasons = new String[indexed.size()];
         long used = 0;
         for (IndexedEntry item : indexed) {
-            if (!item.entry.required()) continue;
+            if (!item.entry.required() || !item.entry.stability().stableAcrossTurns()) continue;
             included[item.index] = true;
             used += item.tokens;
             reasons[item.index] = used > budget ? "required_over_budget" : "required";
         }
 
-        List<IndexedEntry> optional = indexed.stream()
-                .filter(item -> !item.entry.required())
+        List<IndexedEntry> stableOptional = indexed.stream()
+                .filter(item -> !item.entry.required() && item.entry.stability().stableAcrossTurns())
                 .sorted(Comparator.comparingInt((IndexedEntry item) -> item.entry.priority()).reversed()
                         .thenComparingInt(item -> item.index))
                 .toList();
-        for (IndexedEntry item : optional) {
+        for (IndexedEntry item : stableOptional) {
+            if (used + item.tokens <= budget) {
+                included[item.index] = true;
+                reasons[item.index] = "priority_fit";
+                used += item.tokens;
+            } else {
+                reasons[item.index] = "budget_excluded";
+            }
+        }
+
+        // Dynamic size cannot change which earlier stable entries are selected.
+        for (IndexedEntry item : indexed) {
+            if (!item.entry.required() || item.entry.stability().stableAcrossTurns()) continue;
+            included[item.index] = true;
+            used += item.tokens;
+            reasons[item.index] = used > budget ? "required_over_budget" : "required";
+        }
+        List<IndexedEntry> dynamicOptional = indexed.stream()
+                .filter(item -> !item.entry.required() && !item.entry.stability().stableAcrossTurns())
+                .sorted(Comparator.comparingInt((IndexedEntry item) -> item.entry.priority()).reversed()
+                        .thenComparingInt(item -> item.index))
+                .toList();
+        for (IndexedEntry item : dynamicOptional) {
             if (used + item.tokens <= budget) {
                 included[item.index] = true;
                 reasons[item.index] = "priority_fit";
@@ -68,15 +90,23 @@ public final class LlmMessageFinalizer {
         }
 
         List<LlmMessage> messages = new ArrayList<>();
+        List<LlmMessageFinalization.FinalEntry> entries = new ArrayList<>();
         List<LlmMessageFinalization.Decision> decisions = new ArrayList<>();
         for (IndexedEntry item : indexed) {
-            if (included[item.index]) messages.add(item.entry.message());
+            if (included[item.index]) {
+                messages.add(item.entry.message());
+                entries.add(new LlmMessageFinalization.FinalEntry(item.index, item.entry.entryId(),
+                        item.entry.provenance(), item.entry.message(), item.entry.required(), item.entry.priority(),
+                        item.entry.stability()));
+            }
             decisions.add(new LlmMessageFinalization.Decision(item.index, item.entry.entryId(),
                     item.entry.provenance(), included[item.index], reasons[item.index], item.tokens,
-                    item.entry.required(), item.entry.priority()));
+                    item.entry.required(), item.entry.priority(), item.entry.stability()));
         }
         int estimated = used > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) used;
-        return new LlmMessageFinalization(messages, decisions, budget, estimated, used <= budget);
+        LlmWireDiagnostics diagnostics = LlmWireDiagnostics.fromEntries(entries, safeEstimator);
+        return new LlmMessageFinalization(messages, entries, decisions, budget, estimated, used <= budget,
+                diagnostics);
     }
 
     private record IndexedEntry(int index, LlmMessageDraft.Entry entry, int tokens) {
