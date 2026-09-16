@@ -77,6 +77,65 @@ class LlmRouteExecutionTest {
         assertEquals("A", order.get(6));
     }
 
+    @Test void winningAttemptCarriesIdenticalCacheUsageThroughResponseEventAndSettlement() throws Exception {
+        server.createContext("/A", exchange -> {
+            readBody(exchange);
+            reply(exchange, 200, """
+                    {"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
+                     "usage":{"prompt_tokens":100,"completion_tokens":7,
+                       "prompt_tokens_details":{"cached_tokens":75}}}
+                    """);
+        });
+        List<LlmRequestLogger.AttemptEvent> events = new CopyOnWriteArrayList<>();
+        List<LlmRequestAccounting.AttemptUsage> settlements = new CopyOnWriteArrayList<>();
+        java.util.function.Consumer<LlmRequestLogger.AttemptEvent> listener = events::add;
+        LlmRequestLogger.addAttemptListener(listener);
+        LlmRequestAccounting.install(recordingPolicy(settlements));
+        try {
+            LlmResponse response = core("A*0", "A").send(request()).get(5, TimeUnit.SECONDS);
+
+            assertTrue(response.success(), response.error());
+            assertEquals(LlmCacheUsage.reported(75L, null, 25L, 100L), response.cacheUsage());
+            assertEquals(response.cacheUsage(), response.attempts().get(0).cacheUsage());
+            assertEquals(response.cacheUsage(), events.get(0).cacheUsage());
+            assertEquals(response.cacheUsage(), settlements.get(0).cacheUsage());
+            assertEquals(response.provider(), settlements.get(0).provider());
+            assertEquals(response.model(), settlements.get(0).model());
+            assertEquals(response.credentialId(), settlements.get(0).credentialId());
+            assertEquals(64, settlements.get(0).cacheDomainIdentity().length());
+            assertFalse(settlements.get(0).cacheDomainIdentity().contains("test-key"));
+        } finally {
+            LlmRequestLogger.removeAttemptListener(listener);
+        }
+    }
+
+    @Test void streamPublishesTerminalCacheUsageOnce() throws Exception {
+        server.createContext("/A", exchange -> {
+            readBody(exchange);
+            reply(exchange, 200, "data: {\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":7,"
+                    + "\"prompt_tokens_details\":{\"cached_tokens\":75}},"
+                    + "\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"
+                    + "data: [DONE]\n\n");
+        });
+        List<LlmRequestLogger.AttemptEvent> events = new CopyOnWriteArrayList<>();
+        List<LlmRequestAccounting.AttemptUsage> settlements = new CopyOnWriteArrayList<>();
+        java.util.function.Consumer<LlmRequestLogger.AttemptEvent> listener = events::add;
+        LlmRequestLogger.addAttemptListener(listener);
+        LlmRequestAccounting.install(recordingPolicy(settlements));
+        try {
+            LlmResponse response = core("A*0", "A").sendStreaming(request(), ignored -> { })
+                    .get(5, TimeUnit.SECONDS);
+            assertTrue(response.success(), response.error());
+            assertEquals(LlmCacheUsage.reported(75L, null, 25L, 100L), response.cacheUsage());
+            assertEquals(1, events.size());
+            assertEquals(1, settlements.size());
+            assertEquals(response.cacheUsage(), events.get(0).cacheUsage());
+            assertEquals(response.cacheUsage(), settlements.get(0).cacheUsage());
+        } finally {
+            LlmRequestLogger.removeAttemptListener(listener);
+        }
+    }
+
     @Test void raceUsesFirstCompleteBodyAndCancelsTheOtherTransportWithoutDeltas() throws Exception {
         CountDownLatch started = new CountDownLatch(2);
         AtomicInteger sent = new AtomicInteger();
@@ -215,7 +274,9 @@ class LlmRouteExecutionTest {
         assertEquals(0, bCalls.get());
         assertEquals(3, result.promptTokens());
         assertEquals(7, result.completionTokens());
-        assertEquals(List.of(new LlmRequestAccounting.AttemptUsage(3, 7, 0)), settlements);
+        assertEquals(1, settlements.size());
+        assertEquals(3, settlements.get(0).promptTokens());
+        assertEquals(7, settlements.get(0).completionTokens());
     }
 
     @ParameterizedTest
@@ -266,7 +327,9 @@ class LlmRouteExecutionTest {
         if (closeRuntime) core.close();
         else assertTrue(pending.cancel(true));
         assertTrue(pending.isCompletedExceptionally());
-        assertEquals(List.of(new LlmRequestAccounting.AttemptUsage(3, 7, 0)), settlements);
+        assertEquals(1, settlements.size());
+        assertEquals(3, settlements.get(0).promptTokens());
+        assertEquals(7, settlements.get(0).completionTokens());
         assertEquals(1, calls.get());
         core.close();
         assertFalse(core.send(request()).join().success());

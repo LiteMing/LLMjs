@@ -532,25 +532,44 @@ public final class LlmOrchestrator implements AutoCloseable {
     }
 
     private static LlmRequestAccounting.AttemptUsage attemptUsage(
-            LlmRequestAccounting.Reservation reservation, LlmCostRate rate,
-            int promptTokens, int completionTokens) {
+            LlmRequestAccounting.Reservation reservation, ProviderSpec provider,
+            ProviderSpec.Credential credential, LlmCostRate rate,
+            int promptTokens, int completionTokens, LlmCacheUsage cacheUsage) {
+        String cacheDomain = cacheDomainIdentity(provider.name(), provider.model(), credential.id());
         if (promptTokens > 0 || completionTokens > 0) {
+            Long cacheCost = rate.weightedTokens(cacheUsage, completionTokens);
             return new LlmRequestAccounting.AttemptUsage(promptTokens, completionTokens, 0L,
-                    rate.weightedTokens(promptTokens, completionTokens));
+                    cacheCost == null ? rate.weightedTokens(promptTokens, completionTokens) : cacheCost,
+                    provider.name(), provider.model(), credential.id(), cacheDomain, cacheUsage);
         }
         return new LlmRequestAccounting.AttemptUsage(0L, 0L, reservation.reservedTokens(),
-                reservation.reservedCostUnits());
+                reservation.reservedCostUnits(), provider.name(), provider.model(), credential.id(), cacheDomain,
+                cacheUsage);
     }
 
     private static void finishAccounting(LlmRequest request,
-            LlmRequestAccounting.Reservation reservation, boolean success,
-            LlmCostRate rate, int promptTokens, int completionTokens) {
-        if (!success) {
+            LlmRequestAccounting.Reservation reservation, boolean charge,
+            ProviderSpec provider, ProviderSpec.Credential credential, LlmCostRate rate,
+            int promptTokens, int completionTokens, LlmCacheUsage cacheUsage) {
+        if (!charge) {
             LlmRequestAccounting.release(request, reservation);
             return;
         }
         LlmRequestAccounting.settle(request, reservation,
-                attemptUsage(reservation, rate, promptTokens, completionTokens));
+                attemptUsage(reservation, provider, credential, rate, promptTokens, completionTokens, cacheUsage));
+    }
+
+    static String cacheDomainIdentity(String provider, String model, String credentialId) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(
+                    ((provider == null ? "" : provider) + "\u0000"
+                            + (model == null ? "" : model) + "\u0000"
+                            + (credentialId == null ? "" : credentialId))
+                            .getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
     }
 
     record AttemptResult(SingleResult result, HostedWebSearchAdapters.Evidence evidence,
@@ -572,7 +591,8 @@ public final class LlmOrchestrator implements AutoCloseable {
             return mapCancellable(sendSingleStreaming(request, provider, credential, onDelta), value ->
                     new AttemptResult(new SingleResult(value.success, value.content, value.error, value.httpStatus,
                             value.promptTokens, value.completionTokens, value.latencyMs, value.requestBody,
-                            value.responseBody, value.finishReason, value.policyRejected, value.denyCode, value.retryAfterMs),
+                            value.responseBody, value.finishReason, value.policyRejected, value.denyCode,
+                            value.retryAfterMs, value.cacheUsage),
                             HostedWebSearchAdapters.Evidence.none(), value.emittedContent, value.retryAfterMs));
         }
         return mapCancellable(sendSingle(request, provider, credential, racing), value -> {
@@ -590,6 +610,10 @@ public final class LlmOrchestrator implements AutoCloseable {
                     || current instanceof java.net.http.HttpTimeoutException;
         }
         return uncertain;
+    }
+
+    private static boolean hasReportedUsage(LlmCacheUsage usage) {
+        return usage != null && usage.status() == LlmCacheUsage.Status.REPORTED;
     }
 
     private static void closeStream(InputStream stream) {
@@ -650,9 +674,11 @@ public final class LlmOrchestrator implements AutoCloseable {
             if (throwable != null && transport != null) transport.cancel(true);
             finishAccounting(request, reservation,
                     throwable == null && result != null && result.success
+                            || result != null && hasReportedUsage(result.cacheUsage)
                             || transport != null && uncertainUsage(throwable),
-                    rate,
-                    result == null ? 0 : result.promptTokens, result == null ? 0 : result.completionTokens);
+                    provider, credential, rate,
+                    result == null ? 0 : result.promptTokens, result == null ? 0 : result.completionTokens,
+                    result == null ? LlmCacheUsage.unknown("request did not complete") : result.cacheUsage);
             settled.complete(throwable == null ? result : SingleResult.failure(rootMessage(throwable), 0,
                         System.currentTimeMillis() - startedAt, requestBody, ""));
         });
@@ -711,9 +737,11 @@ public final class LlmOrchestrator implements AutoCloseable {
             if (throwable != null && transport != null) transport.cancel(true);
             finishAccounting(request, reservation,
                     throwable == null && result != null && result.result.success
+                            || result != null && hasReportedUsage(result.result.cacheUsage)
                             || transport != null && uncertainUsage(throwable),
-                    rate,
-                    result == null ? 0 : result.result.promptTokens, result == null ? 0 : result.result.completionTokens);
+                    provider, credential, rate,
+                    result == null ? 0 : result.result.promptTokens, result == null ? 0 : result.result.completionTokens,
+                    result == null ? LlmCacheUsage.unknown("request did not complete") : result.result.cacheUsage);
             settled.complete(throwable == null ? result : SearchSingleResult.failure(rootMessage(throwable),
                         System.currentTimeMillis() - startedAt, requestBody));
         });
@@ -746,6 +774,8 @@ public final class LlmOrchestrator implements AutoCloseable {
         AtomicReference<InputStream> activeStream = new AtomicReference<>();
         AtomicInteger promptTokens = new AtomicInteger();
         AtomicInteger completionTokens = new AtomicInteger();
+        AtomicReference<LlmCacheUsage> cacheUsage = new AtomicReference<>(
+                LlmCacheUsage.unknown("stream did not report usage"));
         java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean();
         CompletableFuture<HttpResponse<InputStream>> http = null;
         try {
@@ -795,6 +825,7 @@ public final class LlmOrchestrator implements AutoCloseable {
                         if (usage.has("completion_tokens") && !usage.get("completion_tokens").isJsonNull()) {
                             completionTokens.accumulateAndGet(usage.get("completion_tokens").getAsInt(), Math::max);
                         }
+                        cacheUsage.set(parseCacheUsage("openai", usage));
                     }
                     JsonArray choices = chunk.getAsJsonArray("choices");
                     if (choices == null || choices.isEmpty()) continue;
@@ -825,15 +856,17 @@ public final class LlmOrchestrator implements AutoCloseable {
                         reasoning.toString(), chunkCount, finishReason);
                 return accumulated.isEmpty()
                         ? StreamResult.failure("LLM stream produced no content", -1, latency, emitted, requestBody,
-                                responseBody, finishReason).withUsage(promptTokens.get(), completionTokens.get())
+                                responseBody, finishReason).withUsage(promptTokens.get(), completionTokens.get(),
+                                        cacheUsage.get())
                         : StreamResult.success(accumulated.toString(), promptTokens.get(), completionTokens.get(),
-                                latency, requestBody, responseBody, finishReason);
+                                latency, requestBody, responseBody, finishReason, cacheUsage.get());
             } catch (Exception e) {
                 String responseBody = buildStreamLogBody(provider.model(), accumulated.toString(),
                         reasoning.toString(), chunkCount, finishReason.isBlank() ? "error" : finishReason);
                 return StreamResult.failure(rootMessage(e), e instanceof java.io.IOException ? 0 : -1,
                         System.currentTimeMillis() - startedAt, emitted,
-                        requestBody, responseBody, "error").withUsage(promptTokens.get(), completionTokens.get());
+                        requestBody, responseBody, "error").withUsage(promptTokens.get(), completionTokens.get(),
+                                cacheUsage.get());
             }
             });
         } catch (RuntimeException failure) {
@@ -850,13 +883,14 @@ public final class LlmOrchestrator implements AutoCloseable {
             if (throwable != null && transport != null) transport.cancel(true);
             finishAccounting(request, reservation,
                     promptTokens.get() > 0 || completionTokens.get() > 0
+                            || hasReportedUsage(cacheUsage.get())
                             || throwable == null && result != null && (result.success || result.emittedContent)
                             || transport != null && uncertainUsage(throwable),
-                    rate,
-                    promptTokens.get(), completionTokens.get());
+                    provider, credential, rate,
+                    promptTokens.get(), completionTokens.get(), cacheUsage.get());
             settled.complete(throwable == null ? result : StreamResult.failure(rootMessage(throwable), 0,
                         System.currentTimeMillis() - startedAt, false, requestBody, "")
-                    .withUsage(promptTokens.get(), completionTokens.get()));
+                    .withUsage(promptTokens.get(), completionTokens.get(), cacheUsage.get()));
         });
         settled.whenComplete((result, failure) -> { if (settled.isCancelled()) source.cancel(true); });
         return settled;
@@ -1020,13 +1054,14 @@ public final class LlmOrchestrator implements AutoCloseable {
             String finishReason;
             int promptTokens = 0;
             int completionTokens = 0;
+            JsonObject usage = null;
             if ("gemini".equals(format)) {
                 JsonObject candidate = root.getAsJsonArray("candidates").get(0).getAsJsonObject();
                 content = concatenateTextParts(candidate.getAsJsonObject("content").getAsJsonArray("parts"));
                 finishReason = candidate.has("finishReason")
                         ? normalizeFinishReason(candidate.get("finishReason").getAsString()) : "";
                 if (root.has("usageMetadata")) {
-                    JsonObject usage = root.getAsJsonObject("usageMetadata");
+                    usage = root.getAsJsonObject("usageMetadata");
                     promptTokens = getInt(usage, "promptTokenCount");
                     completionTokens = getInt(usage, "candidatesTokenCount");
                 }
@@ -1035,7 +1070,7 @@ public final class LlmOrchestrator implements AutoCloseable {
                 finishReason = root.has("stop_reason")
                         ? normalizeFinishReason(root.get("stop_reason").getAsString()) : "";
                 if (root.has("usage")) {
-                    JsonObject usage = root.getAsJsonObject("usage");
+                    usage = root.getAsJsonObject("usage");
                     promptTokens = getInt(usage, "input_tokens");
                     completionTokens = getInt(usage, "output_tokens");
                 }
@@ -1045,13 +1080,13 @@ public final class LlmOrchestrator implements AutoCloseable {
                 finishReason = choice.has("finish_reason")
                         ? normalizeFinishReason(choice.get("finish_reason").getAsString()) : "";
                 if (root.has("usage")) {
-                    JsonObject usage = root.getAsJsonObject("usage");
+                    usage = root.getAsJsonObject("usage");
                     promptTokens = getInt(usage, "prompt_tokens");
                     completionTokens = getInt(usage, "completion_tokens");
                 }
             }
             return SingleResult.success(content, promptTokens, completionTokens, latencyMs, requestBody, body,
-                    finishReason);
+                    finishReason, parseCacheUsage(format, usage));
         } catch (Exception e) {
             return SingleResult.failure("Invalid provider response: " + rootMessage(e), -1, latencyMs, requestBody, body);
         }
@@ -1145,6 +1180,72 @@ public final class LlmOrchestrator implements AutoCloseable {
         return object.has(key) ? object.get(key).getAsInt() : 0;
     }
 
+    static LlmCacheUsage parseCacheUsage(String format, JsonObject usage) {
+        String normalized = format == null ? "" : format.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!Set.of("openai", "claude", "anthropic", "gemini").contains(normalized)) {
+            return LlmCacheUsage.unsupported("adapter '" + normalized + "' does not define cache usage fields");
+        }
+        if (usage == null) return LlmCacheUsage.unknown("provider response did not include usage");
+        try {
+            if ("claude".equals(normalized) || "anthropic".equals(normalized)) {
+                Long read = optionalNonNegativeLong(usage, "cache_read_input_tokens");
+                Long write = optionalNonNegativeLong(usage, "cache_creation_input_tokens");
+                Long uncached = optionalNonNegativeLong(usage, "input_tokens");
+                if (read == null && write == null) {
+                    return LlmCacheUsage.unknown("Anthropic cache fields were absent");
+                }
+                Long total = allKnownSum(read, write, uncached);
+                return LlmCacheUsage.reported(read, write, uncached, total);
+            }
+            if ("gemini".equals(normalized)) {
+                Long read = optionalNonNegativeLong(usage, "cachedContentTokenCount");
+                Long total = optionalNonNegativeLong(usage, "promptTokenCount");
+                if (read == null) return LlmCacheUsage.unknown("Gemini cachedContentTokenCount was absent");
+                Long uncached = total == null || read > total ? null : total - read;
+                return LlmCacheUsage.reported(read, null, uncached, total);
+            }
+            Long hit = optionalNonNegativeLong(usage, "prompt_cache_hit_tokens");
+            Long miss = optionalNonNegativeLong(usage, "prompt_cache_miss_tokens");
+            Long total = optionalNonNegativeLong(usage, "prompt_tokens");
+            if (hit != null || miss != null) {
+                Long comparableTotal = total != null ? total : allKnownSum(hit, miss);
+                return LlmCacheUsage.reported(hit, null, miss, comparableTotal);
+            }
+            if (usage.has("prompt_tokens_details") && usage.get("prompt_tokens_details").isJsonObject()) {
+                Long read = optionalNonNegativeLong(usage.getAsJsonObject("prompt_tokens_details"), "cached_tokens");
+                if (read != null) {
+                    Long uncached = total == null || read > total ? null : total - read;
+                    return LlmCacheUsage.reported(read, null, uncached, total);
+                }
+            }
+            return LlmCacheUsage.unknown("OpenAI-compatible cache fields were absent");
+        } catch (IllegalArgumentException malformed) {
+            return LlmCacheUsage.unknown("invalid cache usage: " + malformed.getMessage());
+        }
+    }
+
+    private static Long optionalNonNegativeLong(JsonObject object, String key) {
+        if (object == null || !object.has(key) || object.get(key).isJsonNull()) return null;
+        JsonElement value = object.get(key);
+        if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
+            throw new IllegalArgumentException(key + " is not a number");
+        }
+        long parsed;
+        try { parsed = value.getAsLong(); }
+        catch (RuntimeException invalid) { throw new IllegalArgumentException(key + " is not an integer"); }
+        if (parsed < 0L) throw new IllegalArgumentException(key + " is negative");
+        return parsed;
+    }
+
+    private static Long allKnownSum(Long... values) {
+        long total = 0L;
+        for (Long value : values) {
+            if (value == null) return null;
+            total = saturatedAdd(total, value);
+        }
+        return total;
+    }
+
     private static String rootMessage(Throwable throwable) {
         Throwable current = throwable;
         while (current.getCause() != null) current = current.getCause();
@@ -1192,15 +1293,17 @@ public final class LlmOrchestrator implements AutoCloseable {
 
     record SingleResult(boolean success, String content, String error, int httpStatus,
             int promptTokens, int completionTokens, long latencyMs, String requestBody, String responseBody,
-            String finishReason, boolean policyRejected, LlmRequestAccounting.DenyCode denyCode, long retryAfterMs) {
+            String finishReason, boolean policyRejected, LlmRequestAccounting.DenyCode denyCode, long retryAfterMs,
+            LlmCacheUsage cacheUsage) {
         private SingleResult withRetryAfter(long millis) {
             return new SingleResult(success, content, error, httpStatus, promptTokens, completionTokens, latencyMs,
-                    requestBody, responseBody, finishReason, policyRejected, denyCode, millis);
+                    requestBody, responseBody, finishReason, policyRejected, denyCode, millis, cacheUsage);
         }
         private static SingleResult success(String content, int promptTokens, int completionTokens, long latencyMs,
-                String requestBody, String responseBody, String finishReason) {
+                String requestBody, String responseBody, String finishReason, LlmCacheUsage cacheUsage) {
             return new SingleResult(true, content, "", 200, promptTokens, completionTokens, latencyMs,
-                    requestBody, responseBody, finishReason, false, LlmRequestAccounting.DenyCode.NONE, -1);
+                    requestBody, responseBody, finishReason, false, LlmRequestAccounting.DenyCode.NONE, -1,
+                    cacheUsage);
         }
 
         private static SingleResult failure(String error, int httpStatus, long latencyMs) {
@@ -1210,12 +1313,14 @@ public final class LlmOrchestrator implements AutoCloseable {
         private static SingleResult failure(String error, int httpStatus, long latencyMs, String requestBody,
                 String responseBody) {
             return new SingleResult(false, "", error, httpStatus, 0, 0, latencyMs, requestBody, responseBody,
-                    "error", false, LlmRequestAccounting.DenyCode.NONE, -1);
+                    "error", false, LlmRequestAccounting.DenyCode.NONE, -1,
+                    LlmCacheUsage.unknown(httpStatus > 0 ? "provider request failed" : "request did not complete"));
         }
 
         private static SingleResult policyFailure(LlmRequestAccounting.DenyCode denyCode, String error) {
             return new SingleResult(false, "", "Billing denied: " + error,
-                    0, 0, 0, 0L, "", "", "error", true, denyCode, -1);
+                    0, 0, 0, 0L, "", "", "error", true, denyCode, -1,
+                    LlmCacheUsage.unknown("request was denied before transport"));
         }
     }
 
@@ -1237,20 +1342,24 @@ public final class LlmOrchestrator implements AutoCloseable {
     private record StreamResult(boolean success, String content, String error, int httpStatus,
             int promptTokens, int completionTokens, long latencyMs,
             boolean emittedContent, String requestBody, String responseBody, String finishReason,
-            boolean policyRejected, LlmRequestAccounting.DenyCode denyCode, long retryAfterMs) {
-        private StreamResult withUsage(int prompt, int completion) {
+            boolean policyRejected, LlmRequestAccounting.DenyCode denyCode, long retryAfterMs,
+            LlmCacheUsage cacheUsage) {
+        private StreamResult withUsage(int prompt, int completion, LlmCacheUsage usage) {
             return new StreamResult(success, content, error, httpStatus, prompt, completion, latencyMs,
-                    emittedContent, requestBody, responseBody, finishReason, policyRejected, denyCode, retryAfterMs);
+                    emittedContent, requestBody, responseBody, finishReason, policyRejected, denyCode, retryAfterMs,
+                    usage);
         }
         private StreamResult withRetryAfter(long millis) {
             return new StreamResult(success, content, error, httpStatus, promptTokens, completionTokens, latencyMs,
-                    emittedContent, requestBody, responseBody, finishReason, policyRejected, denyCode, millis);
+                    emittedContent, requestBody, responseBody, finishReason, policyRejected, denyCode, millis,
+                    cacheUsage);
         }
         private static StreamResult success(String content, int promptTokens, int completionTokens,
-                long latencyMs, String requestBody, String responseBody, String finishReason) {
+                long latencyMs, String requestBody, String responseBody, String finishReason,
+                LlmCacheUsage cacheUsage) {
             return new StreamResult(true, content, "", 200, promptTokens, completionTokens,
                     latencyMs, true, requestBody, responseBody,
-                    finishReason, false, LlmRequestAccounting.DenyCode.NONE, -1);
+                    finishReason, false, LlmRequestAccounting.DenyCode.NONE, -1, cacheUsage);
         }
 
         private static StreamResult failure(String error, int status, long latencyMs, boolean emitted) {
@@ -1260,19 +1369,22 @@ public final class LlmOrchestrator implements AutoCloseable {
         private static StreamResult failure(String error, int status, long latencyMs, boolean emitted,
                 String requestBody, String responseBody) {
             return new StreamResult(false, "", error, status, 0, 0, latencyMs, emitted,
-                    requestBody, responseBody, "error", false, LlmRequestAccounting.DenyCode.NONE, -1);
+                    requestBody, responseBody, "error", false, LlmRequestAccounting.DenyCode.NONE, -1,
+                    LlmCacheUsage.unknown(status > 0 ? "provider stream failed" : "stream did not complete"));
         }
 
         private static StreamResult failure(String error, int status, long latencyMs, boolean emitted,
                 String requestBody, String responseBody, String finishReason) {
             return new StreamResult(false, "", error, status, 0, 0, latencyMs, emitted, requestBody, responseBody,
                     finishReason == null ? "error" : finishReason, false,
-                    LlmRequestAccounting.DenyCode.NONE, -1);
+                    LlmRequestAccounting.DenyCode.NONE, -1,
+                    LlmCacheUsage.unknown(status > 0 ? "provider stream failed" : "stream did not complete"));
         }
 
         private static StreamResult policyFailure(LlmRequestAccounting.DenyCode denyCode, String error) {
             return new StreamResult(false, "", "Billing denied: " + error, 0, 0, 0, 0L, false,
-                    "", "", "error", true, denyCode, -1);
+                    "", "", "error", true, denyCode, -1,
+                    LlmCacheUsage.unknown("request was denied before transport"));
         }
     }
 

@@ -142,7 +142,8 @@ final class LlmRouteExecutor {
     static LlmResponse withAttempts(LlmResponse response, List<LlmResponse.Attempt> attempts, long elapsedMs) {
         return new LlmResponse(response.success(), response.content(), response.error(), response.provider(),
                 response.model(), response.credentialId(), response.promptTokens(), response.completionTokens(),
-                elapsedMs, attempts, response.requestBody(), response.responseBody(), response.finishReason(), response.denyCode());
+                elapsedMs, attempts, response.requestBody(), response.responseBody(), response.finishReason(),
+                response.denyCode(), response.cacheUsage());
     }
 
     private final class Candidate {
@@ -224,6 +225,13 @@ final class LlmRouteExecutor {
 
         void completedAttempt(LlmOrchestrator.AttemptResult value, LlmOrchestrator.CredentialRuntime key) {
             LlmOrchestrator.SingleResult base = value.result();
+            if (base.policyRejected()) {
+                LlmResponse denied = new LlmResponse(false, "", base.error(), provider.spec.name(),
+                        provider.spec.model(), "", 0, 0, base.latencyMs(), List.of(), base.requestBody(),
+                        base.responseBody(), base.finishReason(), base.denyCode(), base.cacheUsage());
+                completion.complete(new CandidateResult(denied, value.evidence(), true));
+                return;
+            }
             boolean usable = base.success() && !base.content().isBlank();
             String error = base.error();
             if (!base.success() && base.httpStatus() > 0) error = "HTTP " + base.httpStatus() + ": " + error;
@@ -237,15 +245,16 @@ final class LlmRouteExecutor {
                 missingSearch = true;
                 error = "Hosted Web Search was requested but no invocation evidence was returned";
             }
-            record(key.spec.id(), usable, error, base.finishReason());
+            record(key.spec.id(), usable, error, base.finishReason(), base.cacheUsage());
             LlmRequestLogger.publishAttempt(new LlmRequestLogger.AttemptEvent(
                     request.context() == null ? "" : request.context().purpose(),
                     request.context() == null ? "" : request.context().requestId(),
                     provider.spec.name(), provider.spec.model(), key.spec.id(), usable,
-                    base.latencyMs(), error, base.finishReason()));
+                    base.latencyMs(), error, base.finishReason(), base.cacheUsage()));
             LlmResponse response = new LlmResponse(usable, usable ? base.content() : "", error,
                     provider.spec.name(), provider.spec.model(), key.spec.id(), base.promptTokens(), base.completionTokens(),
-                    base.latencyMs(), List.of(), base.requestBody(), base.responseBody(), base.finishReason(), base.denyCode());
+                    base.latencyMs(), List.of(), base.requestBody(), base.responseBody(), base.finishReason(),
+                    base.denyCode(), base.cacheUsage());
             if (usable || base.policyRejected() || emitted || value.emittedContent()) {
                 if (usable) key.consecutiveFailures.set(0);
                 completion.complete(new CandidateResult(response, value.evidence(), true));
@@ -277,23 +286,35 @@ final class LlmRouteExecutor {
         }
 
         void unavailable(String reason) {
-            if (sent == 0) record("", false, reason, "");
             completion.complete(new CandidateResult(LlmResponse.failure(target.provider() + ": " + reason, List.of()),
                     HostedWebSearchAdapters.Evidence.none(), false));
         }
 
-        void record(String keyId, boolean success, String error, String finishReason) {
+        void record(String keyId, boolean success, String error, String finishReason, LlmCacheUsage cacheUsage) {
             if (attemptRecorded) return;
             attemptRecorded = true;
             long latency = attemptStart == 0 ? 0 : TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - attemptStart);
-            attempts.add(new LlmResponse.Attempt(target.provider(), keyId, success, error, latency, finishReason));
+            attempts.add(new LlmResponse.Attempt(target.provider(), keyId, success, error, latency, finishReason,
+                    provider == null ? "" : provider.spec.model(),
+                    cacheUsage));
         }
 
         void cancel(String reason) {
             if (completion.isDone()) return;
             if (retry != null) retry.cancel(false);
             if (transport != null && !transport.isDone()) {
-                record(credential == null ? "" : credential.spec.id(), false, reason, "cancelled");
+                LlmCacheUsage cancelledUsage = LlmCacheUsage.unknown(
+                        "attempt was cancelled before usage was available");
+                record(credential == null ? "" : credential.spec.id(), false, reason, "cancelled",
+                        cancelledUsage);
+                if (credential != null && provider != null) {
+                    LlmRequestLogger.publishAttempt(new LlmRequestLogger.AttemptEvent(
+                            request.context() == null ? "" : request.context().purpose(),
+                            request.context() == null ? "" : request.context().requestId(),
+                            provider.spec.name(), provider.spec.model(), credential.spec.id(), false,
+                            TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - attemptStart), reason, "cancelled",
+                            cancelledUsage));
+                }
                 completion.cancel(false);
                 transport.cancel(true);
             } else completion.cancel(false);

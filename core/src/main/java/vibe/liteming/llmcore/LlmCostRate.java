@@ -9,13 +9,20 @@ package vibe.liteming.llmcore;
  * usage remains available for diagnostics while the accounting policy can use
  * the weighted units to compare otherwise different models.</p>
  */
-public record LlmCostRate(double inputMultiplier, double outputMultiplier) {
-    public static final LlmCostRate DEFAULT = new LlmCostRate(1.0D, 1.0D);
+public record LlmCostRate(double inputMultiplier, double outputMultiplier,
+        Double cacheReadInputMultiplier, Double cacheWriteInputMultiplier) {
+    public static final LlmCostRate DEFAULT = new LlmCostRate(1.0D, 1.0D, null, null);
     private static final double MAX_MULTIPLIER = 1_000_000.0D;
 
     public LlmCostRate {
         inputMultiplier = validate(inputMultiplier, "inputMultiplier");
         outputMultiplier = validate(outputMultiplier, "outputMultiplier");
+        cacheReadInputMultiplier = validateOptional(cacheReadInputMultiplier, "cacheReadInputMultiplier");
+        cacheWriteInputMultiplier = validateOptional(cacheWriteInputMultiplier, "cacheWriteInputMultiplier");
+    }
+
+    public LlmCostRate(double inputMultiplier, double outputMultiplier) {
+        this(inputMultiplier, outputMultiplier, null, null);
     }
 
     /** Converts raw usage into bounded integer cost-equivalent units. */
@@ -27,11 +34,31 @@ public record LlmCostRate(double inputMultiplier, double outputMultiplier) {
         return weightedTokens(inputTokens, outputTokens);
     }
 
+    /** Returns null unless reported dimensions and applicable cache rates are sufficient. */
+    public Long weightedTokens(LlmCacheUsage usage, long outputTokens) {
+        if (usage == null || usage.status() != LlmCacheUsage.Status.REPORTED) return null;
+        Long read = usage.cacheReadInputTokens();
+        Long write = usage.cacheWriteInputTokens();
+        Long uncached = usage.uncachedInputTokens();
+        if (read == null || uncached == null) return null;
+        if (read > 0 && cacheReadInputMultiplier == null) return null;
+        if (write != null && write > 0 && cacheWriteInputMultiplier == null) return null;
+        long inputCost = saturatedAdd(weight(uncached, inputMultiplier),
+                weight(read, cacheReadInputMultiplier == null ? inputMultiplier : cacheReadInputMultiplier));
+        if (write != null) inputCost = saturatedAdd(inputCost,
+                weight(write, cacheWriteInputMultiplier == null ? inputMultiplier : cacheWriteInputMultiplier));
+        return saturatedAdd(inputCost, weight(outputTokens, outputMultiplier));
+    }
+
     private static double validate(double value, String field) {
         if (!Double.isFinite(value) || value < 0.0D || value > MAX_MULTIPLIER) {
             throw new IllegalArgumentException(field + " must be finite and within 0.." + MAX_MULTIPLIER);
         }
         return value;
+    }
+
+    private static Double validateOptional(Double value, String field) {
+        return value == null ? null : validate(value, field);
     }
 
     private static long weight(long tokens, double multiplier) {

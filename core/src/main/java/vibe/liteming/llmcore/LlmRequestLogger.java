@@ -18,7 +18,14 @@ public final class LlmRequestLogger {
             boolean success,
             long latencyMs,
             String error,
-            String finishReason) {
+            String finishReason,
+            LlmCacheUsage cacheUsage) {
+        public AttemptEvent(String purpose, String requestId, String provider, String model,
+                String credentialId, boolean success, long latencyMs, String error, String finishReason) {
+            this(purpose, requestId, provider, model, credentialId, success, latencyMs, error, finishReason,
+                    LlmCacheUsage.unknown("legacy attempt event did not carry cache usage"));
+        }
+
         public AttemptEvent {
             purpose = clean(purpose);
             requestId = clean(requestId);
@@ -27,6 +34,8 @@ public final class LlmRequestLogger {
             credentialId = clean(credentialId);
             error = clean(error);
             finishReason = clean(finishReason);
+            cacheUsage = cacheUsage == null
+                    ? LlmCacheUsage.unknown("attempt did not report cache usage") : cacheUsage;
         }
     }
 
@@ -55,7 +64,8 @@ public final class LlmRequestLogger {
             String inputKind,
             String billingPrincipal,
             String billingPrincipalId,
-            String causalRootRequestId) {
+            String causalRootRequestId,
+            LlmCacheUsage cacheUsage) {
         /** Binary-compatible full event shape used before addressee attribution was added. */
         public Event(String source, String purpose, String requestId, String provider, String model,
                 boolean success, long latencyMs, int promptTokens, int completionTokens, String summary,
@@ -66,7 +76,8 @@ public final class LlmRequestLogger {
             this(source, purpose, requestId, provider, model, success, latencyMs, promptTokens, completionTokens,
                     summary, requestBody, responseBody, error, finishReason, contentLength, responsePreview,
                     responderEntityId, responderName, triggerSource, "", audience, inputKind,
-                    billingPrincipal, billingPrincipalId, causalRootRequestId);
+                    billingPrincipal, billingPrincipalId, causalRootRequestId,
+                    LlmCacheUsage.unknown("legacy final event did not carry cache usage"));
         }
 
         /** Binary-compatible full event shape used before principal attribution was added. */
@@ -77,7 +88,8 @@ public final class LlmRequestLogger {
                 String audience, String inputKind) {
             this(source, purpose, requestId, provider, model, success, latencyMs, promptTokens, completionTokens,
                     summary, requestBody, responseBody, error, finishReason, contentLength, responsePreview,
-                    responderEntityId, responderName, triggerSource, "", audience, inputKind, "", "", "");
+                    responderEntityId, responderName, triggerSource, "", audience, inputKind, "", "", "",
+                    LlmCacheUsage.unknown("legacy final event did not carry cache usage"));
         }
 
         public Event(String source, String purpose, String requestId, String provider, String model,
@@ -93,7 +105,13 @@ public final class LlmRequestLogger {
                 String responsePreview) {
             this(source, purpose, requestId, provider, model, success, latencyMs, promptTokens, completionTokens,
                     summary, requestBody, responseBody, error, finishReason, contentLength, responsePreview,
-                    "", "", "", "", "", purpose, "", "", "");
+                    "", "", "", "", "", purpose, "", "", "",
+                    LlmCacheUsage.unknown("legacy final event did not carry cache usage"));
+        }
+
+        public Event {
+            cacheUsage = cacheUsage == null
+                    ? LlmCacheUsage.unknown("final event did not report cache usage") : cacheUsage;
         }
     }
 
@@ -170,7 +188,8 @@ public final class LlmRequestLogger {
                 request.context() == null ? "" : request.context().inputKind(),
                 request.billingContext().principalKind().name(),
                 request.billingContext().principalId(),
-                request.billingContext().causalRootRequestId()));
+                request.billingContext().causalRootRequestId(),
+                response.cacheUsage()));
     }
 
     private static String preview(String value) {

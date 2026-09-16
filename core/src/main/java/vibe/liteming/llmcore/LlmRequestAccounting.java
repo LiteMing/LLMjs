@@ -41,7 +41,13 @@ public final class LlmRequestAccounting {
     }
 
     public record AttemptUsage(long promptTokens, long completionTokens, long estimatedTokens,
-            long costUnits) {
+            long costUnits, String provider, String model, String credentialId,
+            String cacheDomainIdentity, LlmCacheUsage cacheUsage) {
+        public AttemptUsage(long promptTokens, long completionTokens, long estimatedTokens, long costUnits) {
+            this(promptTokens, completionTokens, estimatedTokens, costUnits, "", "", "", "",
+                    LlmCacheUsage.unknown("legacy settlement did not carry cache usage"));
+        }
+
         /** Binary-compatible usage shape; the default rate is one unit per token. */
         public AttemptUsage(long promptTokens, long completionTokens, long estimatedTokens) {
             this(promptTokens, completionTokens, estimatedTokens,
@@ -54,6 +60,12 @@ public final class LlmRequestAccounting {
             completionTokens = Math.max(0L, completionTokens);
             estimatedTokens = Math.max(0L, estimatedTokens);
             costUnits = Math.max(0L, costUnits);
+            provider = provider == null ? "" : provider.trim();
+            model = model == null ? "" : model.trim();
+            credentialId = credentialId == null ? "" : credentialId.trim();
+            cacheDomainIdentity = cacheDomainIdentity == null ? "" : cacheDomainIdentity.trim();
+            cacheUsage = cacheUsage == null
+                    ? LlmCacheUsage.unknown("settlement did not report cache usage") : cacheUsage;
         }
 
         public long totalTokens() {
