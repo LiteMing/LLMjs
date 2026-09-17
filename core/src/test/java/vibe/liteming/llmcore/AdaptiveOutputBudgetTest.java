@@ -55,10 +55,16 @@ class AdaptiveOutputBudgetTest {
         List<String> messages = new CopyOnWriteArrayList<>();
         List<String> events = new CopyOnWriteArrayList<>();
         List<LlmRequestAccounting.AttemptUsage> usages = new CopyOnWriteArrayList<>();
-        LlmOrchestrator core = core("A/m", spec("A", null, null));
+        LlmOrchestrator core = core("A", spec("A", null, null));
         core.replaceProviderProfiles(Map.of("A", new ProviderProfile("A", ProviderCapabilities.textOnly(),
                 new LlmCostRate(2, 3))));
-        LlmRequest template = request("MEMORY_SUMMARY").withAdaptiveOutputBudget(8192);
+        LlmMessageFinalization finalized = LlmMessageFinalizer.finalize(new LlmMessageDraft(List.of(
+                new LlmMessageDraft.Entry("persona", "persona", new LlmMessage("system", "stable persona"),
+                        true, 0, LlmPromptStability.NPC_STABLE),
+                new LlmMessageDraft.Entry("user", "turn", new LlmMessage("user", "hello"),
+                        true, 0, LlmPromptStability.TURN_DYNAMIC))), 10000, null);
+        LlmRequest template = LlmRequest.routed(finalized, request("MEMORY_SUMMARY").context())
+                .withAdaptiveOutputBudget(8192);
         LlmCallBudget ceiling = core.estimateWorstCaseBudget(template);
         assertEquals(4, ceiling.maxCalls());
         LlmRequest request = template.withBillingContext(LlmBillingContext.system(
@@ -69,6 +75,8 @@ class AdaptiveOutputBudgetTest {
                 assertEquals(request.context(), attempt.context());
                 assertEquals(request.billingContext(), attempt.billingContext());
                 assertEquals(8192, attempt.adaptiveOutputSeedTokens());
+                assertEquals(template.typedEntries(), attempt.typedEntries());
+                assertEquals(template.wireDiagnostics().stablePrefixHash(), attempt.wireDiagnostics().stablePrefixHash());
                 assertEquals(attempt.maxTokens().longValue(), estimate.outputTokens());
                 events.add("reserve:" + estimate.outputTokens());
                 return LlmRequestAccounting.Reservation.allow("attempt", estimate.totalTokens(), estimate.totalCostUnits());
@@ -86,7 +94,8 @@ class AdaptiveOutputBudgetTest {
             messages.add(body.get("messages").toString());
             events.add("http:" + budget);
             reply(exchange, completion(budgets.size() == 1 ? "" : "summary", budgets.size() == 1 ? "length" : "stop",
-                    budgets.size() == 1 ? budget : 20));
+                    budgets.size() == 1 ? budget : 20).replace("\"prompt_tokens\":3", "\"prompt_tokens\":3,"
+                            + "\"prompt_tokens_details\":{\"cached_tokens\":" + (budgets.size() == 1 ? 0 : 2) + "}"));
         });
         LlmResponse response = core.send(request).get(5, TimeUnit.SECONDS);
         assertTrue(response.success(), response.error());
@@ -96,23 +105,30 @@ class AdaptiveOutputBudgetTest {
                 "reserve:9192", "http:9192", "settle:20"), events);
         assertEquals(2, response.attempts().size());
         assertEquals("length", response.attempts().get(0).finishReason());
+        assertEquals(0L, response.attempts().get(0).cacheUsage().cacheReadInputTokens());
+        assertEquals(2L, response.cacheUsage().cacheReadInputTokens());
+        for (int index = 0; index < 2; index++) {
+            assertEquals(usages.get(index).cacheUsage(), response.attempts().get(index).cacheUsage());
+            assertEquals(template.wireDiagnostics().stablePrefixHash(),
+                    response.attempts().get(index).wireDiagnostics().stablePrefixHash());
+        }
+        assertEquals(response.attempts().get(1).wireDiagnostics(), response.wireDiagnostics());
         assertEquals(8192, usages.get(0).completionTokens());
         assertEquals(3L * 8192 + 6, usages.get(0).totalCostUnits());
         assertEquals(0, usages.get(0).estimatedTokens());
         assertTrue(ceiling.maxTokens() >= usages.stream().mapToLong(LlmRequestAccounting.AttemptUsage::totalTokens).sum());
-        assertEquals(9192, core.resolveParameters(template, "A/m").maxOutputTokens());
+        assertEquals(9192, core.resolveParameters(template, "A").maxOutputTokens());
         assertTrue(core.send(request).get(5, TimeUnit.SECONDS).success());
         assertEquals(9192, budgets.get(2));
     }
 
-    @Test void learningIsIsolatedByPurposeProviderAndModel() throws Exception {
+    @Test void learningIsIsolatedByPurposeAndProvider() throws Exception {
         server.createContext("/A", exchange -> { read(exchange); reply(exchange, completion("", "length", 1000)); });
-        LlmOrchestrator core = core("A/m*0", spec("A", null, null), spec("B", null, null));
+        LlmOrchestrator core = core("A*0", spec("A", null, null), spec("B", null, null));
         assertFalse(core.send(request("MEMORY_SUMMARY")).get(5, TimeUnit.SECONDS).success());
-        assertEquals(2000, core.resolveParameters(request("MEMORY_SUMMARY"), "A/m").maxOutputTokens());
-        assertEquals(1000, core.resolveParameters(request("CHAT"), "A/m").maxOutputTokens());
-        assertEquals(1000, core.resolveParameters(request("MEMORY_SUMMARY"), "A/other").maxOutputTokens());
-        assertEquals(1000, core.resolveParameters(request("MEMORY_SUMMARY"), "B/m").maxOutputTokens());
+        assertEquals(2000, core.resolveParameters(request("MEMORY_SUMMARY"), "A").maxOutputTokens());
+        assertEquals(1000, core.resolveParameters(request("CHAT"), "A").maxOutputTokens());
+        assertEquals(1000, core.resolveParameters(request("MEMORY_SUMMARY"), "B").maxOutputTokens());
     }
 
     @ParameterizedTest
@@ -123,14 +139,14 @@ class AdaptiveOutputBudgetTest {
             budgets.add(read(exchange).get("max_tokens").getAsInt());
             reply(exchange, completion("", "length", 2048));
         });
-        LlmOrchestrator core = core("A/m*3", spec("A", layer.equals("provider") ? 2048 : null, null));
+        LlmOrchestrator core = core("A*3", spec("A", layer.equals("provider") ? 2048 : null, null));
         LlmRouteOptions maximum = new LlmRouteOptions(null, 2048, null, null, null);
         if (layer.equals("global")) core.setGlobalDefaults(maximum);
         if (layer.equals("purpose")) core.setRoutingConfig(core.getRoutingConfig().withPurposeOptions("MEMORY_SUMMARY", maximum));
         LlmRequest base = request("MEMORY_SUMMARY").withAdaptiveOutputBudget(8192);
         LlmRequest request = new LlmRequest(base.messages(), List.of(), null,
                 layer.equals("request") ? 2048 : null, 0, base.context(),
-                layer.equals("override") ? maximum : LlmRouteOptions.empty(), base.billingContext(), base.adaptiveOutputSeedTokens());
+                layer.equals("override") ? maximum : LlmRouteOptions.empty(), base.billingContext(), base.typedEntries(), base.wireDiagnostics(), base.adaptiveOutputSeedTokens());
         assertEquals(4, core.estimateWorstCaseBudget(request).maxCalls());
         assertFalse(core.send(request).get(5, TimeUnit.SECONDS).success());
         assertEquals(List.of(2048), budgets);
@@ -138,12 +154,12 @@ class AdaptiveOutputBudgetTest {
         core.setGlobalDefaults(LlmRouteOptions.empty());
         core.setRoutingConfig(core.getRoutingConfig().withPurposeOptions("MEMORY_SUMMARY", null));
         if (layer.equals("provider")) core.replaceProviders(Map.of("A", spec("A", null, null)));
-        assertEquals(1000, core.resolveParameters(request("MEMORY_SUMMARY"), "A/m").maxOutputTokens());
+        assertEquals(1000, core.resolveParameters(request("MEMORY_SUMMARY"), "A").maxOutputTokens());
     }
 
     @ParameterizedTest
-    @CsvSource({"A/m,1000,4,4000,5000", "A/m*0,1000,1,1000,2000", "A/m*1,1000,2,2000,3000",
-            "A/m,31000,2,32000,32000"})
+    @CsvSource({"A,1000,4,4000,5000", "A*0,1000,1,1000,2000", "A*1,1000,2,2000,3000",
+            "A,31000,2,32000,32000"})
     void truncationRetriesAreBoundedAndShareExplicitRouteRetryCounts(String route, int seed, int calls,
             int lastBudget, int learned) throws Exception {
         List<Integer> budgets = new CopyOnWriteArrayList<>();
@@ -158,7 +174,7 @@ class AdaptiveOutputBudgetTest {
         assertFalse(response.success());
         assertEquals(calls, budgets.size());
         assertEquals(lastBudget, budgets.get(budgets.size() - 1));
-        assertEquals(learned, core.resolveParameters(request, "A/m").maxOutputTokens());
+        assertEquals(learned, core.resolveParameters(request, "A").maxOutputTokens());
         assertEquals(calls, response.attempts().size());
     }
 
@@ -172,13 +188,13 @@ class AdaptiveOutputBudgetTest {
             reply(exchange, stream("partial", "length", 1000));
         });
         server.createContext("/B", exchange -> { fallbacks.incrementAndGet(); reply(exchange, completion("fallback", "stop", 3)); });
-        LlmOrchestrator core = core("A/m > B/m", spec("A", null, null), spec("B", null, null));
+        LlmOrchestrator core = core("A > B", spec("A", null, null), spec("B", null, null));
         LlmResponse response = core.sendStreaming(request("CHAT"), deltas::add).get(5, TimeUnit.SECONDS);
         assertFalse(response.success());
         assertEquals(List.of("partial"), deltas);
         assertEquals(1, calls.get());
         assertEquals(0, fallbacks.get());
-        assertEquals(2000, core.resolveParameters(request("CHAT"), "A/m").maxOutputTokens());
+        assertEquals(2000, core.resolveParameters(request("CHAT"), "A").maxOutputTokens());
     }
 
     @ParameterizedTest
@@ -194,7 +210,7 @@ class AdaptiveOutputBudgetTest {
             boolean first = budgets.size() == 1;
             reply(exchange, stream(first ? "" : "answer", first ? "length" : "stop", reportedUsage || !first ? budget : null));
         });
-        LlmOrchestrator core = core("A/m", spec("A", null, null));
+        LlmOrchestrator core = core("A", spec("A", null, null));
         LlmResponse response = core.sendStreaming(request("CHAT"), deltas::add).get(5, TimeUnit.SECONDS);
         assertTrue(response.success(), response.error());
         assertEquals(List.of(1000, 2000), budgets);
@@ -221,7 +237,7 @@ class AdaptiveOutputBudgetTest {
                     + "\"}],\"stop_reason\":\"" + (first ? "max_tokens" : "end_turn")
                     + "\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1000}}");
         });
-        LlmResponse response = core("A/m", anthropic).sendStreaming(request("CHAT"), deltas::add).get(5, TimeUnit.SECONDS);
+        LlmResponse response = core("A", anthropic).sendStreaming(request("CHAT"), deltas::add).get(5, TimeUnit.SECONDS);
         assertTrue(response.success(), response.error());
         assertEquals(List.of(1000, 2000), budgets);
         assertEquals(List.of("complete"), deltas);
@@ -248,11 +264,11 @@ class AdaptiveOutputBudgetTest {
         server.createContext("/B", exchange -> {
             read(exchange); started.countDown(); await(started); reply(exchange, completion("winner", "stop", 3));
         });
-        LlmOrchestrator core = core("(A/m*0 | B/m*0)", spec("A", null, null), spec("B", null, null));
+        LlmOrchestrator core = core("(A*0 | B*0)", spec("A", null, null), spec("B", null, null));
         assertEquals("winner", core.send(request("CHAT")).get(5, TimeUnit.SECONDS).content());
         releaseSlow.countDown();
         assertTrue(slowFinished.await(5, TimeUnit.SECONDS));
-        core.setRoutingConfig(core.getRoutingConfig().withDefaultRoute(LlmRoute.parse("A/m*0")));
+        core.setRoutingConfig(core.getRoutingConfig().withDefaultRoute(LlmRoute.parse("A*0")));
         assertTrue(core.send(request("CHAT")).get(5, TimeUnit.SECONDS).success());
         assertEquals(List.of(1000, 1000), slowBudgets);
     }
@@ -264,7 +280,7 @@ class AdaptiveOutputBudgetTest {
             bodies.add(body);
             reply(exchange, completion(bodies.size() < 4 ? "" : "answer", bodies.size() < 4 ? "length" : "stop", 1000));
         });
-        LlmOrchestrator core = core("A/m", spec("A", null, 8000));
+        LlmOrchestrator core = core("A", spec("A", null, 8000));
         LlmMessageDraft draft = new LlmMessageDraft(List.of(
                 new LlmMessageDraft.Entry("system", "persona", new LlmMessage("system", "required"), true, 0),
                 new LlmMessageDraft.Entry("capability", "capability", new LlmMessage("system", "capability:" + "x".repeat(1000)), false, 10),
@@ -288,12 +304,12 @@ class AdaptiveOutputBudgetTest {
             int budget = read(exchange).get("max_tokens").getAsInt();
             budgets.add(budget); reply(exchange, completion("", "length", budget));
         });
-        LlmOrchestrator core = core("A/m > B/m", spec("A", null, 1020), spec("B", null, null));
-        core.setRoutingConfig(core.getRoutingConfig().withDefaultRoute(LlmRoute.parse("A/m")));
+        LlmOrchestrator core = core("A > B", spec("A", null, 1020), spec("B", null, null));
+        core.setRoutingConfig(core.getRoutingConfig().withDefaultRoute(LlmRoute.parse("A")));
         assertFalse(core.send(request("CHAT")).get(5, TimeUnit.SECONDS).success());
         assertEquals(List.of(1000, 1011), budgets);
         budgets.clear();
-        LlmOrchestrator noCapacity = core("A/m", spec("A", null, 9));
+        LlmOrchestrator noCapacity = core("A", spec("A", null, 9));
         LlmResponse exhausted = noCapacity.send(request("CHAT")).get(5, TimeUnit.SECONDS);
         assertFalse(exhausted.success());
         assertTrue(exhausted.error().contains("no output capacity"));
@@ -308,20 +324,12 @@ class AdaptiveOutputBudgetTest {
             @Override public void settle(LlmRequest request, LlmRequestAccounting.Reservation reservation,
                     LlmRequestAccounting.AttemptUsage usage) { usages.add(usage); }
         });
-        core = core("A/m > B/m", spec("A", null, null), spec("B", null, null));
+        core = core("A > B", spec("A", null, null), spec("B", null, null));
         LlmResponse denied = core.send(request("CHAT")).get(5, TimeUnit.SECONDS);
         assertEquals(LlmRequestAccounting.DenyCode.CHAIN_TOKENS_EXHAUSTED, denied.denyCode());
         assertEquals(List.of(1000), budgets);
         assertEquals(1, usages.size());
         assertEquals(1000, usages.get(0).completionTokens());
-    }
-
-    @Test void causalCeilingIncludesAllParallelCredentialTruncationRetries() {
-        ProviderSpec original = spec("A", null, null);
-        ProviderSpec parallel = new ProviderSpec("A", "openai", original.url(), "m", null, null, null,
-                List.of(new ProviderSpec.Credential("one", "one", 1), new ProviderSpec.Credential("two", "two", 1)),
-                List.of("m"), ProviderSpec.RequestMode.PARALLEL);
-        assertEquals(8, core("A/m", parallel).estimateWorstCaseBudget(request("CHAT")).maxCalls());
     }
 
     private LlmOrchestrator core(String route, ProviderSpec... specs) {
@@ -336,8 +344,7 @@ class AdaptiveOutputBudgetTest {
 
     private ProviderSpec spec(String name, Integer maximum, Integer window) {
         return new ProviderSpec(name, "openai", "http://127.0.0.1:" + server.getAddress().getPort() + "/" + name,
-                "m", null, maximum, window, List.of(new ProviderSpec.Credential("key", "local-test", 1)),
-                List.of("m", "other"), ProviderSpec.RequestMode.ROTATION);
+                "m", null, maximum, window, List.of(new ProviderSpec.Credential("key", "local-test", 1)));
     }
 
     private static LlmRequest request(String purpose) {

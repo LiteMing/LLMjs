@@ -27,8 +27,9 @@ import static vibe.liteming.llmjs.client.ConsoleTexts.text;
 @OnlyIn(Dist.CLIENT)
 public class ProviderListPanel extends AbstractWidget {
     public record ProviderEntry(String name, String type, String format, String model, String allModels, String url,
-                                 String maskedKey, String status, String statusKind, String lastSuccess,
-                                 String cacheSummary, ProviderSpec.RequestMode requestMode,
+                                 String maskedKey, String status, String statusLabel, String statusKind, String lastSuccess,
+                                 String cacheLabel, String cacheSummary, boolean cacheReported,
+                                 ProviderSpec.RequestMode requestMode,
                                  boolean configured, LlmCostRate rate) {}
 
     private final List<ProviderEntry> providers = new ArrayList<>();
@@ -79,26 +80,39 @@ public class ProviderListPanel extends AbstractWidget {
                     JsonObject targetStatus = target.has("status") && target.get("status").isJsonObject()
                             ? target.getAsJsonObject("status") : new JsonObject();
                     String status;
+                    String statusLabel;
                     String statusKind;
                     if (!configured) {
                         status = string("providers.status.no_key");
+                        statusLabel = status;
                         statusKind = "no_key";
                     } else if (targetStatus.has("requests1h") && targetStatus.get("requests1h").getAsLong() > 0) {
                         boolean connected = !targetStatus.has("lastRequestSuccessful")
                                 || targetStatus.get("lastRequestSuccessful").getAsBoolean();
-                        status = string("providers.status.rate",
-                                String.format(java.util.Locale.ROOT, "%.1f", targetStatus.get("successRate1h").getAsDouble() * 100.0),
+                        String successRatio = String.format(java.util.Locale.ROOT, "%.1f",
+                                targetStatus.get("successRate1h").getAsDouble() * 100.0);
+                        status = string("providers.status.rate", successRatio,
                                 targetStatus.get("averageLatency1hMs").getAsLong(), targetStatus.get("requests1h").getAsLong());
+                        statusLabel = string("providers.success.row", successRatio);
                         statusKind = connected ? "ok" : "error";
                     } else {
                         status = string("providers.status.no_data");
+                        statusLabel = status;
                         statusKind = "untested";
                     }
                     String lastSuccess = targetStatus.has("lastSuccessTime")
                             ? targetStatus.get("lastSuccessTime").getAsString() : string("common.none");
-                    String cacheSummary = targetStatus.has("cacheHitRatio1h")
+                    boolean cacheReported = targetStatus.has("cacheHitRatio1h");
+                    String cacheRatio = cacheReported
+                            ? String.format(java.util.Locale.ROOT, "%.1f",
+                                    targetStatus.get("cacheHitRatio1h").getAsDouble() * 100.0)
+                            : "";
+                    String cacheLabel = cacheReported
+                            ? string("providers.cache.row", cacheRatio)
+                            : string("providers.cache.row.unknown");
+                    String cacheSummary = cacheReported
                             ? string("providers.cache.reported",
-                                    String.format(java.util.Locale.ROOT, "%.1f", targetStatus.get("cacheHitRatio1h").getAsDouble() * 100.0),
+                                    cacheRatio,
                                     targetStatus.get("cacheReadInputTokens1h").getAsLong(),
                                     targetStatus.get("cacheWriteInputTokens1h").getAsLong(),
                                     targetStatus.get("uncachedInputTokens1h").getAsLong(),
@@ -114,7 +128,8 @@ public class ProviderListPanel extends AbstractWidget {
                             : LlmCostRate.DEFAULT;
                     String model = target.has("model") ? target.get("model").getAsString() : allModels;
                     providers.add(new ProviderEntry(name, type, format, model, allModels, url, maskedKey,
-                            status, statusKind, lastSuccess, cacheSummary, mode, configured, rate));
+                            status, statusLabel, statusKind, lastSuccess, cacheLabel, cacheSummary, cacheReported,
+                            mode, configured, rate));
                 }
             }
         } catch (Exception ignored) {}
@@ -173,7 +188,15 @@ public class ProviderListPanel extends AbstractWidget {
         graphics.drawString(font, text("providers.name"), getX() + 8, y, 0xAAAAAA, false);
         if (width >= 230) graphics.drawString(font, text("providers.format"), getX() + 110, y, 0xAAAAAA, false);
         if (width >= 330) graphics.drawString(font, text("providers.model"), getX() + 170, y, 0xAAAAAA, false);
-        if (width >= 470) graphics.drawString(font, text("providers.status"), getX() + 300, y, 0xAAAAAA, false);
+        if (showsCacheColumn()) {
+            int splitX = metricsSplitX();
+            graphics.drawString(font,
+                    font.plainSubstrByWidth(string("providers.status"), Math.max(20, splitX - getX() - 304)),
+                    getX() + 300, y, 0xAAAAAA, false);
+            graphics.drawString(font,
+                    font.plainSubstrByWidth(string("providers.cache.column"), Math.max(20, deleteX() - splitX - 4)),
+                    splitX, y, 0xAAAAAA, false);
+        }
         y += ROW_HEIGHT;
         graphics.fill(getX() + 4, y - 2, getX() + width - 4, y - 1, 0xFF555555);
 
@@ -219,9 +242,15 @@ public class ProviderListPanel extends AbstractWidget {
                 graphics.drawString(font, font.plainSubstrByWidth(p.model, modelWidth),
                         getX() + 170, rowY + 2, 0xCCCCCC, false);
             }
-            if (width >= 470) {
-                graphics.drawString(font, font.plainSubstrByWidth(p.status, Math.max(20, deleteX() - getX() - 304)),
+            if (showsCacheColumn()) {
+                int splitX = metricsSplitX();
+                graphics.drawString(font,
+                        font.plainSubstrByWidth(p.statusLabel, Math.max(20, splitX - getX() - 304)),
                         getX() + 300, rowY + 2, statusColor, false);
+                int cacheColor = p.cacheReported ? 0xFF8BD5CA : 0xFF8E98A6;
+                graphics.drawString(font,
+                        font.plainSubstrByWidth(p.cacheLabel, Math.max(20, deleteX() - splitX - 4)),
+                        splitX, rowY + 2, cacheColor, false);
             }
 
             int dx = deleteX();
@@ -243,16 +272,26 @@ public class ProviderListPanel extends AbstractWidget {
                     && mouseY >= rowY && mouseY < rowY + ROW_HEIGHT - 2;
             if (overDelete) {
                 graphics.renderTooltip(font, text("providers.delete.tip", hovered.name), mouseX, mouseY);
-            } else if ("raw".equals(hovered.type)) {
-                graphics.renderTooltip(font, text("providers.raw.tip", hovered.rate.inputMultiplier(),
-                        hovered.rate.outputMultiplier()), mouseX, mouseY);
             } else {
-                graphics.renderTooltip(font, text("providers.row.tip", hovered.name, hovered.format,
-                        hovered.model, font.plainSubstrByWidth(hovered.url, 300), hovered.maskedKey,
-                        hovered.rate.inputMultiplier(), hovered.rate.outputMultiplier(), hovered.status,
-                        hovered.lastSuccess, hovered.cacheSummary), mouseX, mouseY);
+                Component tooltip = "raw".equals(hovered.type)
+                        ? text("providers.raw.tip", hovered.rate.inputMultiplier(),
+                                hovered.rate.outputMultiplier(), hovered.cacheSummary)
+                        : text("providers.row.tip", hovered.name, hovered.format,
+                                hovered.model, font.plainSubstrByWidth(hovered.url, 300), hovered.maskedKey,
+                                hovered.rate.inputMultiplier(), hovered.rate.outputMultiplier(), hovered.status,
+                                hovered.lastSuccess, hovered.cacheSummary);
+                graphics.renderTooltip(font, font.split(tooltip, Math.min(360, Math.max(160, width - 24))),
+                        mouseX, mouseY);
             }
         }
+    }
+
+    private boolean showsCacheColumn() {
+        return width >= 470;
+    }
+
+    private int metricsSplitX() {
+        return getX() + 300 + Math.max(40, (deleteX() - getX() - 304) / 2);
     }
 
     @Override

@@ -19,11 +19,24 @@ public final class LlmRequestLogger {
             long latencyMs,
             String error,
             String finishReason,
-            LlmCacheUsage cacheUsage) {
+            String routeIdentity,
+            String targetIdentity,
+            String cacheDomainIdentity,
+            LlmCacheUsage cacheUsage,
+            LlmWireDiagnostics wireDiagnostics) {
         public AttemptEvent(String purpose, String requestId, String provider, String model,
                 String credentialId, boolean success, long latencyMs, String error, String finishReason) {
             this(purpose, requestId, provider, model, credentialId, success, latencyMs, error, finishReason,
-                    LlmCacheUsage.unknown("provider usage was not reported"));
+                    "", provider + "/" + model, "",
+                    LlmCacheUsage.unknown("legacy attempt event did not carry cache usage"), null);
+        }
+
+        public AttemptEvent(String purpose, String requestId, String provider, String model,
+                String credentialId, boolean success, long latencyMs, String error, String finishReason,
+                String routeIdentity, String targetIdentity, String cacheDomainIdentity,
+                LlmCacheUsage cacheUsage) {
+            this(purpose, requestId, provider, model, credentialId, success, latencyMs, error, finishReason,
+                    routeIdentity, targetIdentity, cacheDomainIdentity, cacheUsage, null);
         }
 
         public AttemptEvent {
@@ -34,8 +47,13 @@ public final class LlmRequestLogger {
             credentialId = clean(credentialId);
             error = clean(error);
             finishReason = clean(finishReason);
+            routeIdentity = clean(routeIdentity);
+            targetIdentity = clean(targetIdentity);
+            cacheDomainIdentity = clean(cacheDomainIdentity);
             cacheUsage = cacheUsage == null
-                    ? LlmCacheUsage.unknown("provider usage was not reported") : cacheUsage;
+                    ? LlmCacheUsage.unknown("attempt did not report cache usage") : cacheUsage;
+            wireDiagnostics = wireDiagnostics == null
+                    ? new LlmWireDiagnostics("", "", 0, "", cacheDomainIdentity) : wireDiagnostics;
         }
     }
 
@@ -64,7 +82,21 @@ public final class LlmRequestLogger {
             String inputKind,
             String billingPrincipal,
             String billingPrincipalId,
-            String causalRootRequestId) {
+            String causalRootRequestId,
+            LlmCacheUsage cacheUsage,
+            LlmWireDiagnostics wireDiagnostics) {
+        public Event(String source, String purpose, String requestId, String provider, String model,
+                boolean success, long latencyMs, int promptTokens, int completionTokens, String summary,
+                String requestBody, String responseBody, String error, String finishReason, int contentLength,
+                String responsePreview, String responderEntityId, String responderName, String triggerSource,
+                String addressee, String audience, String inputKind, String billingPrincipal,
+                String billingPrincipalId, String causalRootRequestId, LlmCacheUsage cacheUsage) {
+            this(source, purpose, requestId, provider, model, success, latencyMs, promptTokens, completionTokens,
+                    summary, requestBody, responseBody, error, finishReason, contentLength, responsePreview,
+                    responderEntityId, responderName, triggerSource, addressee, audience, inputKind,
+                    billingPrincipal, billingPrincipalId, causalRootRequestId, cacheUsage, null);
+        }
+
         /** Binary-compatible full event shape used before addressee attribution was added. */
         public Event(String source, String purpose, String requestId, String provider, String model,
                 boolean success, long latencyMs, int promptTokens, int completionTokens, String summary,
@@ -75,7 +107,8 @@ public final class LlmRequestLogger {
             this(source, purpose, requestId, provider, model, success, latencyMs, promptTokens, completionTokens,
                     summary, requestBody, responseBody, error, finishReason, contentLength, responsePreview,
                     responderEntityId, responderName, triggerSource, "", audience, inputKind,
-                    billingPrincipal, billingPrincipalId, causalRootRequestId);
+                    billingPrincipal, billingPrincipalId, causalRootRequestId,
+                    LlmCacheUsage.unknown("legacy final event did not carry cache usage"), null);
         }
 
         /** Binary-compatible full event shape used before principal attribution was added. */
@@ -86,7 +119,8 @@ public final class LlmRequestLogger {
                 String audience, String inputKind) {
             this(source, purpose, requestId, provider, model, success, latencyMs, promptTokens, completionTokens,
                     summary, requestBody, responseBody, error, finishReason, contentLength, responsePreview,
-                    responderEntityId, responderName, triggerSource, "", audience, inputKind, "", "", "");
+                    responderEntityId, responderName, triggerSource, "", audience, inputKind, "", "", "",
+                    LlmCacheUsage.unknown("legacy final event did not carry cache usage"), null);
         }
 
         public Event(String source, String purpose, String requestId, String provider, String model,
@@ -102,7 +136,15 @@ public final class LlmRequestLogger {
                 String responsePreview) {
             this(source, purpose, requestId, provider, model, success, latencyMs, promptTokens, completionTokens,
                     summary, requestBody, responseBody, error, finishReason, contentLength, responsePreview,
-                    "", "", "", "", "", purpose, "", "", "");
+                    "", "", "", "", "", purpose, "", "", "",
+                    LlmCacheUsage.unknown("legacy final event did not carry cache usage"), null);
+        }
+
+        public Event {
+            cacheUsage = cacheUsage == null
+                    ? LlmCacheUsage.unknown("final event did not report cache usage") : cacheUsage;
+            wireDiagnostics = wireDiagnostics == null
+                    ? new LlmWireDiagnostics("", "", 0, "", "") : wireDiagnostics;
         }
     }
 
@@ -179,7 +221,9 @@ public final class LlmRequestLogger {
                 request.context() == null ? "" : request.context().inputKind(),
                 request.billingContext().principalKind().name(),
                 request.billingContext().principalId(),
-                request.billingContext().causalRootRequestId()));
+                request.billingContext().causalRootRequestId(),
+                response.cacheUsage(),
+                response.wireDiagnostics()));
     }
 
     private static String preview(String value) {

@@ -49,7 +49,8 @@ public final class ConsoleTestExecutor {
         LlmMessageFinalization finalization = orchestrator.finalizeDraftForRoute(test.toDraft(), template,
                 LlmMessageFinalizer.CONSERVATIVE_ESTIMATOR);
         LlmRequest finalRequest = new LlmRequest(finalization.messages(), explicitChain, null, null, 0, context,
-                test.overrides());
+                test.overrides(), LlmBillingContext.unspecified(), finalization.entries(),
+                finalization.wireDiagnostics());
         LlmCallBudget worstCase = orchestrator.estimateWorstCaseBudget(finalRequest);
         String rootId = test.requestId() == null || test.requestId().isBlank()
                 ? UUID.randomUUID().toString() : test.requestId();

@@ -4,12 +4,15 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import vibe.liteming.llmcore.LlmCacheUsage;
 import vibe.liteming.llmcore.LlmMessage;
 import vibe.liteming.llmcore.LlmMessageFinalization;
 import vibe.liteming.llmcore.LlmResolvedParameters;
 import vibe.liteming.llmcore.LlmResponse;
+import vibe.liteming.llmcore.LlmWireDiagnostics;
 import vibe.liteming.llmcore.PurposeRegistry;
 
 import java.util.HashSet;
@@ -80,6 +83,8 @@ public final class ConsoleTestCodec {
         result.addProperty("completionTokens", response.completionTokens());
         result.addProperty("reasoningTokens", extractReasoningTokens(response.responseBody()));
         result.addProperty("latencyMs", response.latencyMs());
+        result.add("cacheUsage", cacheUsageJson(response.cacheUsage()));
+        result.add("wireDiagnostics", wireDiagnosticsJson(response.wireDiagnostics()));
         result.add("effective", effectiveJson(effective));
         result.add("attempts", attemptsJson(response));
         result.add("finalMessages", messagesJson(finalization));
@@ -197,6 +202,9 @@ public final class ConsoleTestCodec {
             json.addProperty("error", attempt.error());
             json.addProperty("latencyMs", attempt.latencyMs());
             json.addProperty("finishReason", attempt.finishReason());
+            json.addProperty("model", attempt.model());
+            json.add("cacheUsage", cacheUsageJson(attempt.cacheUsage()));
+            json.add("wireDiagnostics", wireDiagnosticsJson(attempt.wireDiagnostics()));
             attempts.add(json);
         }
         return attempts;
@@ -204,8 +212,15 @@ public final class ConsoleTestCodec {
 
     private static JsonArray messagesJson(LlmMessageFinalization finalization) {
         JsonArray messages = new JsonArray();
-        for (LlmMessage message : finalization.messages()) {
+        for (LlmMessageFinalization.FinalEntry entry : finalization.entries()) {
+            LlmMessage message = entry.message();
             JsonObject json = new JsonObject();
+            json.addProperty("index", entry.index());
+            json.addProperty("entryId", entry.entryId());
+            json.addProperty("provenance", entry.provenance());
+            json.addProperty("required", entry.required());
+            json.addProperty("priority", entry.priority());
+            json.addProperty("stability", entry.stability().name());
             json.addProperty("role", message.role());
             JsonArray parts = new JsonArray();
             for (LlmMessage.Part part : message.parts()) {
@@ -239,9 +254,42 @@ public final class ConsoleTestCodec {
             json.addProperty("estimatedTokens", decision.estimatedTokens());
             json.addProperty("required", decision.required());
             json.addProperty("priority", decision.priority());
+            json.addProperty("stability", decision.stability().name());
             decisions.add(json);
         }
         return decisions;
+    }
+
+    private static JsonObject cacheUsageJson(LlmCacheUsage usage) {
+        LlmCacheUsage safe = usage == null
+                ? LlmCacheUsage.unknown("cache usage was not supplied") : usage;
+        JsonObject json = new JsonObject();
+        json.addProperty("status", safe.status().name());
+        addNullableLong(json, "cacheReadInputTokens", safe.cacheReadInputTokens());
+        addNullableLong(json, "cacheWriteInputTokens", safe.cacheWriteInputTokens());
+        addNullableLong(json, "uncachedInputTokens", safe.uncachedInputTokens());
+        addNullableLong(json, "totalInputTokens", safe.totalInputTokens());
+        if (safe.hitRatio() == null) json.add("hitRatio", JsonNull.INSTANCE);
+        else json.addProperty("hitRatio", safe.hitRatio());
+        json.addProperty("reason", safe.reason());
+        return json;
+    }
+
+    private static JsonObject wireDiagnosticsJson(LlmWireDiagnostics diagnostics) {
+        LlmWireDiagnostics safe = diagnostics == null
+                ? new LlmWireDiagnostics("", "", 0, "", "") : diagnostics;
+        JsonObject json = new JsonObject();
+        json.addProperty("finalMessageShapeHash", safe.finalMessageShapeHash());
+        json.addProperty("stablePrefixHash", safe.stablePrefixHash());
+        json.addProperty("stablePrefixEstimatedTokens", safe.stablePrefixEstimatedTokens());
+        json.addProperty("firstDynamicEntryId", safe.firstDynamicEntryId());
+        json.addProperty("cacheDomainIdentity", safe.cacheDomainIdentity());
+        return json;
+    }
+
+    private static void addNullableLong(JsonObject json, String name, Long value) {
+        if (value == null) json.add(name, JsonNull.INSTANCE);
+        else json.addProperty(name, value);
     }
 
     private static int extractReasoningTokens(String responseBody) {

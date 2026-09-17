@@ -34,13 +34,13 @@ public record LlmCostRate(double inputMultiplier, double outputMultiplier,
         return weightedTokens(inputTokens, outputTokens);
     }
 
-    /** Returns null until both provider usage and the required cache pricing are available. */
-    public Long weightedTokens(LlmCacheUsage usage, long fallbackInputTokens, long outputTokens) {
+    /** Returns null unless reported dimensions and applicable cache rates are sufficient. */
+    public Long weightedTokens(LlmCacheUsage usage, long outputTokens) {
         if (usage == null || usage.status() != LlmCacheUsage.Status.REPORTED) return null;
         Long read = usage.cacheReadInputTokens();
         Long write = usage.cacheWriteInputTokens();
         Long uncached = usage.uncachedInputTokens();
-        if (read == null || uncached == null) return null;
+        if (read == null || uncached == null || usage.totalInputTokens() == null) return null;
         if (read > 0 && cacheReadInputMultiplier == null) return null;
         if (write != null && write > 0 && cacheWriteInputMultiplier == null) return null;
         long inputCost = saturatedAdd(weight(uncached, inputMultiplier),
@@ -48,6 +48,11 @@ public record LlmCostRate(double inputMultiplier, double outputMultiplier,
         if (write != null) inputCost = saturatedAdd(inputCost,
                 weight(write, cacheWriteInputMultiplier == null ? inputMultiplier : cacheWriteInputMultiplier));
         return saturatedAdd(inputCost, weight(outputTokens, outputMultiplier));
+    }
+
+    /** Compatibility overload retaining the explicit prompt-token argument used by 1.5.0 callers. */
+    public Long weightedTokens(LlmCacheUsage usage, long fallbackInputTokens, long outputTokens) {
+        return weightedTokens(usage, outputTokens);
     }
 
     private static double validate(double value, String field) {

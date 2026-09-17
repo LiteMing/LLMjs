@@ -137,7 +137,7 @@ final class LlmRouteExecutor {
         }
     }
 
-    /** With comparable history, avoid duplicate spend: fastest recent provider first, then rotate on failure/timeout. */
+    /** With comparable history, avoid duplicate spend: fastest recent provider first, then rotate on failure. */
     private void adaptiveStage(int stageIndex, List<LlmRoute.Target> ordered, int candidateIndex) {
         if (expired()) return;
         if (candidateIndex >= ordered.size()) { stage(stageIndex + 1); return; }
@@ -168,9 +168,7 @@ final class LlmRouteExecutor {
         List<LlmOrchestrator.CredentialRuntime> credentials = runtime.parallelCredentials();
         if (credentials.size() <= 1) return List.of(new Candidate(target, routeRace, stageIndex));
         List<Candidate> candidates = new ArrayList<>();
-        for (var credential : credentials) {
-            candidates.add(new Candidate(target, true, stageIndex, credential));
-        }
+        for (var credential : credentials) candidates.add(new Candidate(target, true, stageIndex, credential));
         return candidates;
     }
 
@@ -192,10 +190,14 @@ final class LlmRouteExecutor {
     }
 
     static LlmResponse withAttempts(LlmResponse response, List<LlmResponse.Attempt> attempts, long elapsedMs) {
+        LlmWireDiagnostics diagnostics = response.wireDiagnostics();
+        if (diagnostics.finalMessageShapeHash().isEmpty() && !attempts.isEmpty()) {
+            diagnostics = attempts.get(attempts.size() - 1).wireDiagnostics();
+        }
         return new LlmResponse(response.success(), response.content(), response.error(), response.provider(),
                 response.model(), response.credentialId(), response.promptTokens(), response.completionTokens(),
                 elapsedMs, attempts, response.requestBody(), response.responseBody(), response.finishReason(),
-                response.denyCode(), response.cacheUsage());
+                response.denyCode(), response.cacheUsage(), diagnostics);
     }
 
     private final class Candidate {
@@ -219,6 +221,7 @@ final class LlmRouteExecutor {
         int sent;
         boolean emitted;
         boolean attemptRecorded;
+        LlmCacheUsage observedCacheUsage = LlmCacheUsage.unknown("attempt has not reported usage");
 
         Candidate(LlmRoute.Target target, boolean racing, int stageIndex) {
             this(target, racing, stageIndex, null);
@@ -237,8 +240,7 @@ final class LlmRouteExecutor {
         void start() {
             if (completion.isDone() || expired()) return;
             if (provider == null) { unavailable("Provider not found"); return; }
-            int maxAttempts = maxAttempts();
-            if (sent >= maxAttempts) { unavailable("No healthy credential"); return; }
+            if (sent >= maxAttempts()) { unavailable("No healthy credential"); return; }
             long now = System.currentTimeMillis();
             credential = reuseCredentialForOutput ? credential : forcedCredential;
             if (credential != null && (credential.disabled || credential.cooldownUntil > now)) credential = null;
@@ -268,8 +270,7 @@ final class LlmRouteExecutor {
             ProviderSpec selectedProvider = provider.spec.forModel(selectedModel);
             if (sent == 0) {
                 adaptiveOutput = orchestrator.usesAdaptiveOutputBudget(request, selectedProvider);
-                adaptiveOutputTokens = orchestrator.resolveParameters(request,
-                        new LlmTarget(target.provider(), selectedModel).id()).maxOutputTokens();
+                adaptiveOutputTokens = orchestrator.resolveParameters(request, target.id()).maxOutputTokens();
             }
             if (adaptiveOutput && orchestrator.adaptiveOutputCeiling(request, selectedProvider) == 0) {
                 unavailable("Provider context window leaves no output capacity");
@@ -281,6 +282,7 @@ final class LlmRouteExecutor {
             visitedTargets.add(target.id());
             attemptStart = System.nanoTime();
             attemptRecorded = false;
+            observedCacheUsage = LlmCacheUsage.unknown("attempt has not reported usage");
             credential.inflight.incrementAndGet();
             LlmOrchestrator.CredentialRuntime usedCredential = credential;
             try {
@@ -291,11 +293,18 @@ final class LlmRouteExecutor {
                         onDelta.accept(text);
                     }
                 } : null;
+                Consumer<LlmCacheUsage> usage = observed -> {
+                    synchronized (LlmRouteExecutor.this) {
+                        observedCacheUsage = observed == null
+                                ? LlmCacheUsage.unknown("stream reported no cache usage") : observed;
+                    }
+                };
                 LlmRequest attemptRequest = adaptiveOutput
                         ? new LlmRequest(request.messages(), request.providerChain(), request.temperature(),
                                 adaptiveOutputTokens, request.timeoutSeconds(), request.context(), request.overrides(),
-                                request.billingContext(), request.adaptiveOutputSeedTokens()) : request;
-                transport = orchestrator.sendRouteAttempt(attemptRequest, selectedProvider, credential.spec, delta,
+                                request.billingContext(), request.typedEntries(), request.wireDiagnostics(),
+                                request.adaptiveOutputSeedTokens()) : request;
+                transport = orchestrator.sendRouteAttempt(attemptRequest, selectedProvider, credential.spec, delta, usage,
                         searching ? searchAdapters.get(target.provider()) : null, racing);
             } catch (RuntimeException failure) {
                 transport = CompletableFuture.failedFuture(failure);
@@ -314,6 +323,14 @@ final class LlmRouteExecutor {
 
         void completedAttempt(LlmOrchestrator.AttemptResult value, LlmOrchestrator.CredentialRuntime key) {
             LlmOrchestrator.SingleResult base = value.result();
+            if (base.policyRejected()) {
+                LlmResponse denied = new LlmResponse(false, "", base.error(), provider.spec.name(),
+                        selectedModel, "", 0, 0, base.latencyMs(), List.of(), base.requestBody(),
+                        base.responseBody(), base.finishReason(), base.denyCode(), base.cacheUsage(),
+                        request.wireDiagnostics());
+                completion.complete(new CandidateResult(denied, value.evidence(), true));
+                return;
+            }
             boolean usable = base.success() && !base.content().isBlank();
             String error = base.error();
             if (!base.success() && base.httpStatus() > 0) error = "HTTP " + base.httpStatus() + ": " + error;
@@ -337,17 +354,24 @@ final class LlmRouteExecutor {
                 missingSearch = true;
                 error = "Hosted Web Search was requested but no invocation evidence was returned";
             }
-            boolean firstRecord = record(key.spec.id(), usable, error, base.finishReason());
+            LlmWireDiagnostics wireDiagnostics = (value.wireDiagnostics() == null
+                    ? request.wireDiagnostics() : value.wireDiagnostics()).withCacheDomainIdentity(
+                            LlmOrchestrator.cacheDomainIdentity(
+                                    provider.spec.name(), selectedModel, key.spec.id()));
+            record(key.spec.id(), usable, error, base.finishReason(), base.cacheUsage(), wireDiagnostics);
             if (usable) provider.recordSuccessfulLatency(selectedModel, System.currentTimeMillis(), base.latencyMs());
-            if (firstRecord) LlmRequestLogger.publishAttempt(new LlmRequestLogger.AttemptEvent(
+            LlmRequestLogger.publishAttempt(new LlmRequestLogger.AttemptEvent(
                     request.context() == null ? "" : request.context().purpose(),
                     request.context() == null ? "" : request.context().requestId(),
                     provider.spec.name(), selectedModel, key.spec.id(), usable,
-                    base.latencyMs(), error, base.finishReason(), base.cacheUsage()));
+                    base.latencyMs(), error, base.finishReason(), route.expression(),
+                    new LlmTarget(provider.spec.name(), selectedModel).id(),
+                    LlmOrchestrator.cacheDomainIdentity(provider.spec.name(), selectedModel, key.spec.id()),
+                    base.cacheUsage(), wireDiagnostics));
             LlmResponse response = new LlmResponse(usable, usable ? base.content() : "", error,
                     provider.spec.name(), selectedModel, key.spec.id(), base.promptTokens(), base.completionTokens(),
-                    base.latencyMs(), List.of(), base.requestBody(), base.responseBody(), base.finishReason(), base.denyCode(),
-                    base.cacheUsage());
+                    base.latencyMs(), List.of(), base.requestBody(), base.responseBody(), base.finishReason(),
+                    base.denyCode(), base.cacheUsage(), wireDiagnostics);
             if (usable || base.policyRejected() || emitted || value.emittedContent()) {
                 if (usable) key.consecutiveFailures.set(0);
                 completion.complete(new CandidateResult(response, value.evidence(), true));
@@ -376,8 +400,7 @@ final class LlmRouteExecutor {
                 return;
             }
             LlmOrchestrator.applyFailure(key, base.httpStatus(), value.retryAfterMs());
-            int maxAttempts = maxAttempts();
-            if (!LlmOrchestrator.isCredentialRetryable(base.httpStatus()) || sent >= maxAttempts) {
+            if (!LlmOrchestrator.isCredentialRetryable(base.httpStatus()) || sent >= maxAttempts()) {
                 completion.complete(new CandidateResult(response, value.evidence(), false));
                 return;
             }
@@ -408,32 +431,42 @@ final class LlmRouteExecutor {
         }
 
         void unavailable(String reason) {
-            if (sent == 0) record("", false, reason, "");
             completion.complete(new CandidateResult(LlmResponse.failure(target.id() + ": " + reason, List.of()),
                     HostedWebSearchAdapters.Evidence.none(), false));
         }
 
-        boolean record(String keyId, boolean success, String error, String finishReason) {
-            if (attemptRecorded) return false;
+        void record(String keyId, boolean success, String error, String finishReason, LlmCacheUsage cacheUsage,
+                LlmWireDiagnostics wireDiagnostics) {
+            if (attemptRecorded) return;
             attemptRecorded = true;
             long latency = attemptStart == 0 ? 0 : TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - attemptStart);
-            attempts.add(new LlmResponse.Attempt(target.id(), keyId, success, error, latency, finishReason));
-            return true;
+            attempts.add(new LlmResponse.Attempt(target.provider(), keyId, success, error, latency, finishReason,
+                    selectedModel == null ? "" : selectedModel,
+                    cacheUsage, wireDiagnostics));
         }
 
         void cancel(String reason) {
             if (completion.isDone()) return;
             if (retry != null) retry.cancel(false);
             if (transport != null && !transport.isDone()) {
-                if (record(credential == null ? "" : credential.spec.id(), false, reason, "cancelled")) {
+                LlmCacheUsage cancelledUsage = observedCacheUsage.status() == LlmCacheUsage.Status.REPORTED
+                        ? observedCacheUsage
+                        : LlmCacheUsage.unknown("attempt was cancelled before usage was available");
+                LlmWireDiagnostics wireDiagnostics = request.wireDiagnostics().withCacheDomainIdentity(
+                        credential == null || provider == null ? "" : LlmOrchestrator.cacheDomainIdentity(
+                                provider.spec.name(), selectedModel, credential.spec.id()));
+                record(credential == null ? "" : credential.spec.id(), false, reason, "cancelled",
+                        cancelledUsage, wireDiagnostics);
+                if (credential != null && provider != null) {
                     LlmRequestLogger.publishAttempt(new LlmRequestLogger.AttemptEvent(
                             request.context() == null ? "" : request.context().purpose(),
                             request.context() == null ? "" : request.context().requestId(),
-                            provider == null ? target.provider() : provider.spec.name(),
-                            selectedModel == null ? "" : selectedModel,
-                            credential == null ? "" : credential.spec.id(), false,
-                            attemptStart == 0 ? 0L : TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - attemptStart),
-                            reason, "cancelled", LlmCacheUsage.unknown("attempt was cancelled before usage was reported")));
+                            provider.spec.name(), selectedModel, credential.spec.id(), false,
+                            TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - attemptStart), reason, "cancelled",
+                            route.expression(), new LlmTarget(provider.spec.name(), selectedModel).id(),
+                            LlmOrchestrator.cacheDomainIdentity(
+                                    provider.spec.name(), selectedModel, credential.spec.id()),
+                            cancelledUsage, wireDiagnostics));
                 }
                 completion.cancel(false);
                 transport.cancel(true);

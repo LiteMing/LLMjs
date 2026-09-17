@@ -58,12 +58,14 @@ public class ProviderManager {
     private volatile LlmCapabilityPolicy capabilityPolicy = LlmCapabilityPolicy.empty();
     private final Map<String, ConnectionStatus> statusCache = new ConcurrentHashMap<>();
     private final Map<String, RuntimeMetrics> runtimeMetrics = new ConcurrentHashMap<>();
+    private final CacheUsageMetrics cacheUsageMetrics = new CacheUsageMetrics();
     private final Map<UUID, Map<String, vibe.liteming.llmcore.LlmRoute>> playerRoutes = new ConcurrentHashMap<>();
     private final Consumer<vibe.liteming.llmcore.LlmRequestLogger.AttemptEvent> metricsListener = event -> {
         if (event.provider() == null || event.provider().isBlank()) return;
         String targetId = LlmTarget.of(event.provider(), event.model()).id();
         RuntimeMetrics metrics = runtimeMetrics.computeIfAbsent(targetId, ignored -> new RuntimeMetrics());
         metrics.record(System.currentTimeMillis(), event.latencyMs(), event.success(), event.error(), event.cacheUsage());
+        cacheUsageMetrics.record(System.currentTimeMillis(), event);
     };
     private boolean metricsHookInstalled;
     private Path playerRoutingFile;
@@ -156,6 +158,164 @@ public class ProviderManager {
         private void prune(long now) {
             long cutoff = now - WINDOW_MILLIS;
             while (!samples.isEmpty() && samples.peekFirst().time() < cutoff) samples.removeFirst();
+        }
+    }
+
+    static final class CacheUsageMetrics {
+        static final long WINDOW_MILLIS = 60L * 60L * 1_000L;
+        static final int MAX_SAMPLES = 4_096;
+        static final int MAX_GROUPS = 16;
+        private record Sample(long time, String purpose, String provider, String model, String route,
+                String target, String domain, vibe.liteming.llmcore.LlmCacheUsage usage) { }
+        private record Key(String purpose, String provider, String model, String route,
+                String target, String domain) { }
+        private static final class Aggregate {
+            long latest;
+            long reported;
+            long unknown;
+            long unsupported;
+            long read;
+            long write;
+            long uncached;
+            long total;
+            long comparableRead;
+            long comparableTotal;
+            long pricedInput;
+            long pricedSamples;
+            boolean pricingComplete = true;
+            boolean hasRead;
+            boolean hasWrite;
+            boolean hasUncached;
+            boolean hasTotal;
+            final Map<String, Long> reasons = new LinkedHashMap<>();
+        }
+
+        private final Deque<Sample> samples = new ArrayDeque<>();
+
+        synchronized void record(long now, vibe.liteming.llmcore.LlmRequestLogger.AttemptEvent event) {
+            prune(now);
+            samples.addLast(new Sample(now, bounded(event.purpose(), 64), bounded(event.provider(), 64),
+                    bounded(event.model(), 96), bounded(event.routeIdentity(), 128),
+                    bounded(event.targetIdentity(), 128), bounded(event.cacheDomainIdentity(), 64),
+                    event.cacheUsage()));
+            while (samples.size() > MAX_SAMPLES) samples.removeFirst();
+        }
+
+        synchronized JsonObject toJson(long now, Map<String, LlmCostRate> rates) {
+            prune(now);
+            Map<Key, Aggregate> groups = new LinkedHashMap<>();
+            for (Sample sample : samples) {
+                Key key = new Key(sample.purpose(), sample.provider(), sample.model(), sample.route(),
+                        sample.target(), sample.domain());
+                Aggregate aggregate = groups.computeIfAbsent(key, ignored -> new Aggregate());
+                aggregate.latest = Math.max(aggregate.latest, sample.time());
+                var usage = sample.usage();
+                switch (usage.status()) {
+                    case REPORTED -> aggregate.reported++;
+                    case UNKNOWN -> aggregate.unknown++;
+                    case UNSUPPORTED -> aggregate.unsupported++;
+                }
+                if (!usage.reason().isBlank()) aggregate.reasons.merge(bounded(usage.reason(), 160), 1L, Long::sum);
+                if (usage.cacheReadInputTokens() != null) {
+                    aggregate.hasRead = true;
+                    aggregate.read = saturatedAdd(aggregate.read, usage.cacheReadInputTokens());
+                }
+                if (usage.cacheWriteInputTokens() != null) {
+                    aggregate.hasWrite = true;
+                    aggregate.write = saturatedAdd(aggregate.write, usage.cacheWriteInputTokens());
+                }
+                if (usage.uncachedInputTokens() != null) {
+                    aggregate.hasUncached = true;
+                    aggregate.uncached = saturatedAdd(aggregate.uncached, usage.uncachedInputTokens());
+                }
+                if (usage.totalInputTokens() != null) {
+                    aggregate.hasTotal = true;
+                    aggregate.total = saturatedAdd(aggregate.total, usage.totalInputTokens());
+                }
+                if (usage.hitRatio() != null) {
+                    aggregate.comparableRead = saturatedAdd(aggregate.comparableRead,
+                            usage.cacheReadInputTokens());
+                    aggregate.comparableTotal = saturatedAdd(aggregate.comparableTotal,
+                            usage.totalInputTokens());
+                }
+                if (usage.status() == vibe.liteming.llmcore.LlmCacheUsage.Status.REPORTED) {
+                    LlmCostRate rate = rates.getOrDefault(sample.target(),
+                            rates.getOrDefault(sample.provider(), LlmCostRate.DEFAULT));
+                    Long cost = rate.weightedTokens(usage, 0L);
+                    if (cost == null) aggregate.pricingComplete = false;
+                    else {
+                        aggregate.pricedInput = saturatedAdd(aggregate.pricedInput, cost);
+                        aggregate.pricedSamples++;
+                    }
+                }
+            }
+            List<Map.Entry<Key, Aggregate>> ordered = groups.entrySet().stream()
+                    .sorted((left, right) -> Long.compare(right.getValue().latest, left.getValue().latest))
+                    .toList();
+            JsonArray entries = new JsonArray();
+            for (Map.Entry<Key, Aggregate> entry : ordered.stream().limit(MAX_GROUPS).toList()) {
+                entries.add(toJson(entry.getKey(), entry.getValue()));
+            }
+            JsonObject result = new JsonObject();
+            result.addProperty("windowMillis", WINDOW_MILLIS);
+            result.addProperty("maxSamples", MAX_SAMPLES);
+            result.addProperty("samples", samples.size());
+            result.addProperty("groups", groups.size());
+            result.addProperty("truncatedGroups", Math.max(0, groups.size() - MAX_GROUPS));
+            result.add("entries", entries);
+            return result;
+        }
+
+        synchronized void clear() {
+            samples.clear();
+        }
+
+        private static JsonObject toJson(Key key, Aggregate value) {
+            JsonObject json = new JsonObject();
+            json.addProperty("purpose", key.purpose());
+            json.addProperty("provider", key.provider());
+            json.addProperty("model", key.model());
+            json.addProperty("route", key.route());
+            json.addProperty("target", key.target());
+            json.addProperty("cacheDomain", key.domain());
+            json.addProperty("reportedRequests", value.reported);
+            json.addProperty("unknownRequests", value.unknown);
+            json.addProperty("unsupportedRequests", value.unsupported);
+            if (value.hasRead) json.addProperty("cacheReadInputTokens", value.read);
+            if (value.hasWrite) json.addProperty("cacheWriteInputTokens", value.write);
+            if (value.hasUncached) json.addProperty("uncachedInputTokens", value.uncached);
+            if (value.hasTotal) json.addProperty("totalInputTokens", value.total);
+            if (value.comparableTotal > 0L) {
+                json.addProperty("hitRatio", (double) value.comparableRead / value.comparableTotal);
+                json.addProperty("hitRatioSamples", value.reported);
+            }
+            if (value.reported > 0L && value.pricingComplete && value.pricedSamples == value.reported) {
+                json.addProperty("cacheAwareInputCostUnits", value.pricedInput);
+            }
+            JsonArray reasons = new JsonArray();
+            value.reasons.entrySet().stream().sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                    .limit(3).forEach(reason -> {
+                        JsonObject item = new JsonObject();
+                        item.addProperty("reason", reason.getKey());
+                        item.addProperty("count", reason.getValue());
+                        reasons.add(item);
+                    });
+            json.add("reasons", reasons);
+            return json;
+        }
+
+        private void prune(long now) {
+            long cutoff = now - WINDOW_MILLIS;
+            while (!samples.isEmpty() && samples.peekFirst().time() < cutoff) samples.removeFirst();
+        }
+
+        private static String bounded(String value, int limit) {
+            String clean = value == null ? "" : value.trim();
+            return clean.length() <= limit ? clean : clean.substring(0, limit);
+        }
+
+        private static long saturatedAdd(long left, long right) {
+            return right > 0L && left > Long.MAX_VALUE - right ? Long.MAX_VALUE : left + right;
         }
     }
 
@@ -264,6 +424,7 @@ public class ProviderManager {
         this.costRates = Map.copyOf(rates);
         this.routingConfig = candidateRouting;
         this.capabilityPolicy = candidatePolicy;
+        this.cacheUsageMetrics.clear();
         SharedLlmRuntime.install(candidate);
         previous.close();
         LlmCoreMod.LOGGER.info("Loaded and published {} providers", providers.size());
@@ -281,6 +442,7 @@ public class ProviderManager {
         this.capabilityPolicy = LlmCapabilityPolicy.empty();
         this.statusCache.clear();
         this.runtimeMetrics.clear();
+        this.cacheUsageMetrics.clear();
         this.playerRoutes.clear();
         if (metricsHookInstalled) {
             vibe.liteming.llmcore.LlmRequestLogger.removeAttemptListener(metricsListener);
@@ -439,6 +601,7 @@ public class ProviderManager {
             providerArray.add(pJson);
         }
         result.add("providers", providerArray);
+        result.add("cacheUsage", cacheUsageMetrics.toJson(System.currentTimeMillis(), costRates));
         result.addProperty("count", providers.size());
         // routing payload (default + per-purpose chains) consumed by the Routing tab
         result.add("routing", com.google.gson.JsonParser.parseString(

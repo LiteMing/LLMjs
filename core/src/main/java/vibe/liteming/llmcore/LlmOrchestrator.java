@@ -29,7 +29,6 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 public final class LlmOrchestrator implements AutoCloseable {
@@ -243,8 +242,7 @@ public final class LlmOrchestrator implements AutoCloseable {
                 LlmTarget target = LlmTarget.parse(resolvedProvider);
                 resolvedProvider = target.provider();
                 selectedModel = target.model();
-            }
-            catch (IllegalArgumentException ignored) { }
+            } catch (IllegalArgumentException ignored) { }
         }
         ProviderSpec provider = getProviderSpec(resolvedProvider);
         if (provider != null && !selectedModel.isBlank()) provider = provider.forModel(selectedModel);
@@ -504,8 +502,8 @@ public final class LlmOrchestrator implements AutoCloseable {
                             Math.max(parameters.outputReserveTokens(), adaptiveOutputCeiling(request, selected)),
                             parameters.contextWindowTokens());
                 }
-                LlmRequestAccounting.AttemptEstimate estimate = attemptEstimate(
-                        request, selected, parameters, costRate(selected));
+                LlmRequestAccounting.AttemptEstimate estimate = attemptEstimate(request, selected,
+                        parameters, costRate(selected));
                 calls = saturatedAdd(calls, attempts);
                 tokens = saturatedAdd(tokens, saturatedMultiply(estimate.totalTokens(), attempts));
             }
@@ -522,7 +520,7 @@ public final class LlmOrchestrator implements AutoCloseable {
         purposes.add(null);
         LlmRequest configuredRequest = new LlmRequest(template.messages(), List.of(), null, null, 0,
                 template.context(), LlmRouteOptions.empty(), template.billingContext(),
-                template.adaptiveOutputSeedTokens());
+                template.typedEntries(), template.wireDiagnostics(), template.adaptiveOutputSeedTokens());
         for (String purpose : purposes) {
             LlmRoute route = routingConfig.resolveRoute(purpose, enabledTargetIds());
             LlmRouteOptions options = routingConfig.resolveOptions(purpose);
@@ -634,55 +632,78 @@ public final class LlmOrchestrator implements AutoCloseable {
     }
 
     private static LlmRequestAccounting.AttemptUsage attemptUsage(
-            LlmRequestAccounting.Reservation reservation, LlmCostRate rate,
+            LlmRequestAccounting.Reservation reservation, ProviderSpec provider,
+            ProviderSpec.Credential credential, LlmCostRate rate,
             int promptTokens, int completionTokens, LlmCacheUsage cacheUsage) {
+        String cacheDomain = cacheDomainIdentity(provider.name(), provider.model(), credential.id());
         if (promptTokens > 0 || completionTokens > 0) {
-            Long cacheWeighted = rate.weightedTokens(cacheUsage, promptTokens, completionTokens);
+            Long cacheCost = rate.weightedTokens(cacheUsage, completionTokens);
             return new LlmRequestAccounting.AttemptUsage(promptTokens, completionTokens, 0L,
-                    cacheWeighted == null ? rate.weightedTokens(promptTokens, completionTokens) : cacheWeighted);
+                    cacheCost == null ? rate.weightedTokens(promptTokens, completionTokens) : cacheCost,
+                    provider.name(), provider.model(), credential.id(), cacheDomain, cacheUsage);
         }
         return new LlmRequestAccounting.AttemptUsage(0L, 0L, reservation.reservedTokens(),
-                reservation.reservedCostUnits());
+                reservation.reservedCostUnits(), provider.name(), provider.model(), credential.id(), cacheDomain,
+                cacheUsage);
     }
 
     private static void finishAccounting(LlmRequest request,
-            LlmRequestAccounting.Reservation reservation, boolean success,
-            LlmCostRate rate, int promptTokens, int completionTokens, LlmCacheUsage cacheUsage) {
-        if (!success) {
+            LlmRequestAccounting.Reservation reservation, boolean charge,
+            ProviderSpec provider, ProviderSpec.Credential credential, LlmCostRate rate,
+            int promptTokens, int completionTokens, LlmCacheUsage cacheUsage) {
+        if (!charge) {
             LlmRequestAccounting.release(request, reservation);
             return;
         }
         LlmRequestAccounting.settle(request, reservation,
-                attemptUsage(reservation, rate, promptTokens, completionTokens, cacheUsage));
+                attemptUsage(reservation, provider, credential, rate, promptTokens, completionTokens, cacheUsage));
+    }
+
+    static String cacheDomainIdentity(String provider, String model, String credentialId) {
+        try {
+            byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(
+                    ((provider == null ? "" : provider) + "\u0000"
+                            + (model == null ? "" : model) + "\u0000"
+                            + (credentialId == null ? "" : credentialId))
+                            .getBytes(StandardCharsets.UTF_8));
+            return java.util.HexFormat.of().formatHex(digest);
+        } catch (java.security.NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is unavailable", impossible);
+        }
     }
 
     record AttemptResult(SingleResult result, HostedWebSearchAdapters.Evidence evidence,
-            boolean emittedContent, long retryAfterMs) {
+            boolean emittedContent, long retryAfterMs, LlmWireDiagnostics wireDiagnostics) {
         static AttemptResult failure(String error) {
             return new AttemptResult(SingleResult.failure(error == null ? "Provider request failed" : error, 0, 0),
-                    HostedWebSearchAdapters.Evidence.none(), false, -1);
+                    HostedWebSearchAdapters.Evidence.none(), false, -1, null);
         }
     }
 
     CompletableFuture<AttemptResult> sendRouteAttempt(LlmRequest request, ProviderSpec provider,
             ProviderSpec.Credential credential, Consumer<String> onDelta,
+            Consumer<LlmCacheUsage> onUsage,
             HostedWebSearchAdapters.HostedWebSearchAdapter adapter, boolean racing) {
+        LlmRequest wireRequest = LlmProviderWire.prepareRequest(request);
         if (adapter != null) {
-            return mapCancellable(sendSearchSingle(request, provider, credential, adapter), value ->
-                    new AttemptResult(value.result, value.evidence, false, value.result.retryAfterMs));
+            return mapCancellable(sendSearchSingle(wireRequest, provider, credential, adapter), value ->
+                    new AttemptResult(value.result, value.evidence, false, value.result.retryAfterMs,
+                            wireRequest.wireDiagnostics()));
         }
         if (onDelta != null && "openai".equals(provider.format())) {
-            return mapCancellable(sendSingleStreaming(request, provider, credential, onDelta), value ->
+            return mapCancellable(sendSingleStreaming(wireRequest, provider, credential, onDelta, onUsage), value ->
                     new AttemptResult(new SingleResult(value.success, value.content, value.error, value.httpStatus,
                             value.promptTokens, value.completionTokens, value.latencyMs, value.requestBody,
                             value.responseBody, value.finishReason, value.policyRejected, value.denyCode,
                             value.retryAfterMs, value.cacheUsage),
-                            HostedWebSearchAdapters.Evidence.none(), value.emittedContent, value.retryAfterMs));
+                            HostedWebSearchAdapters.Evidence.none(), value.emittedContent, value.retryAfterMs,
+                            wireRequest.wireDiagnostics()));
         }
-        return mapCancellable(sendSingle(request, provider, credential, racing), value -> {
+        return mapCancellable(sendSingle(wireRequest, provider, credential, racing), value -> {
             if (onDelta != null && value.success && !value.content.isBlank()
                     && !"length".equals(value.finishReason)) onDelta.accept(value.content);
-            return new AttemptResult(value, HostedWebSearchAdapters.Evidence.none(), false, value.retryAfterMs);
+            return new AttemptResult(value, HostedWebSearchAdapters.Evidence.none(), false, value.retryAfterMs,
+                    wireRequest.wireDiagnostics());
         });
     }
 
@@ -695,6 +716,10 @@ public final class LlmOrchestrator implements AutoCloseable {
                     || current instanceof java.net.http.HttpTimeoutException;
         }
         return uncertain;
+    }
+
+    private static boolean hasReportedUsage(LlmCacheUsage usage) {
+        return usage != null && usage.status() == LlmCacheUsage.Status.REPORTED;
     }
 
     private static void closeStream(InputStream stream) {
@@ -720,7 +745,7 @@ public final class LlmOrchestrator implements AutoCloseable {
             ProviderSpec.Credential credential, boolean racing) {
         String format = provider.format();
         String url = resolveUrl(provider, credential.key());
-        LlmResolvedParameters parameters = resolveParameters(request, new LlmTarget(provider.name(), provider.model()).id());
+        LlmResolvedParameters parameters = resolveParameters(request, provider.name());
         JsonObject body = buildBody(format, provider, request, parameters);
         if (racing && !"gemini".equals(format)) body.addProperty("stream", false);
         String requestBody = GSON.toJson(body);
@@ -755,8 +780,9 @@ public final class LlmOrchestrator implements AutoCloseable {
             if (throwable != null && transport != null) transport.cancel(true);
             finishAccounting(request, reservation,
                     throwable == null && result != null && result.success
+                            || result != null && hasReportedUsage(result.cacheUsage)
                             || transport != null && uncertainUsage(throwable),
-                    rate,
+                    provider, credential, rate,
                     result == null ? 0 : result.promptTokens, result == null ? 0 : result.completionTokens,
                     result == null ? LlmCacheUsage.unknown("request did not complete") : result.cacheUsage);
             settled.complete(throwable == null ? result : SingleResult.failure(rootMessage(throwable), 0,
@@ -770,7 +796,7 @@ public final class LlmOrchestrator implements AutoCloseable {
             ProviderSpec.Credential credential, HostedWebSearchAdapters.HostedWebSearchAdapter adapter) {
         String format = provider.format();
         String url = resolveUrl(provider, credential.key());
-        LlmResolvedParameters parameters = resolveParameters(request, new LlmTarget(provider.name(), provider.model()).id());
+        LlmResolvedParameters parameters = resolveParameters(request, provider.name());
         JsonObject body = buildBody(format, provider, request, parameters);
         adapter.apply(body);
         if (!"gemini".equals(format)) body.addProperty("stream", false);
@@ -817,8 +843,9 @@ public final class LlmOrchestrator implements AutoCloseable {
             if (throwable != null && transport != null) transport.cancel(true);
             finishAccounting(request, reservation,
                     throwable == null && result != null && result.result.success
+                            || result != null && hasReportedUsage(result.result.cacheUsage)
                             || transport != null && uncertainUsage(throwable),
-                    rate,
+                    provider, credential, rate,
                     result == null ? 0 : result.result.promptTokens, result == null ? 0 : result.result.completionTokens,
                     result == null ? LlmCacheUsage.unknown("request did not complete") : result.result.cacheUsage);
             settled.complete(throwable == null ? result : SearchSingleResult.failure(rootMessage(throwable),
@@ -829,8 +856,8 @@ public final class LlmOrchestrator implements AutoCloseable {
     }
 
     private CompletableFuture<StreamResult> sendSingleStreaming(LlmRequest request, ProviderSpec provider,
-            ProviderSpec.Credential credential, Consumer<String> onDelta) {
-        LlmResolvedParameters parameters = resolveParameters(request, new LlmTarget(provider.name(), provider.model()).id());
+            ProviderSpec.Credential credential, Consumer<String> onDelta, Consumer<LlmCacheUsage> onUsage) {
+        LlmResolvedParameters parameters = resolveParameters(request, provider.name());
         JsonObject body = buildOpenAiBody(provider.model(), request.messages(),
                 parameters.temperature(), parameters.maxOutputTokens(), false);
         body.addProperty("stream", true);
@@ -854,7 +881,7 @@ public final class LlmOrchestrator implements AutoCloseable {
         AtomicInteger promptTokens = new AtomicInteger();
         AtomicInteger completionTokens = new AtomicInteger();
         AtomicReference<LlmCacheUsage> cacheUsage = new AtomicReference<>(
-                LlmCacheUsage.unknown("stream did not report cache usage"));
+                LlmCacheUsage.unknown("stream did not report usage"));
         java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean();
         CompletableFuture<HttpResponse<InputStream>> http = null;
         try {
@@ -904,9 +931,9 @@ public final class LlmOrchestrator implements AutoCloseable {
                         if (usage.has("completion_tokens") && !usage.get("completion_tokens").isJsonNull()) {
                             completionTokens.accumulateAndGet(usage.get("completion_tokens").getAsInt(), Math::max);
                         }
-                        LlmCacheUsage parsedCache = parseCacheUsage("openai", usage,
-                                promptTokens.get());
-                        if (parsedCache.status() == LlmCacheUsage.Status.REPORTED) cacheUsage.set(parsedCache);
+                        LlmCacheUsage parsedCacheUsage = parseCacheUsage("openai", usage);
+                        cacheUsage.set(parsedCacheUsage);
+                        if (onUsage != null) onUsage.accept(parsedCacheUsage);
                     }
                     JsonArray choices = chunk.getAsJsonArray("choices");
                     if (choices == null || choices.isEmpty()) continue;
@@ -937,15 +964,17 @@ public final class LlmOrchestrator implements AutoCloseable {
                         reasoning.toString(), chunkCount, finishReason);
                 return accumulated.isEmpty()
                         ? StreamResult.failure("LLM stream produced no content", -1, latency, emitted, requestBody,
-                                responseBody, finishReason).withUsage(promptTokens.get(), completionTokens.get(), cacheUsage.get())
+                                responseBody, finishReason).withUsage(promptTokens.get(), completionTokens.get(),
+                                        cacheUsage.get())
                         : StreamResult.success(accumulated.toString(), promptTokens.get(), completionTokens.get(),
-                                latency, requestBody, responseBody, finishReason);
+                                latency, requestBody, responseBody, finishReason, cacheUsage.get());
             } catch (Exception e) {
                 String responseBody = buildStreamLogBody(provider.model(), accumulated.toString(),
                         reasoning.toString(), chunkCount, finishReason.isBlank() ? "error" : finishReason);
                 return StreamResult.failure(rootMessage(e), e instanceof java.io.IOException ? 0 : -1,
                         System.currentTimeMillis() - startedAt, emitted,
-                        requestBody, responseBody, "error").withUsage(promptTokens.get(), completionTokens.get(), cacheUsage.get());
+                        requestBody, responseBody, "error").withUsage(promptTokens.get(), completionTokens.get(),
+                                cacheUsage.get());
             }
             });
         } catch (RuntimeException failure) {
@@ -962,10 +991,11 @@ public final class LlmOrchestrator implements AutoCloseable {
             if (throwable != null && transport != null) transport.cancel(true);
             finishAccounting(request, reservation,
                     promptTokens.get() > 0 || completionTokens.get() > 0
+                            || hasReportedUsage(cacheUsage.get())
                             || throwable == null && result != null && (result.success || result.emittedContent
                                     || "length".equals(result.finishReason))
                             || transport != null && uncertainUsage(throwable),
-                    rate,
+                    provider, credential, rate,
                     promptTokens.get(), completionTokens.get(), cacheUsage.get());
             settled.complete(throwable == null ? result : StreamResult.failure(rootMessage(throwable), 0,
                         System.currentTimeMillis() - startedAt, false, requestBody, "")
@@ -998,7 +1028,7 @@ public final class LlmOrchestrator implements AutoCloseable {
         return GSON.toJson(body);
     }
 
-    private static JsonObject buildBody(String format, ProviderSpec provider, LlmRequest request,
+    static JsonObject buildBody(String format, ProviderSpec provider, LlmRequest request,
             LlmResolvedParameters parameters) {
         Double temperature = parameters.temperature();
         Integer maxTokens = parameters.maxOutputTokens();
@@ -1057,14 +1087,14 @@ public final class LlmOrchestrator implements AutoCloseable {
         body.addProperty("model", model);
         body.addProperty("max_tokens", maxTokens == null ? 512 : maxTokens);
         if (temperature != null) body.addProperty("temperature", temperature);
-        StringBuilder system = new StringBuilder();
         JsonArray array = new JsonArray();
-        for (LlmMessage message : messages) {
-            if ("system".equals(message.role())) {
-                if (!system.isEmpty()) system.append('\n');
-                system.append(message.content());
-                continue;
-            }
+        int start = 0;
+        if (!messages.isEmpty() && "system".equals(messages.get(0).role()) && !messages.get(0).hasImage()) {
+            body.addProperty("system", messages.get(0).content());
+            start = 1;
+        }
+        for (int index = start; index < messages.size(); index++) {
+            LlmMessage message = messages.get(index);
             JsonObject item = new JsonObject();
             item.addProperty("role", "assistant".equals(message.role()) ? "assistant" : "user");
             JsonArray content = new JsonArray();
@@ -1079,14 +1109,14 @@ public final class LlmOrchestrator implements AutoCloseable {
                     contentPart.add("source", source);
                 } else {
                     contentPart.addProperty("type", "text");
-                    contentPart.addProperty("text", part.asText());
+                    contentPart.addProperty("text", "system".equals(message.role())
+                            ? "[System]\n" + part.asText() : part.asText());
                 }
                 content.add(contentPart);
             }
             item.add("content", content);
             array.add(item);
         }
-        if (!system.isEmpty()) body.addProperty("system", system.toString());
         body.add("messages", array);
         return body;
     }
@@ -1094,7 +1124,19 @@ public final class LlmOrchestrator implements AutoCloseable {
     private static JsonObject buildGeminiBody(List<LlmMessage> messages, Double temperature, Integer maxTokens) {
         JsonObject body = new JsonObject();
         JsonArray contents = new JsonArray();
-        for (LlmMessage message : messages) {
+        int start = 0;
+        if (!messages.isEmpty() && "system".equals(messages.get(0).role()) && !messages.get(0).hasImage()) {
+            JsonObject instruction = new JsonObject();
+            JsonArray instructionParts = new JsonArray();
+            JsonObject text = new JsonObject();
+            text.addProperty("text", messages.get(0).content());
+            instructionParts.add(text);
+            instruction.add("parts", instructionParts);
+            body.add("systemInstruction", instruction);
+            start = 1;
+        }
+        for (int index = start; index < messages.size(); index++) {
+            LlmMessage message = messages.get(index);
             JsonObject item = new JsonObject();
             item.addProperty("role", "assistant".equals(message.role()) ? "model" : "user");
             JsonArray parts = new JsonArray();
@@ -1133,13 +1175,14 @@ public final class LlmOrchestrator implements AutoCloseable {
             String finishReason;
             int promptTokens = 0;
             int completionTokens = 0;
+            JsonObject usage = null;
             if ("gemini".equals(format)) {
                 JsonObject candidate = root.getAsJsonArray("candidates").get(0).getAsJsonObject();
                 content = concatenateTextParts(candidate.getAsJsonObject("content").getAsJsonArray("parts"));
                 finishReason = candidate.has("finishReason")
                         ? normalizeFinishReason(candidate.get("finishReason").getAsString()) : "";
                 if (root.has("usageMetadata")) {
-                    JsonObject usage = root.getAsJsonObject("usageMetadata");
+                    usage = root.getAsJsonObject("usageMetadata");
                     promptTokens = getInt(usage, "promptTokenCount");
                     completionTokens = getInt(usage, "candidatesTokenCount");
                 }
@@ -1148,7 +1191,7 @@ public final class LlmOrchestrator implements AutoCloseable {
                 finishReason = root.has("stop_reason")
                         ? normalizeFinishReason(root.get("stop_reason").getAsString()) : "";
                 if (root.has("usage")) {
-                    JsonObject usage = root.getAsJsonObject("usage");
+                    usage = root.getAsJsonObject("usage");
                     promptTokens = getInt(usage, "input_tokens");
                     completionTokens = getInt(usage, "output_tokens");
                 }
@@ -1158,16 +1201,13 @@ public final class LlmOrchestrator implements AutoCloseable {
                 finishReason = choice.has("finish_reason")
                         ? normalizeFinishReason(choice.get("finish_reason").getAsString()) : "";
                 if (root.has("usage")) {
-                    JsonObject usage = root.getAsJsonObject("usage");
+                    usage = root.getAsJsonObject("usage");
                     promptTokens = getInt(usage, "prompt_tokens");
                     completionTokens = getInt(usage, "completion_tokens");
                 }
             }
-            JsonObject usage = "gemini".equals(format)
-                    ? root.has("usageMetadata") ? root.getAsJsonObject("usageMetadata") : null
-                    : root.has("usage") ? root.getAsJsonObject("usage") : null;
             return SingleResult.success(content, promptTokens, completionTokens, latencyMs, requestBody, body,
-                    finishReason, parseCacheUsage(format, usage, promptTokens));
+                    finishReason, parseCacheUsage(format, usage));
         } catch (Exception e) {
             return SingleResult.failure("Invalid provider response: " + rootMessage(e), -1, latencyMs, requestBody, body);
         }
@@ -1261,45 +1301,84 @@ public final class LlmOrchestrator implements AutoCloseable {
         return object.has(key) ? object.get(key).getAsInt() : 0;
     }
 
-    static LlmCacheUsage parseCacheUsage(String format, JsonObject usage, int promptTokens) {
+    static LlmCacheUsage parseCacheUsage(String format, JsonObject usage) {
+        String normalized = format == null ? "" : format.trim().toLowerCase(java.util.Locale.ROOT);
+        if (!Set.of("openai", "claude", "anthropic", "gemini").contains(normalized)) {
+            return LlmCacheUsage.unsupported("adapter '" + normalized + "' does not define cache usage fields");
+        }
         if (usage == null) return LlmCacheUsage.unknown("provider response did not include usage");
-        String normalized = format == null ? "" : format.toLowerCase(java.util.Locale.ROOT);
-        if ("claude".equals(normalized) || "anthropic".equals(normalized)) {
-            Long read = getLongOrNull(usage, "cache_read_input_tokens");
-            Long write = getLongOrNull(usage, "cache_creation_input_tokens");
-            if (read == null && write == null) return LlmCacheUsage.unknown("Anthropic cache fields were absent");
-            long uncached = Math.max(0L, getInt(usage, "input_tokens"));
-            long total = uncached + (read == null ? 0L : read) + (write == null ? 0L : write);
-            return LlmCacheUsage.reported(read == null ? 0L : read, write == null ? 0L : write,
-                    uncached, total);
-        }
-        if ("gemini".equals(normalized)) {
-            Long read = getLongOrNull(usage, "cachedContentTokenCount");
-            if (read == null) return LlmCacheUsage.unknown("Gemini cachedContentTokenCount was absent");
-            long total = Math.max(promptTokens, getInt(usage, "promptTokenCount"));
-            return LlmCacheUsage.reported(read, null, Math.max(0L, total - read), total);
-        }
-        Long hit = getLongOrNull(usage, "prompt_cache_hit_tokens");
-        Long miss = getLongOrNull(usage, "prompt_cache_miss_tokens");
-        if (hit != null || miss != null) {
-            long read = hit == null ? 0L : hit;
-            long uncached = miss == null ? Math.max(0L, promptTokens - read) : miss;
-            return LlmCacheUsage.reported(read, null, uncached, Math.max(promptTokens, read + uncached));
-        }
-        if (usage.has("prompt_tokens_details") && usage.get("prompt_tokens_details").isJsonObject()) {
-            Long read = getLongOrNull(usage.getAsJsonObject("prompt_tokens_details"), "cached_tokens");
-            if (read != null) {
-                long total = Math.max(0L, promptTokens);
-                return LlmCacheUsage.reported(read, null, Math.max(0L, total - read), total);
+        try {
+            if ("claude".equals(normalized) || "anthropic".equals(normalized)) {
+                Long read = optionalNonNegativeLong(usage, "cache_read_input_tokens");
+                Long write = optionalNonNegativeLong(usage, "cache_creation_input_tokens");
+                Long uncached = optionalNonNegativeLong(usage, "input_tokens");
+                if (read == null && write == null) {
+                    return LlmCacheUsage.unknown("Anthropic cache fields were absent");
+                }
+                Long total = allKnownSum(read, write, uncached);
+                return LlmCacheUsage.reported(read, write, uncached, total);
             }
+            if ("gemini".equals(normalized)) {
+                Long read = optionalNonNegativeLong(usage, "cachedContentTokenCount");
+                Long total = optionalNonNegativeLong(usage, "promptTokenCount");
+                if (read == null) return LlmCacheUsage.unknown("Gemini cachedContentTokenCount was absent");
+                Long uncached = total == null || read > total ? null : total - read;
+                return LlmCacheUsage.reported(read, null, uncached, total);
+            }
+            Long hit = optionalNonNegativeLong(usage, "prompt_cache_hit_tokens");
+            Long miss = optionalNonNegativeLong(usage, "prompt_cache_miss_tokens");
+            Long total = optionalNonNegativeLong(usage, "prompt_tokens");
+            if (hit != null || miss != null) {
+                Long comparableTotal = total != null ? total : allKnownSum(hit, miss);
+                return LlmCacheUsage.reported(hit, null, miss, comparableTotal);
+            }
+            if (usage.has("prompt_tokens_details") && usage.get("prompt_tokens_details").isJsonObject()) {
+                Long read = optionalNonNegativeLong(usage.getAsJsonObject("prompt_tokens_details"), "cached_tokens");
+                if (read != null) {
+                    Long uncached = total == null || read > total ? null : total - read;
+                    return LlmCacheUsage.reported(read, null, uncached, total);
+                }
+            }
+            return LlmCacheUsage.unknown("OpenAI-compatible cache fields were absent");
+        } catch (IllegalArgumentException malformed) {
+            return LlmCacheUsage.unknown("invalid cache usage: " + malformed.getMessage());
         }
-        return LlmCacheUsage.unknown("OpenAI-compatible cache fields were absent");
     }
 
-    private static Long getLongOrNull(JsonObject object, String key) {
+    /** Compatibility overload for consumers that already have total prompt tokens. */
+    static LlmCacheUsage parseCacheUsage(String format, JsonObject usage, int totalInputTokens) {
+        LlmCacheUsage parsed = parseCacheUsage(format, usage);
+        if (parsed.status() != LlmCacheUsage.Status.REPORTED || parsed.totalInputTokens() != null
+                || totalInputTokens < 0) return parsed;
+        Long read = parsed.cacheReadInputTokens();
+        Long write = parsed.cacheWriteInputTokens();
+        Long uncached = parsed.uncachedInputTokens();
+        Long total = (long) totalInputTokens;
+        if (uncached == null && read != null && write == null && read <= total) uncached = total - read;
+        return LlmCacheUsage.reported(read, write, uncached, total,
+                parsed.reason().isBlank() ? "provider reported cache usage" : parsed.reason());
+    }
+
+    private static Long optionalNonNegativeLong(JsonObject object, String key) {
         if (object == null || !object.has(key) || object.get(key).isJsonNull()) return null;
-        try { return Math.max(0L, object.get(key).getAsLong()); }
-        catch (RuntimeException ignored) { return null; }
+        JsonElement value = object.get(key);
+        if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
+            throw new IllegalArgumentException(key + " is not a number");
+        }
+        long parsed;
+        try { parsed = value.getAsLong(); }
+        catch (RuntimeException invalid) { throw new IllegalArgumentException(key + " is not an integer"); }
+        if (parsed < 0L) throw new IllegalArgumentException(key + " is negative");
+        return parsed;
+    }
+
+    private static Long allKnownSum(Long... values) {
+        long total = 0L;
+        for (Long value : values) {
+            if (value == null) return null;
+            total = saturatedAdd(total, value);
+        }
+        return total;
     }
 
     private static String rootMessage(Throwable throwable) {
@@ -1387,15 +1466,12 @@ public final class LlmOrchestrator implements AutoCloseable {
             }
         }
 
-        private record OutputBudgetKey(String purpose, String model) { }
-
         private void pruneLatencies(java.util.ArrayDeque<LatencySample> samples, long nowMs) {
             long cutoff = nowMs - HEALTH_WINDOW_MS;
-            while (!samples.isEmpty() && samples.peekFirst().timeMs() < cutoff) {
-                samples.removeFirst();
-            }
+            while (!samples.isEmpty() && samples.peekFirst().timeMs() < cutoff) samples.removeFirst();
         }
 
+        private record OutputBudgetKey(String purpose, String model) { }
         private record LatencySample(long timeMs, long latencyMs) { }
 
     }
@@ -1435,13 +1511,13 @@ public final class LlmOrchestrator implements AutoCloseable {
                 String responseBody) {
             return new SingleResult(false, "", error, httpStatus, 0, 0, latencyMs, requestBody, responseBody,
                     "error", false, LlmRequestAccounting.DenyCode.NONE, -1,
-                    LlmCacheUsage.unknown("request failed before cache usage was reported"));
+                    LlmCacheUsage.unknown(httpStatus > 0 ? "provider request failed" : "request did not complete"));
         }
 
         private static SingleResult policyFailure(LlmRequestAccounting.DenyCode denyCode, String error) {
             return new SingleResult(false, "", "Billing denied: " + error,
                     0, 0, 0, 0L, "", "", "error", true, denyCode, -1,
-                    LlmCacheUsage.unknown("request was denied before provider access"));
+                    LlmCacheUsage.unknown("request was denied before transport"));
         }
     }
 
@@ -1476,11 +1552,11 @@ public final class LlmOrchestrator implements AutoCloseable {
                     cacheUsage);
         }
         private static StreamResult success(String content, int promptTokens, int completionTokens,
-                long latencyMs, String requestBody, String responseBody, String finishReason) {
+                long latencyMs, String requestBody, String responseBody, String finishReason,
+                LlmCacheUsage cacheUsage) {
             return new StreamResult(true, content, "", 200, promptTokens, completionTokens,
                     latencyMs, true, requestBody, responseBody,
-                    finishReason, false, LlmRequestAccounting.DenyCode.NONE, -1,
-                    LlmCacheUsage.unknown("stream did not report cache usage"));
+                    finishReason, false, LlmRequestAccounting.DenyCode.NONE, -1, cacheUsage);
         }
 
         private static StreamResult failure(String error, int status, long latencyMs, boolean emitted) {
@@ -1491,7 +1567,7 @@ public final class LlmOrchestrator implements AutoCloseable {
                 String requestBody, String responseBody) {
             return new StreamResult(false, "", error, status, 0, 0, latencyMs, emitted,
                     requestBody, responseBody, "error", false, LlmRequestAccounting.DenyCode.NONE, -1,
-                    LlmCacheUsage.unknown("request failed before cache usage was reported"));
+                    LlmCacheUsage.unknown(status > 0 ? "provider stream failed" : "stream did not complete"));
         }
 
         private static StreamResult failure(String error, int status, long latencyMs, boolean emitted,
@@ -1499,13 +1575,13 @@ public final class LlmOrchestrator implements AutoCloseable {
             return new StreamResult(false, "", error, status, 0, 0, latencyMs, emitted, requestBody, responseBody,
                     finishReason == null ? "error" : finishReason, false,
                     LlmRequestAccounting.DenyCode.NONE, -1,
-                    LlmCacheUsage.unknown("request failed before cache usage was reported"));
+                    LlmCacheUsage.unknown(status > 0 ? "provider stream failed" : "stream did not complete"));
         }
 
         private static StreamResult policyFailure(LlmRequestAccounting.DenyCode denyCode, String error) {
             return new StreamResult(false, "", "Billing denied: " + error, 0, 0, 0, 0L, false,
                     "", "", "error", true, denyCode, -1,
-                    LlmCacheUsage.unknown("request was denied before provider access"));
+                    LlmCacheUsage.unknown("request was denied before transport"));
         }
     }
 

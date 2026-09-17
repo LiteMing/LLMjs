@@ -15,11 +15,22 @@ public record LlmCacheUsage(
 
     public LlmCacheUsage {
         status = status == null ? Status.UNKNOWN : status;
-        cacheReadInputTokens = nonNegative(cacheReadInputTokens);
-        cacheWriteInputTokens = nonNegative(cacheWriteInputTokens);
-        uncachedInputTokens = nonNegative(uncachedInputTokens);
-        totalInputTokens = nonNegative(totalInputTokens);
+        requireNonNegative(cacheReadInputTokens, "cacheReadInputTokens");
+        requireNonNegative(cacheWriteInputTokens, "cacheWriteInputTokens");
+        requireNonNegative(uncachedInputTokens, "uncachedInputTokens");
+        requireNonNegative(totalInputTokens, "totalInputTokens");
         reason = reason == null ? "" : reason.trim();
+        if (status != Status.REPORTED) {
+            cacheReadInputTokens = null;
+            cacheWriteInputTokens = null;
+            uncachedInputTokens = null;
+            totalInputTokens = null;
+            if (reason.isEmpty()) reason = status == Status.UNSUPPORTED
+                    ? "cache usage is unsupported" : "cache usage is unknown";
+        } else if (cacheReadInputTokens == null && cacheWriteInputTokens == null
+                && uncachedInputTokens == null && totalInputTokens == null) {
+            throw new IllegalArgumentException("reported cache usage needs at least one reported dimension");
+        }
     }
 
     public static LlmCacheUsage unknown(String reason) {
@@ -31,16 +42,21 @@ public record LlmCacheUsage(
     }
 
     public static LlmCacheUsage reported(Long read, Long write, Long uncached, Long total) {
-        return new LlmCacheUsage(Status.REPORTED, read, write, uncached, total, "");
+        return reported(read, write, uncached, total, "provider reported cache usage");
     }
 
+    public static LlmCacheUsage reported(Long read, Long write, Long uncached, Long total, String reason) {
+        return new LlmCacheUsage(Status.REPORTED, read, write, uncached, total, reason);
+    }
+
+    /** Ratio exists only when provider-reported cache reads have a comparable positive total. */
     public Double hitRatio() {
         if (status != Status.REPORTED || cacheReadInputTokens == null || totalInputTokens == null
-                || totalInputTokens <= 0L) return null;
-        return Math.min(1.0D, (double) cacheReadInputTokens / totalInputTokens);
+                || totalInputTokens <= 0L || cacheReadInputTokens > totalInputTokens) return null;
+        return (double) cacheReadInputTokens / totalInputTokens;
     }
 
-    private static Long nonNegative(Long value) {
-        return value == null ? null : Math.max(0L, value);
+    private static void requireNonNegative(Long value, String field) {
+        if (value != null && value < 0L) throw new IllegalArgumentException(field + " must be non-negative");
     }
 }

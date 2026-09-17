@@ -80,8 +80,17 @@ class ConsoleTestExecutorTest {
         assertEquals(2, result.getAsJsonArray("attempts").size());
         assertEquals(0.4, result.getAsJsonObject("effective").get("temperature").getAsDouble());
         assertEquals(2, result.getAsJsonArray("finalMessages").size());
+        assertEquals("TURN_DYNAMIC", result.getAsJsonArray("finalMessages").get(0).getAsJsonObject()
+                .get("stability").getAsString());
         assertFalse(result.getAsJsonArray("budgetDecisions").get(1).getAsJsonObject()
                 .get("included").getAsBoolean());
+        assertEquals("TURN_DYNAMIC", result.getAsJsonArray("budgetDecisions").get(0).getAsJsonObject()
+                .get("stability").getAsString());
+        assertEquals("UNKNOWN", result.getAsJsonObject("cacheUsage").get("status").getAsString());
+        assertEquals(64, result.getAsJsonObject("wireDiagnostics")
+                .get("finalMessageShapeHash").getAsString().length());
+        assertTrue(result.getAsJsonArray("attempts").get(1).getAsJsonObject().has("cacheUsage"));
+        assertTrue(result.getAsJsonArray("attempts").get(1).getAsJsonObject().has("wireDiagnostics"));
         assertTrue(result.get("requestBody").getAsString().contains("required"));
         assertTrue(result.get("responseBody").getAsString().contains("reasoning_tokens"));
 

@@ -147,9 +147,9 @@ public final class ProviderConfigLoader {
                             "cacheWriteInputMultiplier"), "billing");
             double input = getDoubleOrDefault(billing, "inputMultiplier", 1.0D);
             double output = getDoubleOrDefault(billing, "outputMultiplier", input);
-            Double cacheRead = getDouble(billing, "cacheReadInputMultiplier");
-            Double cacheWrite = getDouble(billing, "cacheWriteInputMultiplier");
-            return new LlmCostRate(input, output, cacheRead, cacheWrite);
+            return new LlmCostRate(input, output,
+                    getOptionalDouble(billing, "cacheReadInputMultiplier"),
+                    getOptionalDouble(billing, "cacheWriteInputMultiplier"));
         } catch (RuntimeException error) {
             throw new IllegalArgumentException("Provider '" + provider + "' has invalid billing: "
                     + error.getMessage(), error);
@@ -305,6 +305,10 @@ public final class ProviderConfigLoader {
             throw new IllegalArgumentException("billing." + key + " must be a number");
         }
         return value.getAsDouble();
+    }
+
+    private static Double getOptionalDouble(JsonObject object, String key) {
+        return object.has(key) ? getDoubleOrDefault(object, key, 0.0D) : null;
     }
 
     private static Integer getInteger(JsonObject object, String key) {
