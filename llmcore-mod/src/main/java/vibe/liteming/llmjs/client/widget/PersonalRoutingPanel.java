@@ -27,10 +27,10 @@ import java.util.Map;
 import static vibe.liteming.llmjs.client.ConsoleTexts.string;
 import static vibe.liteming.llmjs.client.ConsoleTexts.text;
 
-/** Player-scoped ordering of server-enabled providers. */
+/** Player-scoped ordering of server-enabled provider/model targets. */
 @OnlyIn(Dist.CLIENT)
 public final class PersonalRoutingPanel extends AbstractWidget {
-    private record ProviderChoice(String name, String model, LlmCostRate rate) { }
+    private record ProviderChoice(String id, String provider, String model, LlmCostRate rate) { }
     private record PurposeChoice(String id, String displayName) { }
     private record HitBox(int x, int y, int width, int height) {
         boolean contains(double mouseX, double mouseY) {
@@ -77,14 +77,15 @@ public final class PersonalRoutingPanel extends AbstractWidget {
             if (!root.has("personalRouting") || !root.get("personalRouting").isJsonObject()) return;
             JsonObject snapshot = root.getAsJsonObject("personalRouting");
             providers.clear();
-            JsonArray providerArray = snapshot.getAsJsonArray("providers");
+            JsonArray providerArray = snapshot.getAsJsonArray("targets");
             if (providerArray != null) for (var element : providerArray) {
                 JsonObject provider = element.getAsJsonObject();
                 JsonObject billing = provider.has("billing") && provider.get("billing").isJsonObject()
                         ? provider.getAsJsonObject("billing") : new JsonObject();
                 double input = billing.has("inputMultiplier") ? billing.get("inputMultiplier").getAsDouble() : 1.0D;
                 double output = billing.has("outputMultiplier") ? billing.get("outputMultiplier").getAsDouble() : input;
-                providers.add(new ProviderChoice(provider.get("name").getAsString(),
+                providers.add(new ProviderChoice(provider.get("id").getAsString(),
+                        provider.get("provider").getAsString(),
                         provider.has("model") ? provider.get("model").getAsString() : "",
                         new LlmCostRate(input, output)));
             }
@@ -101,7 +102,7 @@ public final class PersonalRoutingPanel extends AbstractWidget {
                 for (var entry : snapshot.getAsJsonObject("personalRoutes").entrySet()) {
                     try {
                         JsonObject route = entry.getValue().getAsJsonObject();
-                        savedRoutes.put(entry.getKey(), LlmRoute.parse(route.get("route").getAsString()).providers());
+                        savedRoutes.put(entry.getKey(), LlmRoute.parse(route.get("route").getAsString()).targetIds());
                     } catch (RuntimeException ignored) { }
                 }
             }
@@ -180,14 +181,14 @@ public final class PersonalRoutingPanel extends AbstractWidget {
             HitBox box = providerBox(index, columns, slotWidth);
             if (box.y() + box.height() <= providerTop() || box.y() >= providerBottom()) continue;
             ProviderChoice provider = providers.get(index);
-            boolean active = draft.contains(provider.name());
+            boolean active = draft.contains(provider.id());
             int color = active ? 0xAA235A78 : box.contains(mouseX, mouseY) ? 0xAA444444 : 0xAA303030;
             graphics.fill(box.x(), box.y(), box.x() + box.width(), box.y() + box.height(), color);
-            String prefix = active ? (draft.indexOf(provider.name()) + 1) + ". " : "+ ";
-            graphics.drawCenteredString(font, ellipsize(prefix + provider.name(), box.width() - 6),
+            String prefix = active ? (draft.indexOf(provider.id()) + 1) + ". " : "+ ";
+            graphics.drawCenteredString(font, ellipsize(prefix + provider.provider() + "/" + provider.model(), box.width() - 6),
                     box.x() + box.width() / 2, box.y() + 5, active ? 0xFFFFFF : 0xCCCCCC);
             if (box.contains(mouseX, mouseY)) {
-                graphics.renderTooltip(font, text("preferences.provider.tip", provider.name(), provider.model(),
+                graphics.renderTooltip(font, text("preferences.provider.tip", provider.provider(), provider.model(),
                         provider.rate().inputMultiplier(), provider.rate().outputMultiplier()), mouseX, mouseY);
             }
         }
@@ -235,10 +236,10 @@ public final class PersonalRoutingPanel extends AbstractWidget {
             return true;
         }
         if (costButton().contains(mouseX, mouseY)) {
-            List<String> base = draft.isEmpty() ? providers.stream().map(ProviderChoice::name).toList() : List.copyOf(draft);
+            List<String> base = draft.isEmpty() ? providers.stream().map(ProviderChoice::id).toList() : List.copyOf(draft);
             draft.clear();
             draft.addAll(base.stream().sorted(Comparator.comparingDouble(name -> providers.stream()
-                    .filter(provider -> provider.name().equals(name)).findFirst()
+                    .filter(provider -> provider.id().equals(name)).findFirst()
                     .map(provider -> provider.rate().inputMultiplier() + provider.rate().outputMultiplier())
                     .orElse(Double.MAX_VALUE))).toList());
             dirty = true;
@@ -256,7 +257,7 @@ public final class PersonalRoutingPanel extends AbstractWidget {
         int slotWidth = Math.max(42, Math.min(PROVIDER_WIDTH, (usableWidth - (columns - 1) * 6) / columns));
         for (int index = 0; index < providers.size(); index++) {
             if (!providerBox(index, columns, slotWidth).contains(mouseX, mouseY)) continue;
-            String name = providers.get(index).name();
+            String name = providers.get(index).id();
             if (draft.contains(name)) draft.remove(name);
             else if (draft.size() < LlmRoute.MAX_STAGES) draft.add(name);
             dirty = true;

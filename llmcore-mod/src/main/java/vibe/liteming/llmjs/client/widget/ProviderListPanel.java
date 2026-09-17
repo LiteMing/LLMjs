@@ -1,10 +1,12 @@
 package vibe.liteming.llmjs.client.widget;
 
 import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import vibe.liteming.llmjs.client.screen.LLMConsoleScreen;
 import vibe.liteming.llmcore.LlmCostRate;
+import vibe.liteming.llmcore.ProviderSpec;
 import vibe.liteming.llmjs.network.LLMNetwork;
 import vibe.liteming.llmjs.network.packet.C2SDeleteProviderPacket;
 import vibe.liteming.llmjs.network.packet.C2SStatusRequestPacket;
@@ -24,8 +26,9 @@ import static vibe.liteming.llmjs.client.ConsoleTexts.text;
 
 @OnlyIn(Dist.CLIENT)
 public class ProviderListPanel extends AbstractWidget {
-    public record ProviderEntry(String name, String type, String format, String model, String url,
+    public record ProviderEntry(String name, String type, String format, String model, String allModels, String url,
                                  String maskedKey, String status, String statusKind, String lastSuccess,
+                                 String cacheSummary, ProviderSpec.RequestMode requestMode,
                                  boolean configured, LlmCostRate rate) {}
 
     private final List<ProviderEntry> providers = new ArrayList<>();
@@ -53,40 +56,66 @@ public class ProviderListPanel extends AbstractWidget {
                 String name = p.get("name").getAsString();
                 String type = p.has("type") ? p.get("type").getAsString() : "?";
                 String format = p.has("format") ? p.get("format").getAsString() : "-";
-                String model = p.has("model") ? p.get("model").getAsString() : "?";
+                String allModels = p.has("models") && p.get("models").isJsonArray()
+                        ? String.join(",", java.util.stream.StreamSupport.stream(
+                                p.getAsJsonArray("models").spliterator(), false).map(JsonElement::getAsString).toList())
+                        : p.has("model") ? p.get("model").getAsString() : "?";
                 String url = p.has("url") ? p.get("url").getAsString() : "";
                 String maskedKey = p.has("maskedKey") ? p.get("maskedKey").getAsString() : "***";
                 boolean configured = !p.has("configured") || p.get("configured").getAsBoolean();
-
-                String status;
-                String statusKind;
-                if (!configured) {
-                    status = string("providers.status.no_key");
-                    statusKind = "no_key";
-                } else if (p.has("status") && p.get("status").isJsonObject()
-                        && p.getAsJsonObject("status").has("requests1h")
-                        && p.getAsJsonObject("status").get("requests1h").getAsLong() > 0) {
-                    JsonObject st = p.getAsJsonObject("status");
-                    boolean connected = !st.has("lastRequestSuccessful")
-                            || st.get("lastRequestSuccessful").getAsBoolean();
-                    status = string("providers.status.rate",
-                            String.format(java.util.Locale.ROOT, "%.1f", st.get("successRate1h").getAsDouble() * 100.0),
-                            st.get("averageLatency1hMs").getAsLong(), st.get("requests1h").getAsLong());
-                    statusKind = connected ? "ok" : "error";
-                } else {
-                    status = string("providers.status.no_data");
-                    statusKind = "untested";
+                ProviderSpec.RequestMode mode = ProviderSpec.RequestMode.parse(
+                        p.has("requestMode") ? p.get("requestMode").getAsString() : "rotation");
+                JsonArray targets = p.has("targets") && p.get("targets").isJsonArray()
+                        ? p.getAsJsonArray("targets") : new JsonArray();
+                if (targets.isEmpty()) {
+                    JsonObject fallback = new JsonObject();
+                    fallback.addProperty("model", allModels);
+                    fallback.add("status", p.has("status") ? p.get("status") : new JsonObject());
+                    fallback.add("billing", p.has("billing") ? p.get("billing") : new JsonObject());
+                    targets.add(fallback);
                 }
-                String lastSuccess = p.has("status") && p.get("status").isJsonObject()
-                        && p.getAsJsonObject("status").has("lastSuccessTime")
-                        ? p.getAsJsonObject("status").get("lastSuccessTime").getAsString()
-                        : string("common.none");
-                JsonObject billing = p.has("billing") ? p.getAsJsonObject("billing") : new JsonObject();
-                LlmCostRate rate = billing.has("inputMultiplier") && billing.has("outputMultiplier")
-                        ? new LlmCostRate(billing.get("inputMultiplier").getAsDouble(),
-                                billing.get("outputMultiplier").getAsDouble()) : LlmCostRate.DEFAULT;
-                providers.add(new ProviderEntry(name, type, format, model, url, maskedKey,
-                        status, statusKind, lastSuccess, configured, rate));
+                for (JsonElement targetElement : targets) {
+                    JsonObject target = targetElement.getAsJsonObject();
+                    JsonObject targetStatus = target.has("status") && target.get("status").isJsonObject()
+                            ? target.getAsJsonObject("status") : new JsonObject();
+                    String status;
+                    String statusKind;
+                    if (!configured) {
+                        status = string("providers.status.no_key");
+                        statusKind = "no_key";
+                    } else if (targetStatus.has("requests1h") && targetStatus.get("requests1h").getAsLong() > 0) {
+                        boolean connected = !targetStatus.has("lastRequestSuccessful")
+                                || targetStatus.get("lastRequestSuccessful").getAsBoolean();
+                        status = string("providers.status.rate",
+                                String.format(java.util.Locale.ROOT, "%.1f", targetStatus.get("successRate1h").getAsDouble() * 100.0),
+                                targetStatus.get("averageLatency1hMs").getAsLong(), targetStatus.get("requests1h").getAsLong());
+                        statusKind = connected ? "ok" : "error";
+                    } else {
+                        status = string("providers.status.no_data");
+                        statusKind = "untested";
+                    }
+                    String lastSuccess = targetStatus.has("lastSuccessTime")
+                            ? targetStatus.get("lastSuccessTime").getAsString() : string("common.none");
+                    String cacheSummary = targetStatus.has("cacheHitRatio1h")
+                            ? string("providers.cache.reported",
+                                    String.format(java.util.Locale.ROOT, "%.1f", targetStatus.get("cacheHitRatio1h").getAsDouble() * 100.0),
+                                    targetStatus.get("cacheReadInputTokens1h").getAsLong(),
+                                    targetStatus.get("cacheWriteInputTokens1h").getAsLong(),
+                                    targetStatus.get("uncachedInputTokens1h").getAsLong(),
+                                    targetStatus.has("estimatedInputCostUnits1h")
+                                            ? targetStatus.get("estimatedInputCostUnits1h").getAsLong() : string("common.none"))
+                            : string("providers.cache.unknown");
+                    JsonObject billing = target.has("billing") ? target.getAsJsonObject("billing") : new JsonObject();
+                    LlmCostRate rate = billing.has("inputMultiplier") && billing.has("outputMultiplier")
+                            ? new LlmCostRate(billing.get("inputMultiplier").getAsDouble(),
+                                    billing.get("outputMultiplier").getAsDouble(),
+                                    billing.has("cacheReadInputMultiplier") ? billing.get("cacheReadInputMultiplier").getAsDouble() : null,
+                                    billing.has("cacheWriteInputMultiplier") ? billing.get("cacheWriteInputMultiplier").getAsDouble() : null)
+                            : LlmCostRate.DEFAULT;
+                    String model = target.has("model") ? target.get("model").getAsString() : allModels;
+                    providers.add(new ProviderEntry(name, type, format, model, allModels, url, maskedKey,
+                            status, statusKind, lastSuccess, cacheSummary, mode, configured, rate));
+                }
             }
         } catch (Exception ignored) {}
         updateScrollRange();
@@ -221,7 +250,7 @@ public class ProviderListPanel extends AbstractWidget {
                 graphics.renderTooltip(font, text("providers.row.tip", hovered.name, hovered.format,
                         hovered.model, font.plainSubstrByWidth(hovered.url, 300), hovered.maskedKey,
                         hovered.rate.inputMultiplier(), hovered.rate.outputMultiplier(), hovered.status,
-                        hovered.lastSuccess), mouseX, mouseY);
+                        hovered.lastSuccess, hovered.cacheSummary), mouseX, mouseY);
             }
         }
     }
@@ -250,7 +279,7 @@ public class ProviderListPanel extends AbstractWidget {
                 if ("raw".equals(p.type)) return true;
                 var screen = Minecraft.getInstance().screen;
                 if (screen instanceof LLMConsoleScreen console) {
-                    console.openSetupFor(p.name, p.format, p.url, p.model, p.maskedKey, p.rate);
+                    console.openSetupFor(p.name, p.format, p.url, p.allModels, p.maskedKey, p.rate, p.requestMode);
                     return true;
                 }
             }

@@ -15,6 +15,8 @@ import vibe.liteming.llmcore.LlmRequest;
 import vibe.liteming.llmcore.LlmRequestContext;
 import vibe.liteming.llmcore.LlmResolvedParameters;
 import vibe.liteming.llmcore.LlmRouteOptions;
+import vibe.liteming.llmcore.LlmRoute;
+import vibe.liteming.llmcore.LlmTarget;
 import vibe.liteming.llmcore.PriorityRoutingConfig;
 import vibe.liteming.llmcore.ProviderConfigLoader;
 import vibe.liteming.llmcore.ProviderCapabilities;
@@ -59,8 +61,9 @@ public class ProviderManager {
     private final Map<UUID, Map<String, vibe.liteming.llmcore.LlmRoute>> playerRoutes = new ConcurrentHashMap<>();
     private final Consumer<vibe.liteming.llmcore.LlmRequestLogger.AttemptEvent> metricsListener = event -> {
         if (event.provider() == null || event.provider().isBlank()) return;
-        RuntimeMetrics metrics = runtimeMetrics.computeIfAbsent(event.provider(), ignored -> new RuntimeMetrics());
-        metrics.record(System.currentTimeMillis(), event.latencyMs(), event.success(), event.error());
+        String targetId = LlmTarget.of(event.provider(), event.model()).id();
+        RuntimeMetrics metrics = runtimeMetrics.computeIfAbsent(targetId, ignored -> new RuntimeMetrics());
+        metrics.record(System.currentTimeMillis(), event.latencyMs(), event.success(), event.error(), event.cacheUsage());
     };
     private boolean metricsHookInstalled;
     private Path playerRoutingFile;
@@ -82,16 +85,19 @@ public class ProviderManager {
     static final class RuntimeMetrics {
         private static final long WINDOW_MILLIS = 60L * 60L * 1_000L;
         private static final int MAX_SAMPLES = 4_096;
-        private record Sample(long time, long latencyMs, boolean success) { }
+        private record Sample(long time, long latencyMs, boolean success,
+                vibe.liteming.llmcore.LlmCacheUsage cacheUsage) { }
         private final Deque<Sample> samples = new ArrayDeque<>();
         volatile long lastSuccessTime;
         volatile long lastRequestTime;
         volatile boolean lastRequestSuccessful;
         volatile String lastError = "";
 
-        synchronized void record(long now, long latencyMs, boolean success, String error) {
+        synchronized void record(long now, long latencyMs, boolean success, String error,
+                vibe.liteming.llmcore.LlmCacheUsage cacheUsage) {
             prune(now);
-            samples.addLast(new Sample(now, Math.max(0L, latencyMs), success));
+            samples.addLast(new Sample(now, Math.max(0L, latencyMs), success,
+                    cacheUsage == null ? vibe.liteming.llmcore.LlmCacheUsage.unknown("missing") : cacheUsage));
             while (samples.size() > MAX_SAMPLES) samples.removeFirst();
             lastRequestTime = now;
             lastRequestSuccessful = success;
@@ -100,22 +106,50 @@ public class ProviderManager {
         }
 
         synchronized JsonObject toJson(long now) {
+            return toJson(now, LlmCostRate.DEFAULT);
+        }
+
+        synchronized JsonObject toJson(long now, LlmCostRate rate) {
             prune(now);
             long count = samples.size();
             long ok = samples.stream().filter(Sample::success).count();
-            long totalLatencyMs = samples.stream().mapToLong(Sample::latencyMs).sum();
+            long totalLatencyMs = samples.stream().filter(Sample::success).mapToLong(Sample::latencyMs).sum();
             JsonObject json = new JsonObject();
             json.addProperty("requests1h", count);
             json.addProperty("successes1h", ok);
             json.addProperty("failures1h", Math.max(0L, count - ok));
             json.addProperty("successRate1h", count == 0 ? 0.0D : (double) ok / count);
-            json.addProperty("averageLatency1hMs", count == 0 ? 0L : totalLatencyMs / count);
+            json.addProperty("averageLatency1hMs", ok == 0 ? 0L : totalLatencyMs / ok);
             if (lastSuccessTime > 0) json.addProperty("lastSuccessTime", Instant.ofEpochMilli(lastSuccessTime).toString());
             if (lastRequestTime > 0) json.addProperty("lastRequestTime", Instant.ofEpochMilli(lastRequestTime).toString());
             if (lastRequestTime > 0) json.addProperty("lastRequestSuccessful", lastRequestSuccessful);
             if (!lastError.isBlank()) json.addProperty("lastError", lastError);
-            // There is no response cache in the current runtime; expose that fact instead of inventing a rate.
-            json.addProperty("cacheSupported", false);
+            long cacheReported = 0L, cacheRead = 0L, cacheWrite = 0L, uncached = 0L, cacheTotal = 0L;
+            long pricedSamples = 0L, estimatedCost = 0L;
+            for (Sample sample : samples) {
+                var usage = sample.cacheUsage();
+                if (usage.status() != vibe.liteming.llmcore.LlmCacheUsage.Status.REPORTED) continue;
+                cacheReported++;
+                cacheRead += usage.cacheReadInputTokens() == null ? 0L : usage.cacheReadInputTokens();
+                cacheWrite += usage.cacheWriteInputTokens() == null ? 0L : usage.cacheWriteInputTokens();
+                uncached += usage.uncachedInputTokens() == null ? 0L : usage.uncachedInputTokens();
+                cacheTotal += usage.totalInputTokens() == null ? 0L : usage.totalInputTokens();
+                Long cost = rate.weightedTokens(usage,
+                        usage.totalInputTokens() == null ? 0L : usage.totalInputTokens(), 0L);
+                if (cost != null) { pricedSamples++; estimatedCost += cost; }
+            }
+            json.addProperty("cacheReportedRequests1h", cacheReported);
+            json.addProperty("cacheUnknownRequests1h", Math.max(0L, count - cacheReported));
+            if (cacheReported > 0) {
+                json.addProperty("cacheReadInputTokens1h", cacheRead);
+                json.addProperty("cacheWriteInputTokens1h", cacheWrite);
+                json.addProperty("uncachedInputTokens1h", uncached);
+                if (cacheTotal > 0) json.addProperty("cacheHitRatio1h", (double) cacheRead / cacheTotal);
+            }
+            if (pricedSamples > 0) {
+                json.addProperty("cachePricedRequests1h", pricedSamples);
+                json.addProperty("estimatedInputCostUnits1h", estimatedCost);
+            }
             return json;
         }
 
@@ -153,7 +187,10 @@ public class ProviderManager {
         try {
             profiles = ProviderConfigLoader.loadProfiles(globalProviders, serverProviders, secretFile,
                     warning -> LlmCoreMod.LOGGER.warn("{}", warning));
-            profiles.forEach((name, profile) -> rates.put(name, profile.costRate()));
+            specs.forEach((name, spec) -> {
+                ProviderProfile profile = profiles.getOrDefault(name, ProviderProfile.textOnly(name));
+                spec.models().forEach(model -> rates.put(LlmTarget.of(name, model).id(), profile.costRateFor(model)));
+            });
             Path rawFile = configDir.resolve("providers_raw.json");
             if (java.nio.file.Files.isRegularFile(rawFile)) {
                 JsonObject raw = JsonParser.parseString(java.nio.file.Files.readString(rawFile)).getAsJsonObject();
@@ -171,7 +208,22 @@ public class ProviderManager {
         LlmOrchestrator candidate = new LlmOrchestrator(specs);
         candidate.replaceProviderProfiles(profiles);
         candidate.setGlobalDefaults(new LlmRouteOptions(null, null, LLMConfig.TIMEOUT.get(), null, null));
-        PriorityRoutingConfig candidateRouting = RoutingConfigStore.load(getRoutingFile());
+        PriorityRoutingConfig candidateRouting;
+        try {
+            RouteMigration routingMigration = migrateLegacyTargets(RoutingConfigStore.load(getRoutingFile()), specs);
+            candidateRouting = routingMigration.config();
+            if (routingMigration.changed()) {
+                backupBeforeTargetMigration(getRoutingFile());
+                if (!RoutingConfigStore.save(getRoutingFile(), candidateRouting)) {
+                    throw new IllegalStateException("failed to persist migrated routing.json");
+                }
+            }
+        } catch (Exception migrationFailure) {
+            LlmCoreMod.LOGGER.error("Provider/model route migration rejected; keeping the previous runtime: {}",
+                    migrationFailure.getMessage());
+            candidate.close();
+            return false;
+        }
         candidate.setRoutingConfig(candidateRouting);
         boolean preferencesChanged = false;
         for (var playerEntry : playerRoutes.entrySet()) {
@@ -179,14 +231,22 @@ public class ProviderManager {
             while (routeIterator.hasNext()) {
                 var routeEntry = routeIterator.next();
                 try {
-                    candidate.setPlayerRoutePreference(playerEntry.getKey(), routeEntry.getKey(), routeEntry.getValue());
+                    LlmRoute migrated = migrateLegacyTargets(routeEntry.getValue(), specs);
+                    if (!migrated.equals(routeEntry.getValue())) {
+                        routeEntry.setValue(migrated);
+                        preferencesChanged = true;
+                    }
+                    candidate.setPlayerRoutePreference(playerEntry.getKey(), routeEntry.getKey(), migrated);
                 } catch (IllegalArgumentException invalid) {
                     routeIterator.remove();
                     preferencesChanged = true;
                 }
             }
         }
-        if (preferencesChanged) savePlayerRoutes();
+        if (preferencesChanged) {
+            backupBeforeTargetMigration(playerRoutingFile);
+            savePlayerRoutes();
+        }
         LlmCapabilityPolicy candidatePolicy = CapabilityPolicyStore.load(getCapabilityPolicyFile(), error ->
                 LlmCoreMod.LOGGER.error("Invalid capability-policy.json; optional capabilities are disabled: {}",
                         error));
@@ -257,6 +317,7 @@ public class ProviderManager {
      * fails so the running server still picks up the change for the session.
      */
     public synchronized boolean updateRouting(PriorityRoutingConfig next) {
+        validateRoutingTargets(next);
         this.routingConfig = next == null ? PriorityRoutingConfig.empty() : next;
         this.orchestrator.setRoutingConfig(this.routingConfig);
         Path file = getRoutingFile();
@@ -271,6 +332,7 @@ public class ProviderManager {
     /** Apply and persist routing plus capability authorization as one validated UI snapshot. */
     public synchronized boolean updateRoutingAndCapabilities(PriorityRoutingConfig nextRouting,
             LlmCapabilityPolicy nextPolicy) {
+        validateRoutingTargets(nextRouting);
         this.routingConfig = nextRouting == null ? PriorityRoutingConfig.empty() : nextRouting;
         this.capabilityPolicy = nextPolicy == null ? LlmCapabilityPolicy.empty() : nextPolicy;
         this.orchestrator.setRoutingConfig(this.routingConfig);
@@ -285,6 +347,21 @@ public class ProviderManager {
         return routingSaved && policySaved;
     }
 
+    private void validateRoutingTargets(PriorityRoutingConfig config) {
+        PriorityRoutingConfig value = config == null ? PriorityRoutingConfig.empty() : config;
+        Set<String> enabled = new HashSet<>(orchestrator.getTargetIds());
+        List<LlmRoute> routes = new ArrayList<>();
+        routes.add(value.defaultRoute());
+        routes.addAll(value.purposeRoutes().values());
+        for (LlmRoute route : routes) for (LlmRoute.Stage stage : route.stages()) {
+            for (LlmRoute.Target target : stage.candidates()) {
+                if (!enabled.contains(target.id())) {
+                    throw new IllegalArgumentException("route target is not enabled: " + target.id());
+                }
+            }
+        }
+    }
+
     /** Convenience: full status object including providers + current routing. */
     public JsonObject getStatusJson() {
         JsonObject result = new JsonObject();
@@ -296,13 +373,28 @@ public class ProviderManager {
             String format = entry.getValue().getFormat();
             if (format != null) pJson.addProperty("format", format);
             pJson.addProperty("model", entry.getValue().getModel());
+            ProviderSpec coreSpec = orchestrator.getProviderSpec(entry.getKey());
+            if (coreSpec != null) {
+                JsonArray models = new JsonArray();
+                coreSpec.models().forEach(models::add);
+                pJson.add("models", models);
+                pJson.addProperty("requestMode", coreSpec.requestMode().configValue());
+                pJson.addProperty("keyCount", coreSpec.credentials().size());
+            }
             pJson.addProperty("url", entry.getValue().getUrl());
             pJson.addProperty("maskedKey", entry.getValue().getMaskedKey());
             pJson.addProperty("configured", entry.getValue().isConfigured());
             ProviderProfile profile = orchestrator.getProviderProfile(entry.getKey());
             JsonObject billing = new JsonObject();
-            billing.addProperty("inputMultiplier", costRates.getOrDefault(entry.getKey(), LlmCostRate.DEFAULT).inputMultiplier());
-            billing.addProperty("outputMultiplier", costRates.getOrDefault(entry.getKey(), LlmCostRate.DEFAULT).outputMultiplier());
+            LlmCostRate costRate = profile.costRate();
+            billing.addProperty("inputMultiplier", costRate.inputMultiplier());
+            billing.addProperty("outputMultiplier", costRate.outputMultiplier());
+            if (costRate.cacheReadInputMultiplier() != null) {
+                billing.addProperty("cacheReadInputMultiplier", costRate.cacheReadInputMultiplier());
+            }
+            if (costRate.cacheWriteInputMultiplier() != null) {
+                billing.addProperty("cacheWriteInputMultiplier", costRate.cacheWriteInputMultiplier());
+            }
             pJson.add("billing", billing);
             ProviderCapabilities capabilities = profile.capabilities();
             JsonObject capabilitiesJson = new JsonObject();
@@ -321,8 +413,23 @@ public class ProviderManager {
             capabilitiesJson.add("webSearch", webSearch);
             pJson.add("capabilities", capabilitiesJson);
             ConnectionStatus cached = statusCache.get(entry.getKey());
-            RuntimeMetrics metrics = runtimeMetrics.get(entry.getKey());
-            JsonObject status = metrics == null ? new JsonObject() : metrics.toJson(System.currentTimeMillis());
+            JsonArray targets = new JsonArray();
+            if (coreSpec != null) for (String model : coreSpec.models()) {
+                String targetId = LlmTarget.of(entry.getKey(), model).id();
+                LlmCostRate targetRate = costRates.getOrDefault(targetId, profile.costRateFor(model));
+                JsonObject target = new JsonObject();
+                target.addProperty("id", targetId);
+                target.addProperty("provider", entry.getKey());
+                target.addProperty("model", model);
+                target.add("billing", costRateJson(targetRate));
+                RuntimeMetrics metrics = runtimeMetrics.get(targetId);
+                target.add("status", metrics == null ? new JsonObject()
+                        : metrics.toJson(System.currentTimeMillis(), targetRate));
+                targets.add(target);
+            }
+            pJson.add("targets", targets);
+            JsonObject status = targets.size() == 0 ? new JsonObject()
+                    : targets.get(0).getAsJsonObject().getAsJsonObject("status").deepCopy();
             if (cached != null) {
                 status.addProperty("lastProbeConnected", cached.connected());
                 status.addProperty("lastProbeLatencyMs", cached.latencyMs());
@@ -342,7 +449,7 @@ public class ProviderManager {
         result.addProperty("capabilityPolicyFingerprint",
                 CapabilityPolicyStore.fingerprint(capabilityPolicy));
         JsonArray purposesArray = new JsonArray();
-        List<String> allCoreProviders = new ArrayList<>(orchestrator.getProviderNames());
+        List<String> allCoreProviders = orchestrator.getTargetIds();
         for (PurposeMeta meta : PurposeRegistry.snapshot()) {
             JsonObject pm = new JsonObject();
             pm.addProperty("id", meta.id());
@@ -374,7 +481,7 @@ public class ProviderManager {
             JsonObject item = new JsonObject();
             item.addProperty("id", meta.id());
             item.addProperty("displayName", meta.displayName());
-            List<String> chain = routingConfig.resolveChain(meta.id(), new ArrayList<>(orchestrator.getProviderNames()));
+            List<String> chain = routingConfig.resolveChain(meta.id(), orchestrator.getTargetIds());
             String effectiveProvider = chain.isEmpty() ? "" : chain.get(0);
             item.add("effective", effectiveParametersJson(
                     orchestrator.resolveParameters(meta.id(), effectiveProvider)));
@@ -389,20 +496,22 @@ public class ProviderManager {
     /** Safe snapshot for a normal player: route choices and pricing metadata only. */
     public synchronized JsonObject getPersonalRoutingStatusJson(UUID playerId) {
         JsonObject result = new JsonObject();
-        JsonArray providerArray = new JsonArray();
+        JsonArray targetArray = new JsonArray();
         for (Map.Entry<String, Provider> entry : providers.entrySet()) {
-            JsonObject provider = new JsonObject();
-            provider.addProperty("name", entry.getKey());
-            provider.addProperty("format", Objects.requireNonNullElse(entry.getValue().getFormat(), ""));
-            provider.addProperty("model", entry.getValue().getModel());
-            LlmCostRate rate = costRates.getOrDefault(entry.getKey(), LlmCostRate.DEFAULT);
-            JsonObject billing = new JsonObject();
-            billing.addProperty("inputMultiplier", rate.inputMultiplier());
-            billing.addProperty("outputMultiplier", rate.outputMultiplier());
-            provider.add("billing", billing);
-            providerArray.add(provider);
+            ProviderSpec spec = orchestrator.getProviderSpec(entry.getKey());
+            if (spec == null) continue;
+            for (String model : spec.models()) {
+                String targetId = LlmTarget.of(entry.getKey(), model).id();
+                JsonObject target = new JsonObject();
+                target.addProperty("id", targetId);
+                target.addProperty("provider", entry.getKey());
+                target.addProperty("model", model);
+                target.addProperty("format", Objects.requireNonNullElse(entry.getValue().getFormat(), ""));
+                target.add("billing", costRateJson(costRates.getOrDefault(targetId, LlmCostRate.DEFAULT)));
+                targetArray.add(target);
+            }
         }
-        result.add("providers", providerArray);
+        result.add("targets", targetArray);
         JsonObject routes = new JsonObject();
         Map<String, vibe.liteming.llmcore.LlmRoute> own = playerRoutes.getOrDefault(playerId, Map.of());
         for (Map.Entry<String, vibe.liteming.llmcore.LlmRoute> entry : own.entrySet()) {
@@ -480,11 +589,56 @@ public class ProviderManager {
         }
     }
 
+    private record RouteMigration(PriorityRoutingConfig config, boolean changed) { }
+
+    private static RouteMigration migrateLegacyTargets(PriorityRoutingConfig config,
+            Map<String, ProviderSpec> specs) {
+        PriorityRoutingConfig source = config == null ? PriorityRoutingConfig.empty() : config;
+        LlmRoute migratedDefault = migrateLegacyTargets(source.defaultRoute(), specs);
+        Map<String, LlmRoute> purposes = new LinkedHashMap<>();
+        source.purposeRoutes().forEach((purpose, route) ->
+                purposes.put(purpose, migrateLegacyTargets(route, specs)));
+        PriorityRoutingConfig migrated = new PriorityRoutingConfig(
+                migratedDefault, purposes, source.purposeOptions());
+        return new RouteMigration(migrated, !migrated.equals(source));
+    }
+
+    private static LlmRoute migrateLegacyTargets(LlmRoute route, Map<String, ProviderSpec> specs) {
+        if (route == null || route.isUnset()) return route == null ? LlmRoute.empty() : route;
+        List<LlmRoute.Stage> stages = new ArrayList<>();
+        for (LlmRoute.Stage stage : route.stages()) {
+            List<LlmRoute.Target> targets = new ArrayList<>();
+            for (LlmRoute.Target target : stage.candidates()) {
+                if (!target.model().isBlank()) {
+                    targets.add(target);
+                    continue;
+                }
+                ProviderSpec spec = specs.get(target.provider());
+                if (spec == null || spec.models().isEmpty()) {
+                    throw new IllegalArgumentException("legacy route provider is unavailable: " + target.provider());
+                }
+                targets.add(new LlmRoute.Target(target.provider(), spec.models().get(0), target.retries()));
+            }
+            stages.add(new LlmRoute.Stage(targets));
+        }
+        return new LlmRoute(stages, route.deadlineOverrideSeconds());
+    }
+
+    private static void backupBeforeTargetMigration(Path file) {
+        if (file == null || !java.nio.file.Files.isRegularFile(file)) return;
+        try {
+            Path backup = file.resolveSibling(file.getFileName() + ".pre-1.5.1-provider-routes.bak");
+            if (!java.nio.file.Files.exists(backup)) java.nio.file.Files.copy(file, backup);
+        } catch (Exception error) {
+            throw new IllegalStateException("failed to back up " + file.getFileName() + ": " + error.getMessage(), error);
+        }
+    }
+
     private boolean savePlayerRoutes() {
         if (playerRoutingFile == null) return false;
         try {
             JsonObject root = new JsonObject();
-            root.addProperty("schemaVersion", 1);
+            root.addProperty("schemaVersion", 2);
             JsonObject players = new JsonObject();
             playerRoutes.forEach((id, routes) -> {
                 JsonObject values = new JsonObject();
@@ -529,7 +683,22 @@ public class ProviderManager {
         return json;
     }
 
+    private static JsonObject costRateJson(LlmCostRate rate) {
+        LlmCostRate value = rate == null ? LlmCostRate.DEFAULT : rate;
+        JsonObject billing = new JsonObject();
+        billing.addProperty("inputMultiplier", value.inputMultiplier());
+        billing.addProperty("outputMultiplier", value.outputMultiplier());
+        if (value.cacheReadInputMultiplier() != null) {
+            billing.addProperty("cacheReadInputMultiplier", value.cacheReadInputMultiplier());
+        }
+        if (value.cacheWriteInputMultiplier() != null) {
+            billing.addProperty("cacheWriteInputMultiplier", value.cacheWriteInputMultiplier());
+        }
+        return billing;
+    }
+
     public @Nullable Provider getProvider(String name) { return providers.get(name); }
+    public @Nullable ProviderSpec getProviderSpec(String name) { return orchestrator.getProviderSpec(name); }
 
     public Provider getDefaultProvider() {
         String defaultName = LLMConfig.DEFAULT_PROVIDER.get();

@@ -148,4 +148,8 @@ public class ClientEventHandler {
             activeConsole.onVisionProbeResult(providerName, supported, error, latencyMs);
         }
     }
+
+    public static void onModelDiscovery(String requestId, List<String> models, String error) {
+        if (activeConsole != null) activeConsole.onModelDiscovery(requestId, models, error);
+    }
 }

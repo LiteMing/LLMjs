@@ -10,7 +10,15 @@ public record LlmRequest(
         int timeoutSeconds,
         LlmRequestContext context,
         LlmRouteOptions overrides,
-        LlmBillingContext billingContext) {
+        LlmBillingContext billingContext,
+        Integer adaptiveOutputSeedTokens) {
+
+    public LlmRequest(List<LlmMessage> messages, List<String> providerChain, Double temperature,
+            Integer maxTokens, int timeoutSeconds, LlmRequestContext context, LlmRouteOptions overrides,
+            LlmBillingContext billingContext) {
+        this(messages, providerChain, temperature, maxTokens, timeoutSeconds, context, overrides,
+                billingContext, null);
+    }
 
     /** Binary-compatible request shape used before explicit billing was introduced. */
     public LlmRequest(List<LlmMessage> messages, List<String> providerChain, Double temperature,
@@ -32,6 +40,10 @@ public record LlmRequest(
         context = context == null ? LlmRequestContext.chat() : context;
         overrides = overrides == null ? LlmRouteOptions.empty() : overrides;
         billingContext = billingContext == null ? LlmBillingContext.unspecified() : billingContext;
+        if (adaptiveOutputSeedTokens != null
+                && (adaptiveOutputSeedTokens < 1 || adaptiveOutputSeedTokens > 32000)) {
+            throw new IllegalArgumentException("Adaptive output seed must be between 1 and 32000 tokens");
+        }
     }
 
     /** Purpose-routed production request with no one-shot parameter override. */
@@ -47,7 +59,13 @@ public record LlmRequest(
 
     public LlmRequest withBillingContext(LlmBillingContext billing) {
         return new LlmRequest(messages, providerChain, temperature, maxTokens, timeoutSeconds,
-                context, overrides, billing);
+                context, overrides, billing, adaptiveOutputSeedTokens);
+    }
+
+    /** Sets a starting floor for automatic budgets; explicit routing/request limits still take precedence. */
+    public LlmRequest withAdaptiveOutputBudget(int seedTokens) {
+        return new LlmRequest(messages, providerChain, temperature, maxTokens, timeoutSeconds,
+                context, overrides, billingContext, seedTokens);
     }
 
     LlmRouteOptions requestOverrides() {

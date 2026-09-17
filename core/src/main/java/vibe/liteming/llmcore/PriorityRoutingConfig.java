@@ -51,11 +51,11 @@ public final class PriorityRoutingConfig {
     public Map<String, LlmRoute> purposeRoutes() { return purposeRoutes; }
     public LlmRoute defaultRoute() { return defaultRoute; }
     public Map<String, LlmRouteOptions> purposeOptions() { return purposeOptions; }
-    public List<String> defaultChain() { return defaultRoute.providers(); }
+    public List<String> defaultChain() { return defaultRoute.targetIds(); }
 
     public Map<String, List<String>> purposeChains() {
         Map<String, List<String>> result = new LinkedHashMap<>();
-        purposeRoutes.forEach((purpose, route) -> result.put(purpose, route.providers()));
+        purposeRoutes.forEach((purpose, route) -> result.put(purpose, route.targetIds()));
         return Collections.unmodifiableMap(result);
     }
 
@@ -69,7 +69,7 @@ public final class PriorityRoutingConfig {
     }
 
     public List<String> resolveChain(String purpose, List<String> fallback) {
-        return resolveRoute(purpose, fallback).providers();
+        return resolveRoute(purpose, fallback).targetIds();
     }
 
     public LlmRouteOptions resolveOptions(String purpose) {

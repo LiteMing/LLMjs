@@ -35,6 +35,14 @@ public final class ProviderFiles {
             definition.addProperty("format", spec.format());
             definition.addProperty("url", spec.url());
             definition.addProperty("model", spec.model());
+            if (spec.models().size() > 1) {
+                var models = new com.google.gson.JsonArray();
+                spec.models().forEach(models::add);
+                definition.add("models", models);
+            } else {
+                definition.remove("models");
+            }
+            definition.addProperty("request_mode", spec.requestMode().configValue());
             if (spec.temperature() != null) definition.addProperty("temperature", spec.temperature());
             if (spec.maxTokens() != null) definition.addProperty("max_tokens", spec.maxTokens());
             putCostRate(definition, rate);
@@ -80,13 +88,31 @@ public final class ProviderFiles {
 
     public static synchronized boolean updateProvider(Path providersFile, String name, String url, String model,
             String format, boolean enabled, LlmCostRate rate) {
+        return updateProvider(providersFile, name, url, ProviderSpec.parseModels(model), format,
+                enabled, rate, ProviderSpec.RequestMode.ROTATION);
+    }
+
+    public static synchronized boolean updateProvider(Path providersFile, String name, String url,
+            java.util.List<String> models, String format, boolean enabled, LlmCostRate rate,
+            ProviderSpec.RequestMode requestMode) {
         try {
+            java.util.List<String> safeModels = models == null ? java.util.List.of() : models;
+            if (safeModels.isEmpty()) return false;
             JsonObject root = loadObject(providersFile);
             JsonObject provider = root.has(name) && root.get(name).isJsonObject()
                     ? root.getAsJsonObject(name) : new JsonObject();
             provider.addProperty("type", "simple");
             provider.addProperty("url", url);
-            provider.addProperty("model", model);
+            provider.addProperty("model", safeModels.get(0));
+            if (safeModels.size() > 1) {
+                var modelArray = new com.google.gson.JsonArray();
+                safeModels.forEach(modelArray::add);
+                provider.add("models", modelArray);
+            } else {
+                provider.remove("models");
+            }
+            provider.addProperty("request_mode", (requestMode == null
+                    ? ProviderSpec.RequestMode.ROTATION : requestMode).configValue());
             provider.addProperty("format", format == null || format.isBlank() ? "openai" : format);
             provider.addProperty("enabled", enabled);
             putCostRate(provider, rate);
@@ -130,6 +156,12 @@ public final class ProviderFiles {
         JsonObject billing = new JsonObject();
         billing.addProperty("inputMultiplier", rate.inputMultiplier());
         billing.addProperty("outputMultiplier", rate.outputMultiplier());
+        if (rate.cacheReadInputMultiplier() != null) {
+            billing.addProperty("cacheReadInputMultiplier", rate.cacheReadInputMultiplier());
+        }
+        if (rate.cacheWriteInputMultiplier() != null) {
+            billing.addProperty("cacheWriteInputMultiplier", rate.cacheWriteInputMultiplier());
+        }
         definition.add("billing", billing);
     }
 

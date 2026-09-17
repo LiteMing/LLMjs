@@ -25,14 +25,26 @@ public record LlmRoute(List<Stage> stages, Integer deadlineOverrideSeconds) {
         }
     }
 
-    public record Target(String provider, Integer retries) {
+    public record Target(String provider, String model, Integer retries) {
+        public Target(String targetId, Integer retries) {
+            this(LlmTarget.parse(targetId), retries);
+        }
+
+        public Target(LlmTarget target, Integer retries) {
+            this(target.provider(), target.model(), retries);
+        }
+
         public Target {
             provider = provider == null ? "" : provider.trim();
+            model = model == null ? "" : model.trim();
             if (provider.isEmpty()) throw new IllegalArgumentException("provider name is blank");
             if (retries != null && (retries < 0 || retries > MAX_RETRIES)) {
                 throw new IllegalArgumentException("retries must be 0.." + MAX_RETRIES);
             }
         }
+
+        public LlmTarget target() { return new LlmTarget(provider, model); }
+        public String id() { return target().id(); }
 
         /** Unset means bounded credential failover: each credential may be tried once. */
         public int maxAttempts(int credentials) {
@@ -40,7 +52,8 @@ public record LlmRoute(List<Stage> stages, Integer deadlineOverrideSeconds) {
         }
 
         String expression() {
-            String name = provider.matches("[\\p{L}\\p{N}_:./-]+") ? provider : GSON.toJson(provider);
+            String id = id();
+            String name = id.matches("[\\p{L}\\p{N}_:./%-]+") ? id : GSON.toJson(id);
             return name + (retries == null ? "" : "*" + retries);
         }
     }
@@ -53,7 +66,7 @@ public record LlmRoute(List<Stage> stages, Integer deadlineOverrideSeconds) {
             }
             var names = new HashSet<String>();
             for (Target candidate : candidates) {
-                if (!names.add(candidate.provider())) throw new IllegalArgumentException("duplicate provider in race: " + candidate.provider());
+                if (!names.add(candidate.id())) throw new IllegalArgumentException("duplicate target in race: " + candidate.id());
             }
         }
 
@@ -65,8 +78,8 @@ public record LlmRoute(List<Stage> stages, Integer deadlineOverrideSeconds) {
     }
 
     public static LlmRoute empty() { return sequential(List.of()); }
-    public static LlmRoute sequential(List<String> providers) {
-        return new LlmRoute((providers == null ? List.<String>of() : providers).stream()
+    public static LlmRoute sequential(List<String> targets) {
+        return new LlmRoute((targets == null ? List.<String>of() : targets).stream()
                 .map(name -> new Stage(List.of(new Target(name, null)))).toList(), null);
     }
     public boolean isEmpty() { return stages.isEmpty(); }
@@ -76,6 +89,9 @@ public record LlmRoute(List<Stage> stages, Integer deadlineOverrideSeconds) {
     /** Inspection only; execution must preserve stages, retries and repeated providers. */
     public List<String> providers() {
         return stages.stream().flatMap(stage -> stage.candidates().stream()).map(Target::provider).toList();
+    }
+    public List<String> targetIds() {
+        return stages.stream().flatMap(stage -> stage.candidates().stream()).map(Target::id).toList();
     }
     public String expression() {
         return stages.stream().map(Stage::expression).collect(java.util.stream.Collectors.joining(" > "));
@@ -145,7 +161,8 @@ public record LlmRoute(List<Stage> stages, Integer deadlineOverrideSeconds) {
                 try { retries = Integer.parseInt(text.substring(numberStart, offset)); }
                 catch (NumberFormatException e) { throw error("expected retry count after *"); }
             }
-            return new Target(name, retries);
+            try { return new Target(name, retries); }
+            catch (IllegalArgumentException invalid) { throw error(invalid.getMessage()); }
         }
         private boolean take(char c) {
             whitespace();

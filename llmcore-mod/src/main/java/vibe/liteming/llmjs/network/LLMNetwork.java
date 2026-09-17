@@ -8,7 +8,7 @@ import net.minecraftforge.network.NetworkRegistry;
 import net.minecraftforge.network.simple.SimpleChannel;
 
 public class LLMNetwork {
-    private static final String PROTOCOL_VERSION = "10";
+    private static final String PROTOCOL_VERSION = "11";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             new ResourceLocation(LlmCoreMod.MODID, "main"),
             () -> PROTOCOL_VERSION,
@@ -107,6 +107,18 @@ public class LLMNetwork {
                 .encoder(C2SUpdatePersonalRoutingPacket::encode)
                 .decoder(C2SUpdatePersonalRoutingPacket::decode)
                 .consumerMainThread(C2SUpdatePersonalRoutingPacket::handle)
+                .add();
+
+        CHANNEL.messageBuilder(C2SDiscoverModelsPacket.class, packetId++, NetworkDirection.PLAY_TO_SERVER)
+                .encoder(C2SDiscoverModelsPacket::encode)
+                .decoder(C2SDiscoverModelsPacket::decode)
+                .consumerMainThread(C2SDiscoverModelsPacket::handle)
+                .add();
+
+        CHANNEL.messageBuilder(S2CModelDiscoveryPacket.class, packetId++, NetworkDirection.PLAY_TO_CLIENT)
+                .encoder(S2CModelDiscoveryPacket::encode)
+                .decoder(S2CModelDiscoveryPacket::decode)
+                .consumerMainThread(S2CModelDiscoveryPacket::handle)
                 .add();
     }
 }

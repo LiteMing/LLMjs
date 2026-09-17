@@ -365,24 +365,91 @@ class LlmRouteExecutionTest {
     @Test void playerPreferenceCanOnlyReorderEnabledProvidersAndPreservesItsRoute() {
         LlmOrchestrator core = core("A > B > C", "A", "B", "C");
         UUID player = UUID.fromString("a78cc4bd-861b-45dc-87ec-4699aab476e5");
-        LlmRoute preference = LlmRoute.parse("C*2 > B").withDeadline(45);
+        LlmRoute preference = LlmRoute.parse("C/test-model*2 > B/test-model").withDeadline(45);
         core.setPlayerRoutePreference(player, "CHAT", preference);
         LlmRequest playerRequest = request().withBillingContext(
                 LlmBillingContext.player(player.toString(), "root", 10, 10000));
 
-        assertEquals("C*2 > B", core.resolveRoute(playerRequest).expression());
+        assertEquals("C/test-model*2 > B/test-model", core.resolveRoute(playerRequest).expression());
         assertEquals(45, core.resolveRoute(playerRequest).deadlineSeconds());
         assertEquals("A > B > C", core.resolveRoute(request()).expression());
         assertThrows(IllegalArgumentException.class,
-                () -> core.setPlayerRoutePreference(player, "CHAT", LlmRoute.parse("D")));
+                () -> core.setPlayerRoutePreference(player, "CHAT", LlmRoute.parse("D/test-model")));
         assertThrows(IllegalArgumentException.class,
-                () -> core.setPlayerRoutePreference(player, "CHAT", LlmRoute.parse("C > C")));
+                () -> core.setPlayerRoutePreference(player, "CHAT", LlmRoute.parse("C/test-model > C/test-model")));
 
         LlmRequest explicit = new LlmRequest(request().messages(), List.of("A"), null, null, 0,
                 request().context(), LlmRouteOptions.empty(), playerRequest.billingContext());
         assertEquals(List.of("A"), core.resolveChain(explicit));
         core.replaceProviders(Map.of("A", core.getProviderSpec("A"), "B", core.getProviderSpec("B")));
         assertEquals("A > B > C", core.resolveRoute(playerRequest).expression());
+    }
+
+    @Test void raceUsesFastestRecentProviderFirstAndRotatesAfterFailure() throws Exception {
+        AtomicInteger aCalls = new AtomicInteger();
+        AtomicInteger bCalls = new AtomicInteger();
+        server.createContext("/A", exchange -> {
+            readBody(exchange);
+            if (aCalls.incrementAndGet() == 1) reply(exchange, 200, completion("a", "stop"));
+            else reply(exchange, 503, "{\"error\":\"temporary\"}");
+        });
+        server.createContext("/B", exchange -> {
+            readBody(exchange);
+            bCalls.incrementAndGet();
+            reply(exchange, 200, completion("b", "stop"));
+        });
+        LlmOrchestrator runtime = core("(A/test-model*0 | B/test-model*0)", "A", "B");
+        runtime.providerSnapshot().get("A").recordSuccessfulLatency("test-model", System.currentTimeMillis(), 40);
+        runtime.providerSnapshot().get("B").recordSuccessfulLatency("test-model", System.currentTimeMillis(), 100);
+
+        assertEquals("a", runtime.send(request()).get(5, TimeUnit.SECONDS).content());
+        assertEquals(0, bCalls.get());
+        assertEquals("b", runtime.send(request()).get(5, TimeUnit.SECONDS).content());
+        assertEquals(2, aCalls.get());
+        assertEquals(1, bCalls.get());
+    }
+
+    @Test void providerModelsAreExplicitTargetsAndParallelModeRacesSharedKeys() throws Exception {
+        List<String> rotated = new CopyOnWriteArrayList<>();
+        server.createContext("/rotate", exchange -> {
+            var body = readBody(exchange);
+            rotated.add(body.get("model").getAsString());
+            reply(exchange, 200, completion(body.get("model").getAsString(), "stop"));
+        });
+        ProviderSpec rotating = new ProviderSpec("multi", "openai",
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/rotate", "m1", null, 64, null,
+                List.of(new ProviderSpec.Credential("k1", "one", 1)), List.of("m1", "m2"),
+                ProviderSpec.RequestMode.ROTATION);
+        LlmOrchestrator rotation = new LlmOrchestrator(Map.of("multi", rotating));
+        rotation.setRoutingConfig(PriorityRoutingConfig.empty().withDefaultRoute(LlmRoute.parse("multi/m1*0")));
+        runtimes.add(rotation);
+        assertEquals("m1", rotation.send(request()).get(5, TimeUnit.SECONDS).content());
+        rotation.setRoutingConfig(PriorityRoutingConfig.empty().withDefaultRoute(LlmRoute.parse("multi/m2*0")));
+        assertEquals("m2", rotation.send(request()).get(5, TimeUnit.SECONDS).content());
+        assertEquals(List.of("m1", "m2"), rotated);
+
+        CountDownLatch racers = new CountDownLatch(2);
+        server.createContext("/parallel", exchange -> {
+            var body = readBody(exchange);
+            String model = body.get("model").getAsString();
+            String authorization = exchange.getRequestHeaders().getFirst("Authorization");
+            racers.countDown();
+            await(racers);
+            if ("m2".equals(model) && "Bearer two".equals(authorization)) {
+                reply(exchange, 200, completion("winner", "stop"));
+            }
+            else reply(exchange, 503, "{\"error\":\"failed\"}");
+        });
+        ProviderSpec parallel = new ProviderSpec("parallel", "openai",
+                "http://127.0.0.1:" + server.getAddress().getPort() + "/parallel", "m1", null, 64, null,
+                List.of(new ProviderSpec.Credential("k1", "one", 1),
+                        new ProviderSpec.Credential("k2", "two", 1)), List.of("m1", "m2"),
+                ProviderSpec.RequestMode.PARALLEL);
+        LlmOrchestrator parallelCore = new LlmOrchestrator(Map.of("parallel", parallel));
+        parallelCore.setRoutingConfig(PriorityRoutingConfig.empty().withDefaultRoute(LlmRoute.parse("parallel/m2*0")));
+        runtimes.add(parallelCore);
+        assertEquals(2, parallelCore.estimateWorstCaseBudget(request()).maxCalls());
+        assertEquals("winner", parallelCore.send(request()).get(5, TimeUnit.SECONDS).content());
     }
 
     private static LlmRequestAccounting.Policy recordingPolicy(List<LlmRequestAccounting.AttemptUsage> settlements) {

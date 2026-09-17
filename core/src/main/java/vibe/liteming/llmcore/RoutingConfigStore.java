@@ -25,8 +25,8 @@ import java.util.Set;
  * Schema (JSON):
  * <pre>
  * {
- *   "schemaVersion": 3,
- *   "default": { "route": "A*3 > (B | C) > A", "deadlineSeconds": 120 },
+ *   "schemaVersion": 4,
+ *   "default": { "route": "openai/gpt-4.1 > deepseek/deepseek-chat", "deadlineSeconds": 120 },
  *   "purposes": {
  *     "MEMORY_SUMMARY": {
  *       "route": "summary_cheap > dialogue_primary",
@@ -45,7 +45,7 @@ import java.util.Set;
  */
 public final class RoutingConfigStore {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-    private static final int SCHEMA_VERSION = 3;
+    private static final int SCHEMA_VERSION = 4;
 
     private RoutingConfigStore() {
     }
@@ -74,7 +74,7 @@ public final class RoutingConfigStore {
         JsonObject root = parsed.getAsJsonObject();
         if (root.has("schemaVersion")) {
             int version = readInteger(root, "schemaVersion", 1, SCHEMA_VERSION);
-            if (version != 2 && version != SCHEMA_VERSION) {
+            if (version != 2 && version != 3 && version != SCHEMA_VERSION) {
                 throw new IllegalArgumentException("unsupported routing schemaVersion: " + version);
             }
         }

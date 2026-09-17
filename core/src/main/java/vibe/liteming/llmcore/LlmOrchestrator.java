@@ -29,11 +29,15 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 public final class LlmOrchestrator implements AutoCloseable {
     private static final long RATE_LIMIT_COOLDOWN_MS = 60_000L;
     private static final int DEFAULT_MAX_OUTPUT_TOKENS = 1_000;
+    static final int ADAPTIVE_OUTPUT_STEP = 1_000;
+    static final int MAX_ADAPTIVE_OUTPUT_TOKENS = 32_000;
+    static final int DEFAULT_ADAPTIVE_OUTPUT_RETRIES = 3;
     private static final Gson GSON = new Gson();
 
     private final HttpClient httpClient;
@@ -70,7 +74,7 @@ public final class LlmOrchestrator implements AutoCloseable {
         for (String name : providers.keySet()) {
             ProviderProfile profile = profiles == null ? null : profiles.get(name);
             replacement.put(name, profile == null ? ProviderProfile.textOnly(name)
-                    : new ProviderProfile(name, profile.capabilities(), profile.costRate()));
+                    : new ProviderProfile(name, profile.capabilities(), profile.costRate(), profile.modelCostRates()));
         }
         providerProfiles.clear();
         providerProfiles.putAll(replacement);
@@ -121,7 +125,7 @@ public final class LlmOrchestrator implements AutoCloseable {
      * purpose (with fallback to its default chain); otherwise every known provider.
      */
     public List<String> resolveChain(LlmRequest request) {
-        return resolveRoute(request).providers();
+        return resolveRoute(request).targetIds();
     }
 
     public LlmRoute resolveRoute(LlmRequest request) {
@@ -140,7 +144,7 @@ public final class LlmOrchestrator implements AutoCloseable {
                 // Billing validation owns invalid player identities; route resolution falls back safely.
             }
         }
-        return routingConfig.resolveRoute(request.context().purpose(), new ArrayList<>(providers.keySet()));
+        return routingConfig.resolveRoute(request.context().purpose(), enabledTargetIds());
     }
 
     /** Install one player's route preference. Provider membership remains server-owned. */
@@ -152,7 +156,7 @@ public final class LlmOrchestrator implements AutoCloseable {
             clearPlayerRoutePreference(playerId, key);
             return;
         }
-        if (!routeProvidersExist(route)) throw new IllegalArgumentException("route contains an unavailable provider");
+        if (!routeProvidersExist(route)) throw new IllegalArgumentException("route contains an unavailable provider/model target");
         playerRoutePreferences.computeIfAbsent(playerId, ignored -> new ConcurrentHashMap<>()).put(key, route);
     }
 
@@ -174,7 +178,22 @@ public final class LlmOrchestrator implements AutoCloseable {
         if (route == null) return false;
         Set<String> seen = new java.util.HashSet<>();
         return route.stages().stream().allMatch(stage -> stage.candidates().stream().allMatch(target ->
-                providers.containsKey(target.provider()) && seen.add(target.provider())));
+                target.model() != null && !target.model().isBlank()
+                        && providers.containsKey(target.provider())
+                        && providers.get(target.provider()).spec.models().contains(target.model())
+                        && seen.add(target.id())));
+    }
+
+    public List<String> getTargetIds() {
+        return Collections.unmodifiableList(enabledTargetIds());
+    }
+
+    private List<String> enabledTargetIds() {
+        return providers.values().stream()
+                .sorted(java.util.Comparator.comparing(runtime -> runtime.spec.name()))
+                .flatMap(runtime -> runtime.spec.models().stream()
+                        .map(model -> LlmTarget.of(runtime.spec.name(), model).id()))
+                .toList();
     }
 
     Map<String, ProviderRuntime> providerSnapshot() { return Map.copyOf(providers); }
@@ -183,6 +202,7 @@ public final class LlmOrchestrator implements AutoCloseable {
         closed = true;
         activeRequests.forEach(future -> future.cancel(true));
         activeRequests.clear();
+        providers.values().forEach(ProviderRuntime::clearOutputBudgets);
     }
 
     public Set<String> getProviderNames() {
@@ -216,27 +236,67 @@ public final class LlmOrchestrator implements AutoCloseable {
     private LlmResolvedParameters resolveParameters(LlmRequest request, String providerName,
             LlmRouteOptions purposeOverrides) {
         LlmRequest safeRequest = request == null ? LlmRequest.routed(List.of(), LlmRequestContext.chat()) : request;
-        ProviderSpec provider = getProviderSpec(providerName);
-        LlmRouteOptions providerDefaults = provider == null
-                ? LlmRouteOptions.empty()
-                : new LlmRouteOptions(provider.temperature(), provider.maxTokens(), null, null, null);
-        LlmRouteOptions effective = globalDefaults.overlay(providerDefaults)
-                .overlay(purposeOverrides)
-                .overlay(safeRequest.requestOverrides());
+        String resolvedProvider = providerName == null ? "" : providerName.trim();
+        String selectedModel = "";
+        if (!resolvedProvider.isEmpty()) {
+            try {
+                LlmTarget target = LlmTarget.parse(resolvedProvider);
+                resolvedProvider = target.provider();
+                selectedModel = target.model();
+            }
+            catch (IllegalArgumentException ignored) { }
+        }
+        ProviderSpec provider = getProviderSpec(resolvedProvider);
+        if (provider != null && !selectedModel.isBlank()) provider = provider.forModel(selectedModel);
+        LlmRouteOptions effective = effectiveOptions(safeRequest, provider, purposeOverrides);
 
         int timeout = effective.timeoutSeconds() == null ? 30 : effective.timeoutSeconds();
         int maxOutput = effective.maxOutputTokens() == null
-                ? DEFAULT_MAX_OUTPUT_TOKENS : effective.maxOutputTokens();
+                ? adaptiveOutputTokens(safeRequest, provider) : effective.maxOutputTokens();
         int reserve = effective.outputReserveTokens() == null
                 ? maxOutput : effective.outputReserveTokens();
         int inputBudget = effective.inputBudgetTokens() == null
                 ? LlmResolvedParameters.UNBOUNDED_INPUT : effective.inputBudgetTokens();
         Integer contextWindow = provider == null ? null : provider.contextWindowTokens();
         if (contextWindow != null) {
-            inputBudget = Math.min(inputBudget, Math.max(0, contextWindow - reserve));
+            inputBudget = Math.min(inputBudget, Math.max(0, contextWindow - Math.max(reserve, maxOutput)));
         }
-        return new LlmResolvedParameters(providerName, effective.temperature(), maxOutput,
+        return new LlmResolvedParameters(resolvedProvider, effective.temperature(), maxOutput,
                 timeout, inputBudget, reserve, contextWindow);
+    }
+
+    private LlmRouteOptions effectiveOptions(LlmRequest request, ProviderSpec provider,
+            LlmRouteOptions purposeOptions) {
+        LlmRouteOptions providerDefaults = provider == null ? LlmRouteOptions.empty()
+                : new LlmRouteOptions(provider.temperature(), provider.maxTokens(), null, null, null);
+        return globalDefaults.overlay(providerDefaults).overlay(purposeOptions).overlay(request.requestOverrides());
+    }
+
+    boolean usesAdaptiveOutputBudget(LlmRequest request, ProviderSpec provider) {
+        return effectiveOptions(request, provider,
+                routingConfig.resolveOptions(request.context().purpose())).maxOutputTokens() == null;
+    }
+
+    private int adaptiveOutputTokens(LlmRequest request, ProviderSpec provider) {
+        ProviderRuntime runtime = provider == null ? null : providers.get(provider.name());
+        int learned = runtime == null ? DEFAULT_MAX_OUTPUT_TOKENS
+                : runtime.outputBudget(request.context().purpose(), provider.model());
+        int seed = request.adaptiveOutputSeedTokens() == null
+                ? DEFAULT_MAX_OUTPUT_TOKENS : request.adaptiveOutputSeedTokens();
+        return Math.max(1, Math.min(Math.max(seed, learned), adaptiveOutputCeiling(request, provider)));
+    }
+
+    int adaptiveOutputCeiling(LlmRequest request, ProviderSpec provider) {
+        if (provider == null || provider.contextWindowTokens() == null) return MAX_ADAPTIVE_OUTPUT_TOKENS;
+        long inputTokens = estimateInputTokens(request);
+        return (int) Math.max(0L, Math.min(MAX_ADAPTIVE_OUTPUT_TOKENS,
+                provider.contextWindowTokens().longValue() - inputTokens));
+    }
+
+    void recordTruncatedOutputBudget(LlmRequest request, ProviderRuntime runtime, String model,
+            int attemptedTokens) {
+        if (!closed && providers.get(runtime.spec.name()) == runtime) runtime.recordTruncatedOutputBudget(
+                request.context().purpose(), model, attemptedTokens);
     }
 
     public LlmResolvedParameters resolveParameters(String purpose, String providerName) {
@@ -254,8 +314,23 @@ public final class LlmOrchestrator implements AutoCloseable {
     public LlmMessageFinalization finalizeDraftForRoute(LlmMessageDraft draft, LlmRequest request,
             LlmMessageFinalizer.TokenEstimator estimator) {
         int budget = resolveParameters(request, "").inputBudgetTokens();
-        for (String provider : resolveChain(request)) {
-            if (providers.containsKey(provider)) budget = Math.min(budget, resolveParameters(request, provider).inputBudgetTokens());
+        for (LlmRoute.Stage stage : resolveRoute(request).stages()) {
+            for (LlmRoute.Target target : stage.candidates()) {
+                ProviderRuntime runtime = providers.get(target.provider());
+                if (runtime == null) continue;
+                String model = target.model().isBlank() ? runtime.spec.model() : target.model();
+                ProviderSpec selected = runtime.spec.forModel(model);
+                LlmResolvedParameters parameters = resolveParameters(request, target.id());
+                int inputBudget = parameters.inputBudgetTokens();
+                if (usesAdaptiveOutputBudget(request, selected) && parameters.contextWindowTokens() != null) {
+                    int retries = target.retries() == null ? DEFAULT_ADAPTIVE_OUTPUT_RETRIES : target.retries();
+                    int outputHeadroom = Math.min(MAX_ADAPTIVE_OUTPUT_TOKENS,
+                            parameters.maxOutputTokens() + retries * ADAPTIVE_OUTPUT_STEP);
+                    inputBudget = Math.min(inputBudget, Math.max(0,
+                            parameters.contextWindowTokens() - Math.max(parameters.outputReserveTokens(), outputHeadroom)));
+                }
+                budget = Math.min(budget, inputBudget);
+            }
         }
         return LlmMessageFinalizer.finalize(draft, budget, estimator);
     }
@@ -326,7 +401,9 @@ public final class LlmOrchestrator implements AutoCloseable {
 
         List<String> originalChain = resolveChain(request);
         Map<String, HostedWebSearchAdapters.HostedWebSearchAdapter> capable = new LinkedHashMap<>();
-        for (String providerName : new java.util.LinkedHashSet<>(originalChain)) {
+        for (String targetId : new java.util.LinkedHashSet<>(originalChain)) {
+            LlmTarget target = LlmTarget.parse(targetId);
+            String providerName = target.provider();
             ProviderRuntime runtime = providers.get(providerName);
             if (runtime == null) {
                 decisions.add(new LlmRoutingDecision(providerName, LlmRoutingDecision.Code.PROVIDER_NOT_FOUND,
@@ -408,9 +485,27 @@ public final class LlmOrchestrator implements AutoCloseable {
             for (LlmRoute.Target target : stage.candidates()) {
                 ProviderRuntime provider = providers.get(target.provider());
                 if (provider == null || provider.credentials.isEmpty()) continue;
-                int attempts = target.maxAttempts(provider.credentials.size());
+                int attempts = provider.attemptCount(target);
+                String model = target.model().isBlank() ? provider.spec.model() : target.model();
+                if (!provider.spec.models().contains(model)) continue;
+                ProviderSpec selected = provider.spec.forModel(model);
+                boolean adaptive = effectiveOptions(request, selected, purposeOptions).maxOutputTokens() == null;
+                if (adaptive && target.retries() == null) {
+                    int variants = provider.spec.requestMode() == ProviderSpec.RequestMode.PARALLEL
+                            ? Math.min(LlmRoute.MAX_PARALLEL, provider.credentials.size()) : 1;
+                    attempts = Math.min(LlmRoute.MAX_ATTEMPTS,
+                            attempts + variants * DEFAULT_ADAPTIVE_OUTPUT_RETRIES);
+                }
+                LlmResolvedParameters parameters = resolveParameters(request, target.id(), purposeOptions);
+                if (adaptive) {
+                    // Concurrent requests may learn a higher budget after the host declares its causal ceiling.
+                    parameters = new LlmResolvedParameters(parameters.provider(), parameters.temperature(),
+                            parameters.maxOutputTokens(), parameters.timeoutSeconds(), parameters.inputBudgetTokens(),
+                            Math.max(parameters.outputReserveTokens(), adaptiveOutputCeiling(request, selected)),
+                            parameters.contextWindowTokens());
+                }
                 LlmRequestAccounting.AttemptEstimate estimate = attemptEstimate(
-                        request, provider.spec, resolveParameters(request, target.provider(), purposeOptions), costRate(provider.spec));
+                        request, selected, parameters, costRate(selected));
                 calls = saturatedAdd(calls, attempts);
                 tokens = saturatedAdd(tokens, saturatedMultiply(estimate.totalTokens(), attempts));
             }
@@ -425,9 +520,11 @@ public final class LlmOrchestrator implements AutoCloseable {
         purposes.addAll(routingConfig.purposeOptions().keySet());
         // Resolve the default directly: an empty request purpose would normalize to CHAT.
         purposes.add(null);
-        LlmRequest configuredRequest = LlmRequest.routed(template.messages(), template.context());
+        LlmRequest configuredRequest = new LlmRequest(template.messages(), List.of(), null, null, 0,
+                template.context(), LlmRouteOptions.empty(), template.billingContext(),
+                template.adaptiveOutputSeedTokens());
         for (String purpose : purposes) {
-            LlmRoute route = routingConfig.resolveRoute(purpose, new ArrayList<>(providers.keySet()));
+            LlmRoute route = routingConfig.resolveRoute(purpose, enabledTargetIds());
             LlmRouteOptions options = routingConfig.resolveOptions(purpose);
             LlmCallBudget budget = estimateWorstCaseBudget(template, route, options);
             LlmCallBudget configured = estimateWorstCaseBudget(configuredRequest, route, options);
@@ -516,27 +613,33 @@ public final class LlmOrchestrator implements AutoCloseable {
 
     private LlmRequestAccounting.AttemptEstimate attemptEstimate(LlmRequest request,
             ProviderSpec provider, LlmResolvedParameters parameters, LlmCostRate rate) {
+        long inputTokens = estimateInputTokens(request);
+        long outputTokens = Math.max(parameters.maxOutputTokens(), parameters.outputReserveTokens());
+        return new LlmRequestAccounting.AttemptEstimate(provider.name(), inputTokens,
+                outputTokens, rate.weightedEstimate(inputTokens, outputTokens));
+    }
+
+    private static long estimateInputTokens(LlmRequest request) {
         long inputTokens = 0L;
         for (LlmMessage message : request.messages()) {
             inputTokens = saturatedAdd(inputTokens,
                     Math.max(0, LlmMessageFinalizer.CONSERVATIVE_ESTIMATOR.estimate(message)));
         }
-        long outputTokens = Math.max(0, parameters.outputReserveTokens());
-        return new LlmRequestAccounting.AttemptEstimate(provider.name(), inputTokens,
-                outputTokens, rate.weightedEstimate(inputTokens, outputTokens));
+        return inputTokens;
     }
 
     private LlmCostRate costRate(ProviderSpec provider) {
         ProviderProfile profile = providerProfiles.get(provider.name());
-        return profile == null ? LlmCostRate.DEFAULT : profile.costRate();
+        return profile == null ? LlmCostRate.DEFAULT : profile.costRateFor(provider.model());
     }
 
     private static LlmRequestAccounting.AttemptUsage attemptUsage(
             LlmRequestAccounting.Reservation reservation, LlmCostRate rate,
-            int promptTokens, int completionTokens) {
+            int promptTokens, int completionTokens, LlmCacheUsage cacheUsage) {
         if (promptTokens > 0 || completionTokens > 0) {
+            Long cacheWeighted = rate.weightedTokens(cacheUsage, promptTokens, completionTokens);
             return new LlmRequestAccounting.AttemptUsage(promptTokens, completionTokens, 0L,
-                    rate.weightedTokens(promptTokens, completionTokens));
+                    cacheWeighted == null ? rate.weightedTokens(promptTokens, completionTokens) : cacheWeighted);
         }
         return new LlmRequestAccounting.AttemptUsage(0L, 0L, reservation.reservedTokens(),
                 reservation.reservedCostUnits());
@@ -544,13 +647,13 @@ public final class LlmOrchestrator implements AutoCloseable {
 
     private static void finishAccounting(LlmRequest request,
             LlmRequestAccounting.Reservation reservation, boolean success,
-            LlmCostRate rate, int promptTokens, int completionTokens) {
+            LlmCostRate rate, int promptTokens, int completionTokens, LlmCacheUsage cacheUsage) {
         if (!success) {
             LlmRequestAccounting.release(request, reservation);
             return;
         }
         LlmRequestAccounting.settle(request, reservation,
-                attemptUsage(reservation, rate, promptTokens, completionTokens));
+                attemptUsage(reservation, rate, promptTokens, completionTokens, cacheUsage));
     }
 
     record AttemptResult(SingleResult result, HostedWebSearchAdapters.Evidence evidence,
@@ -572,11 +675,13 @@ public final class LlmOrchestrator implements AutoCloseable {
             return mapCancellable(sendSingleStreaming(request, provider, credential, onDelta), value ->
                     new AttemptResult(new SingleResult(value.success, value.content, value.error, value.httpStatus,
                             value.promptTokens, value.completionTokens, value.latencyMs, value.requestBody,
-                            value.responseBody, value.finishReason, value.policyRejected, value.denyCode, value.retryAfterMs),
+                            value.responseBody, value.finishReason, value.policyRejected, value.denyCode,
+                            value.retryAfterMs, value.cacheUsage),
                             HostedWebSearchAdapters.Evidence.none(), value.emittedContent, value.retryAfterMs));
         }
         return mapCancellable(sendSingle(request, provider, credential, racing), value -> {
-            if (onDelta != null && value.success && !value.content.isBlank()) onDelta.accept(value.content);
+            if (onDelta != null && value.success && !value.content.isBlank()
+                    && !"length".equals(value.finishReason)) onDelta.accept(value.content);
             return new AttemptResult(value, HostedWebSearchAdapters.Evidence.none(), false, value.retryAfterMs);
         });
     }
@@ -615,7 +720,7 @@ public final class LlmOrchestrator implements AutoCloseable {
             ProviderSpec.Credential credential, boolean racing) {
         String format = provider.format();
         String url = resolveUrl(provider, credential.key());
-        LlmResolvedParameters parameters = resolveParameters(request, provider.name());
+        LlmResolvedParameters parameters = resolveParameters(request, new LlmTarget(provider.name(), provider.model()).id());
         JsonObject body = buildBody(format, provider, request, parameters);
         if (racing && !"gemini".equals(format)) body.addProperty("stream", false);
         String requestBody = GSON.toJson(body);
@@ -652,7 +757,8 @@ public final class LlmOrchestrator implements AutoCloseable {
                     throwable == null && result != null && result.success
                             || transport != null && uncertainUsage(throwable),
                     rate,
-                    result == null ? 0 : result.promptTokens, result == null ? 0 : result.completionTokens);
+                    result == null ? 0 : result.promptTokens, result == null ? 0 : result.completionTokens,
+                    result == null ? LlmCacheUsage.unknown("request did not complete") : result.cacheUsage);
             settled.complete(throwable == null ? result : SingleResult.failure(rootMessage(throwable), 0,
                         System.currentTimeMillis() - startedAt, requestBody, ""));
         });
@@ -664,7 +770,7 @@ public final class LlmOrchestrator implements AutoCloseable {
             ProviderSpec.Credential credential, HostedWebSearchAdapters.HostedWebSearchAdapter adapter) {
         String format = provider.format();
         String url = resolveUrl(provider, credential.key());
-        LlmResolvedParameters parameters = resolveParameters(request, provider.name());
+        LlmResolvedParameters parameters = resolveParameters(request, new LlmTarget(provider.name(), provider.model()).id());
         JsonObject body = buildBody(format, provider, request, parameters);
         adapter.apply(body);
         if (!"gemini".equals(format)) body.addProperty("stream", false);
@@ -713,7 +819,8 @@ public final class LlmOrchestrator implements AutoCloseable {
                     throwable == null && result != null && result.result.success
                             || transport != null && uncertainUsage(throwable),
                     rate,
-                    result == null ? 0 : result.result.promptTokens, result == null ? 0 : result.result.completionTokens);
+                    result == null ? 0 : result.result.promptTokens, result == null ? 0 : result.result.completionTokens,
+                    result == null ? LlmCacheUsage.unknown("request did not complete") : result.result.cacheUsage);
             settled.complete(throwable == null ? result : SearchSingleResult.failure(rootMessage(throwable),
                         System.currentTimeMillis() - startedAt, requestBody));
         });
@@ -723,7 +830,7 @@ public final class LlmOrchestrator implements AutoCloseable {
 
     private CompletableFuture<StreamResult> sendSingleStreaming(LlmRequest request, ProviderSpec provider,
             ProviderSpec.Credential credential, Consumer<String> onDelta) {
-        LlmResolvedParameters parameters = resolveParameters(request, provider.name());
+        LlmResolvedParameters parameters = resolveParameters(request, new LlmTarget(provider.name(), provider.model()).id());
         JsonObject body = buildOpenAiBody(provider.model(), request.messages(),
                 parameters.temperature(), parameters.maxOutputTokens(), false);
         body.addProperty("stream", true);
@@ -746,6 +853,8 @@ public final class LlmOrchestrator implements AutoCloseable {
         AtomicReference<InputStream> activeStream = new AtomicReference<>();
         AtomicInteger promptTokens = new AtomicInteger();
         AtomicInteger completionTokens = new AtomicInteger();
+        AtomicReference<LlmCacheUsage> cacheUsage = new AtomicReference<>(
+                LlmCacheUsage.unknown("stream did not report cache usage"));
         java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean();
         CompletableFuture<HttpResponse<InputStream>> http = null;
         try {
@@ -795,6 +904,9 @@ public final class LlmOrchestrator implements AutoCloseable {
                         if (usage.has("completion_tokens") && !usage.get("completion_tokens").isJsonNull()) {
                             completionTokens.accumulateAndGet(usage.get("completion_tokens").getAsInt(), Math::max);
                         }
+                        LlmCacheUsage parsedCache = parseCacheUsage("openai", usage,
+                                promptTokens.get());
+                        if (parsedCache.status() == LlmCacheUsage.Status.REPORTED) cacheUsage.set(parsedCache);
                     }
                     JsonArray choices = chunk.getAsJsonArray("choices");
                     if (choices == null || choices.isEmpty()) continue;
@@ -825,7 +937,7 @@ public final class LlmOrchestrator implements AutoCloseable {
                         reasoning.toString(), chunkCount, finishReason);
                 return accumulated.isEmpty()
                         ? StreamResult.failure("LLM stream produced no content", -1, latency, emitted, requestBody,
-                                responseBody, finishReason).withUsage(promptTokens.get(), completionTokens.get())
+                                responseBody, finishReason).withUsage(promptTokens.get(), completionTokens.get(), cacheUsage.get())
                         : StreamResult.success(accumulated.toString(), promptTokens.get(), completionTokens.get(),
                                 latency, requestBody, responseBody, finishReason);
             } catch (Exception e) {
@@ -833,7 +945,7 @@ public final class LlmOrchestrator implements AutoCloseable {
                         reasoning.toString(), chunkCount, finishReason.isBlank() ? "error" : finishReason);
                 return StreamResult.failure(rootMessage(e), e instanceof java.io.IOException ? 0 : -1,
                         System.currentTimeMillis() - startedAt, emitted,
-                        requestBody, responseBody, "error").withUsage(promptTokens.get(), completionTokens.get());
+                        requestBody, responseBody, "error").withUsage(promptTokens.get(), completionTokens.get(), cacheUsage.get());
             }
             });
         } catch (RuntimeException failure) {
@@ -850,13 +962,14 @@ public final class LlmOrchestrator implements AutoCloseable {
             if (throwable != null && transport != null) transport.cancel(true);
             finishAccounting(request, reservation,
                     promptTokens.get() > 0 || completionTokens.get() > 0
-                            || throwable == null && result != null && (result.success || result.emittedContent)
+                            || throwable == null && result != null && (result.success || result.emittedContent
+                                    || "length".equals(result.finishReason))
                             || transport != null && uncertainUsage(throwable),
                     rate,
-                    promptTokens.get(), completionTokens.get());
+                    promptTokens.get(), completionTokens.get(), cacheUsage.get());
             settled.complete(throwable == null ? result : StreamResult.failure(rootMessage(throwable), 0,
                         System.currentTimeMillis() - startedAt, false, requestBody, "")
-                    .withUsage(promptTokens.get(), completionTokens.get()));
+                    .withUsage(promptTokens.get(), completionTokens.get(), cacheUsage.get()));
         });
         settled.whenComplete((result, failure) -> { if (settled.isCancelled()) source.cancel(true); });
         return settled;
@@ -1050,8 +1163,11 @@ public final class LlmOrchestrator implements AutoCloseable {
                     completionTokens = getInt(usage, "completion_tokens");
                 }
             }
+            JsonObject usage = "gemini".equals(format)
+                    ? root.has("usageMetadata") ? root.getAsJsonObject("usageMetadata") : null
+                    : root.has("usage") ? root.getAsJsonObject("usage") : null;
             return SingleResult.success(content, promptTokens, completionTokens, latencyMs, requestBody, body,
-                    finishReason);
+                    finishReason, parseCacheUsage(format, usage, promptTokens));
         } catch (Exception e) {
             return SingleResult.failure("Invalid provider response: " + rootMessage(e), -1, latencyMs, requestBody, body);
         }
@@ -1145,6 +1261,47 @@ public final class LlmOrchestrator implements AutoCloseable {
         return object.has(key) ? object.get(key).getAsInt() : 0;
     }
 
+    static LlmCacheUsage parseCacheUsage(String format, JsonObject usage, int promptTokens) {
+        if (usage == null) return LlmCacheUsage.unknown("provider response did not include usage");
+        String normalized = format == null ? "" : format.toLowerCase(java.util.Locale.ROOT);
+        if ("claude".equals(normalized) || "anthropic".equals(normalized)) {
+            Long read = getLongOrNull(usage, "cache_read_input_tokens");
+            Long write = getLongOrNull(usage, "cache_creation_input_tokens");
+            if (read == null && write == null) return LlmCacheUsage.unknown("Anthropic cache fields were absent");
+            long uncached = Math.max(0L, getInt(usage, "input_tokens"));
+            long total = uncached + (read == null ? 0L : read) + (write == null ? 0L : write);
+            return LlmCacheUsage.reported(read == null ? 0L : read, write == null ? 0L : write,
+                    uncached, total);
+        }
+        if ("gemini".equals(normalized)) {
+            Long read = getLongOrNull(usage, "cachedContentTokenCount");
+            if (read == null) return LlmCacheUsage.unknown("Gemini cachedContentTokenCount was absent");
+            long total = Math.max(promptTokens, getInt(usage, "promptTokenCount"));
+            return LlmCacheUsage.reported(read, null, Math.max(0L, total - read), total);
+        }
+        Long hit = getLongOrNull(usage, "prompt_cache_hit_tokens");
+        Long miss = getLongOrNull(usage, "prompt_cache_miss_tokens");
+        if (hit != null || miss != null) {
+            long read = hit == null ? 0L : hit;
+            long uncached = miss == null ? Math.max(0L, promptTokens - read) : miss;
+            return LlmCacheUsage.reported(read, null, uncached, Math.max(promptTokens, read + uncached));
+        }
+        if (usage.has("prompt_tokens_details") && usage.get("prompt_tokens_details").isJsonObject()) {
+            Long read = getLongOrNull(usage.getAsJsonObject("prompt_tokens_details"), "cached_tokens");
+            if (read != null) {
+                long total = Math.max(0L, promptTokens);
+                return LlmCacheUsage.reported(read, null, Math.max(0L, total - read), total);
+            }
+        }
+        return LlmCacheUsage.unknown("OpenAI-compatible cache fields were absent");
+    }
+
+    private static Long getLongOrNull(JsonObject object, String key) {
+        if (object == null || !object.has(key) || object.get(key).isJsonNull()) return null;
+        try { return Math.max(0L, object.get(key).getAsLong()); }
+        catch (RuntimeException ignored) { return null; }
+    }
+
     private static String rootMessage(Throwable throwable) {
         Throwable current = throwable;
         while (current.getCause() != null) current = current.getCause();
@@ -1152,9 +1309,12 @@ public final class LlmOrchestrator implements AutoCloseable {
     }
 
     static final class ProviderRuntime {
+        private static final long HEALTH_WINDOW_MS = 60L * 60L * 1000L;
         final ProviderSpec spec;
         final List<CredentialRuntime> credentials;
         private final AtomicInteger cursor = new AtomicInteger();
+        private final Map<String, java.util.ArrayDeque<LatencySample>> successfulLatencies = new LinkedHashMap<>();
+        private final Map<OutputBudgetKey, Integer> learnedOutputBudgets = new LinkedHashMap<>();
 
         private ProviderRuntime(ProviderSpec spec) {
             this.spec = spec;
@@ -1176,6 +1336,68 @@ public final class LlmOrchestrator implements AutoCloseable {
             return best;
         }
 
+        List<CredentialRuntime> parallelCredentials() {
+            if (credentials.isEmpty()) return List.of();
+            int count = Math.min(LlmRoute.MAX_PARALLEL, credentials.size());
+            List<CredentialRuntime> result = new ArrayList<>(count);
+            int keyStart = Math.floorMod(cursor.getAndAdd(count), credentials.size());
+            for (int index = 0; index < count; index++) {
+                result.add(credentials.get((keyStart + index) % credentials.size()));
+            }
+            return List.copyOf(result);
+        }
+
+        int attemptCount(LlmRoute.Target target) {
+            if (spec.requestMode() != ProviderSpec.RequestMode.PARALLEL) {
+                return target.maxAttempts(credentials.size());
+            }
+            int variants = Math.min(LlmRoute.MAX_PARALLEL, credentials.size());
+            int perVariant = target.retries() == null ? 1 : target.retries() + 1;
+            return Math.min(LlmRoute.MAX_ATTEMPTS, variants * perVariant);
+        }
+
+        synchronized void recordSuccessfulLatency(String model, long nowMs, long latencyMs) {
+            java.util.ArrayDeque<LatencySample> samples = successfulLatencies.computeIfAbsent(
+                    model == null ? "" : model, ignored -> new java.util.ArrayDeque<>());
+            pruneLatencies(samples, nowMs);
+            samples.addLast(new LatencySample(nowMs, Math.max(0L, latencyMs)));
+            while (samples.size() > 4096) samples.removeFirst();
+        }
+
+        synchronized Long averageSuccessfulLatency1h(String model) {
+            java.util.ArrayDeque<LatencySample> samples = successfulLatencies.get(model == null ? "" : model);
+            if (samples == null) return null;
+            pruneLatencies(samples, System.currentTimeMillis());
+            if (samples.isEmpty()) return null;
+            return samples.stream().mapToLong(LatencySample::latencyMs).sum() / samples.size();
+        }
+
+        synchronized int outputBudget(String purpose, String model) {
+            return learnedOutputBudgets.getOrDefault(new OutputBudgetKey(purpose, model), DEFAULT_MAX_OUTPUT_TOKENS);
+        }
+
+        synchronized void clearOutputBudgets() { learnedOutputBudgets.clear(); }
+
+        synchronized void recordTruncatedOutputBudget(String purpose, String model, int attemptedTokens) {
+            OutputBudgetKey key = new OutputBudgetKey(purpose, model);
+            int next = Math.min(MAX_ADAPTIVE_OUTPUT_TOKENS, attemptedTokens + ADAPTIVE_OUTPUT_STEP);
+            learnedOutputBudgets.merge(key, next, Math::max);
+            while (learnedOutputBudgets.size() > 256) {
+                learnedOutputBudgets.remove(learnedOutputBudgets.keySet().iterator().next());
+            }
+        }
+
+        private record OutputBudgetKey(String purpose, String model) { }
+
+        private void pruneLatencies(java.util.ArrayDeque<LatencySample> samples, long nowMs) {
+            long cutoff = nowMs - HEALTH_WINDOW_MS;
+            while (!samples.isEmpty() && samples.peekFirst().timeMs() < cutoff) {
+                samples.removeFirst();
+            }
+        }
+
+        private record LatencySample(long timeMs, long latencyMs) { }
+
     }
 
     static final class CredentialRuntime {
@@ -1192,15 +1414,17 @@ public final class LlmOrchestrator implements AutoCloseable {
 
     record SingleResult(boolean success, String content, String error, int httpStatus,
             int promptTokens, int completionTokens, long latencyMs, String requestBody, String responseBody,
-            String finishReason, boolean policyRejected, LlmRequestAccounting.DenyCode denyCode, long retryAfterMs) {
+            String finishReason, boolean policyRejected, LlmRequestAccounting.DenyCode denyCode, long retryAfterMs,
+            LlmCacheUsage cacheUsage) {
         private SingleResult withRetryAfter(long millis) {
             return new SingleResult(success, content, error, httpStatus, promptTokens, completionTokens, latencyMs,
-                    requestBody, responseBody, finishReason, policyRejected, denyCode, millis);
+                    requestBody, responseBody, finishReason, policyRejected, denyCode, millis, cacheUsage);
         }
         private static SingleResult success(String content, int promptTokens, int completionTokens, long latencyMs,
-                String requestBody, String responseBody, String finishReason) {
+                String requestBody, String responseBody, String finishReason, LlmCacheUsage cacheUsage) {
             return new SingleResult(true, content, "", 200, promptTokens, completionTokens, latencyMs,
-                    requestBody, responseBody, finishReason, false, LlmRequestAccounting.DenyCode.NONE, -1);
+                    requestBody, responseBody, finishReason, false, LlmRequestAccounting.DenyCode.NONE, -1,
+                    cacheUsage);
         }
 
         private static SingleResult failure(String error, int httpStatus, long latencyMs) {
@@ -1210,12 +1434,14 @@ public final class LlmOrchestrator implements AutoCloseable {
         private static SingleResult failure(String error, int httpStatus, long latencyMs, String requestBody,
                 String responseBody) {
             return new SingleResult(false, "", error, httpStatus, 0, 0, latencyMs, requestBody, responseBody,
-                    "error", false, LlmRequestAccounting.DenyCode.NONE, -1);
+                    "error", false, LlmRequestAccounting.DenyCode.NONE, -1,
+                    LlmCacheUsage.unknown("request failed before cache usage was reported"));
         }
 
         private static SingleResult policyFailure(LlmRequestAccounting.DenyCode denyCode, String error) {
             return new SingleResult(false, "", "Billing denied: " + error,
-                    0, 0, 0, 0L, "", "", "error", true, denyCode, -1);
+                    0, 0, 0, 0L, "", "", "error", true, denyCode, -1,
+                    LlmCacheUsage.unknown("request was denied before provider access"));
         }
     }
 
@@ -1237,20 +1463,24 @@ public final class LlmOrchestrator implements AutoCloseable {
     private record StreamResult(boolean success, String content, String error, int httpStatus,
             int promptTokens, int completionTokens, long latencyMs,
             boolean emittedContent, String requestBody, String responseBody, String finishReason,
-            boolean policyRejected, LlmRequestAccounting.DenyCode denyCode, long retryAfterMs) {
-        private StreamResult withUsage(int prompt, int completion) {
+            boolean policyRejected, LlmRequestAccounting.DenyCode denyCode, long retryAfterMs,
+            LlmCacheUsage cacheUsage) {
+        private StreamResult withUsage(int prompt, int completion, LlmCacheUsage usage) {
             return new StreamResult(success, content, error, httpStatus, prompt, completion, latencyMs,
-                    emittedContent, requestBody, responseBody, finishReason, policyRejected, denyCode, retryAfterMs);
+                    emittedContent, requestBody, responseBody, finishReason, policyRejected, denyCode, retryAfterMs,
+                    usage);
         }
         private StreamResult withRetryAfter(long millis) {
             return new StreamResult(success, content, error, httpStatus, promptTokens, completionTokens, latencyMs,
-                    emittedContent, requestBody, responseBody, finishReason, policyRejected, denyCode, millis);
+                    emittedContent, requestBody, responseBody, finishReason, policyRejected, denyCode, millis,
+                    cacheUsage);
         }
         private static StreamResult success(String content, int promptTokens, int completionTokens,
                 long latencyMs, String requestBody, String responseBody, String finishReason) {
             return new StreamResult(true, content, "", 200, promptTokens, completionTokens,
                     latencyMs, true, requestBody, responseBody,
-                    finishReason, false, LlmRequestAccounting.DenyCode.NONE, -1);
+                    finishReason, false, LlmRequestAccounting.DenyCode.NONE, -1,
+                    LlmCacheUsage.unknown("stream did not report cache usage"));
         }
 
         private static StreamResult failure(String error, int status, long latencyMs, boolean emitted) {
@@ -1260,19 +1490,22 @@ public final class LlmOrchestrator implements AutoCloseable {
         private static StreamResult failure(String error, int status, long latencyMs, boolean emitted,
                 String requestBody, String responseBody) {
             return new StreamResult(false, "", error, status, 0, 0, latencyMs, emitted,
-                    requestBody, responseBody, "error", false, LlmRequestAccounting.DenyCode.NONE, -1);
+                    requestBody, responseBody, "error", false, LlmRequestAccounting.DenyCode.NONE, -1,
+                    LlmCacheUsage.unknown("request failed before cache usage was reported"));
         }
 
         private static StreamResult failure(String error, int status, long latencyMs, boolean emitted,
                 String requestBody, String responseBody, String finishReason) {
             return new StreamResult(false, "", error, status, 0, 0, latencyMs, emitted, requestBody, responseBody,
                     finishReason == null ? "error" : finishReason, false,
-                    LlmRequestAccounting.DenyCode.NONE, -1);
+                    LlmRequestAccounting.DenyCode.NONE, -1,
+                    LlmCacheUsage.unknown("request failed before cache usage was reported"));
         }
 
         private static StreamResult policyFailure(LlmRequestAccounting.DenyCode denyCode, String error) {
             return new StreamResult(false, "", "Billing denied: " + error, 0, 0, 0, 0L, false,
-                    "", "", "error", true, denyCode, -1);
+                    "", "", "error", true, denyCode, -1,
+                    LlmCacheUsage.unknown("request was denied before provider access"));
         }
     }
 

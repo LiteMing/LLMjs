@@ -38,6 +38,30 @@ class ProviderConfigLoaderTest {
     }
 
     @Test
+    void loadsMultipleModelsRequestModeAndCachePricing() throws Exception {
+        Path providers = tempDir.resolve("providers-multi.json");
+        Path secret = tempDir.resolve("llmcore-multi.secret");
+        Files.writeString(providers, """
+                {"deepseek":{"format":"openai","url":"https://api.deepseek.com/chat/completions",
+                  "model":"deepseek-chat","models":["deepseek-chat","deepseek-reasoner"],
+                  "request_mode":"parallel","billing":{"inputMultiplier":1,"outputMultiplier":2,
+                  "cacheReadInputMultiplier":0.1,"cacheWriteInputMultiplier":1.25}}}
+                """);
+        Files.writeString(secret, """
+                {"providers":{"deepseek":{"keys":["sk-one","sk-two"]}}}
+                """);
+
+        ProviderSpec spec = ProviderConfigLoader.load(null, providers, secret).get("deepseek");
+        LlmCostRate rate = ProviderConfigLoader.loadProfiles(null, providers, secret).get("deepseek").costRate();
+
+        assertEquals(List.of("deepseek-chat", "deepseek-reasoner"), spec.models());
+        assertEquals(ProviderSpec.RequestMode.PARALLEL, spec.requestMode());
+        assertEquals(2, spec.credentials().size());
+        assertEquals(0.1D, rate.cacheReadInputMultiplier());
+        assertEquals(1.25D, rate.cacheWriteInputMultiplier());
+    }
+
+    @Test
     void capabilityProfilesAreTextOnlyUnlessExplicitlyDeclared() throws Exception {
         Path providers = tempDir.resolve("providers.json");
         Path secret = tempDir.resolve("llmcore.secret");

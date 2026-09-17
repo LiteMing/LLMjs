@@ -18,7 +18,14 @@ public final class LlmRequestLogger {
             boolean success,
             long latencyMs,
             String error,
-            String finishReason) {
+            String finishReason,
+            LlmCacheUsage cacheUsage) {
+        public AttemptEvent(String purpose, String requestId, String provider, String model,
+                String credentialId, boolean success, long latencyMs, String error, String finishReason) {
+            this(purpose, requestId, provider, model, credentialId, success, latencyMs, error, finishReason,
+                    LlmCacheUsage.unknown("provider usage was not reported"));
+        }
+
         public AttemptEvent {
             purpose = clean(purpose);
             requestId = clean(requestId);
@@ -27,6 +34,8 @@ public final class LlmRequestLogger {
             credentialId = clean(credentialId);
             error = clean(error);
             finishReason = clean(finishReason);
+            cacheUsage = cacheUsage == null
+                    ? LlmCacheUsage.unknown("provider usage was not reported") : cacheUsage;
         }
     }
 

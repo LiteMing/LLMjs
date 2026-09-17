@@ -16,7 +16,8 @@ public record LlmResponse(
         String requestBody,
         String responseBody,
         String finishReason,
-        LlmRequestAccounting.DenyCode denyCode) {
+        LlmRequestAccounting.DenyCode denyCode,
+        LlmCacheUsage cacheUsage) {
 
     public LlmResponse {
         content = content == null ? "" : content;
@@ -29,6 +30,16 @@ public record LlmResponse(
         responseBody = responseBody == null ? "" : responseBody;
         finishReason = finishReason == null ? "" : finishReason;
         denyCode = denyCode == null ? LlmRequestAccounting.DenyCode.NONE : denyCode;
+        cacheUsage = cacheUsage == null ? LlmCacheUsage.unknown("provider usage was not reported") : cacheUsage;
+    }
+
+    public LlmResponse(boolean success, String content, String error, String provider, String model,
+            String credentialId, int promptTokens, int completionTokens, long latencyMs, List<Attempt> attempts,
+            String requestBody, String responseBody, String finishReason,
+            LlmRequestAccounting.DenyCode denyCode) {
+        this(success, content, error, provider, model, credentialId, promptTokens, completionTokens, latencyMs,
+                attempts, requestBody, responseBody, finishReason, denyCode,
+                LlmCacheUsage.unknown("provider usage was not reported"));
     }
 
     /** Binary-compatible full response shape used before structured denial codes. */
@@ -60,12 +71,17 @@ public record LlmResponse(
     public static LlmResponse failure(String error, List<Attempt> attempts,
             LlmRequestAccounting.DenyCode denyCode) {
         return new LlmResponse(false, "", error, "", "", "", 0, 0, 0L, attempts,
-                "", "", "error", denyCode);
+                "", "", "error", denyCode, LlmCacheUsage.unknown("request did not complete"));
     }
 
     public LlmResponse withBodies(String request, String response) {
         return new LlmResponse(success, content, error, provider, model, credentialId, promptTokens,
-                completionTokens, latencyMs, attempts, request, response, finishReason, denyCode);
+                completionTokens, latencyMs, attempts, request, response, finishReason, denyCode, cacheUsage);
+    }
+
+    public LlmResponse withCacheUsage(LlmCacheUsage usage) {
+        return new LlmResponse(success, content, error, provider, model, credentialId, promptTokens,
+                completionTokens, latencyMs, attempts, requestBody, responseBody, finishReason, denyCode, usage);
     }
 
     public record Attempt(String provider, String credentialId, boolean success, String error, long latencyMs,

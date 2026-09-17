@@ -41,6 +41,7 @@ public class LLMConsoleScreen extends Screen {
     private final @Nullable String initialTestHandoff;
     private @Nullable Screen returnScreen;
     private boolean canView;
+    private boolean canPersonalRoute;
     private boolean canTest;
     private boolean canAdminister;
     private boolean canManageBudgets;
@@ -181,7 +182,7 @@ public class LLMConsoleScreen extends Screen {
     private void switchTab(Tab tab) {
         if ((tab == Tab.LOG && !canView)
                 || (tab == Tab.BUDGET && !(canView || canTest))
-                || (tab == Tab.PREFERENCES && !canView)
+                || (tab == Tab.PREFERENCES && !canPersonalRoute)
                 || (tab == Tab.TEST && !canTest)
                 || ((tab == Tab.PROVIDERS || tab == Tab.ROUTING || tab == Tab.SETUP) && !canAdminister)) {
             tab = canTest ? Tab.TEST : Tab.LOG;
@@ -355,13 +356,23 @@ public class LLMConsoleScreen extends Screen {
 
     public void openSetupFor(String name, String format, String url, String model, @Nullable String maskedKey,
             vibe.liteming.llmcore.LlmCostRate rate) {
+        openSetupFor(name, format, url, model, maskedKey, rate,
+                vibe.liteming.llmcore.ProviderSpec.RequestMode.ROTATION);
+    }
+
+    public void openSetupFor(String name, String format, String url, String model, @Nullable String maskedKey,
+            vibe.liteming.llmcore.LlmCostRate rate, vibe.liteming.llmcore.ProviderSpec.RequestMode mode) {
         if (!canAdminister) return;
         switchTab(Tab.SETUP);
-        if (setupPanel != null) setupPanel.prefill(name, format, url, model, maskedKey, rate);
+        if (setupPanel != null) setupPanel.prefill(name, format, url, model, maskedKey, rate, mode);
     }
 
     public void onVisionProbeResult(String providerName, boolean supported, String error, long latencyMs) {
         if (testPanel != null) testPanel.onVisionProbeResult(providerName, supported, error, latencyMs);
+    }
+
+    public void onModelDiscovery(String requestId, List<String> models, String error) {
+        if (setupPanel != null) setupPanel.onModelDiscovery(requestId, models, error);
     }
 
     private void applyAccessState() {
@@ -369,7 +380,7 @@ public class LLMConsoleScreen extends Screen {
         logTab.active = canView;
         budgetTab.active = canView || canTest;
         providersTab.active = canAdminister;
-        preferencesTab.active = canView;
+        preferencesTab.active = canPersonalRoute;
         routingTab.active = canAdminister;
         testTab.active = canTest;
         setupTab.active = canAdminister;
@@ -377,7 +388,7 @@ public class LLMConsoleScreen extends Screen {
         if (logPanel != null) logPanel.setCanManage(canAdminister);
         if (testPanel != null) testPanel.setRestricted(!canAdminister);
         if (!canAdminister && (activeTab == Tab.PROVIDERS || activeTab == Tab.ROUTING || activeTab == Tab.SETUP)) {
-            switchTab(canView ? Tab.PREFERENCES : canTest ? Tab.TEST : Tab.LOG);
+            switchTab(canPersonalRoute ? Tab.PREFERENCES : canTest ? Tab.TEST : Tab.LOG);
         }
     }
 
@@ -391,8 +402,10 @@ public class LLMConsoleScreen extends Screen {
                     && root.get("budgetDefaultConfirmationRequired").getAsBoolean();
             canTest = canAdminister || (root.has("canTest") && root.get("canTest").getAsBoolean());
             canView = canAdminister || (root.has("canView") && root.get("canView").getAsBoolean());
+            canPersonalRoute = root.has("canPersonalRoute") && root.get("canPersonalRoute").getAsBoolean();
         } catch (Exception ignored) {
             canView = false;
+            canPersonalRoute = false;
             canTest = false;
             canAdminister = false;
             canManageBudgets = false;

@@ -176,10 +176,25 @@ public class ProviderLoader {
 
     public static boolean setup(String name, String url, String model, String key, String format,
             vibe.liteming.llmcore.LlmCostRate rate) {
+        return setup(name, url, model, key, format, rate,
+                vibe.liteming.llmcore.ProviderSpec.RequestMode.ROTATION);
+    }
+
+    public static boolean setup(String name, String url, String model, String key, String format,
+            vibe.liteming.llmcore.LlmCostRate rate,
+            vibe.liteming.llmcore.ProviderSpec.RequestMode requestMode) {
         if (gameRootDir == null) return false;
         String safeFormat = format == null || format.isBlank() ? "openai" : format;
+        java.util.List<vibe.liteming.llmcore.ProviderSpec.Credential> credentials = new java.util.ArrayList<>();
+        int keyIndex = 1;
+        for (String configuredKey : (key == null ? "" : key).split(",")) {
+            String cleaned = configuredKey.trim();
+            if (!cleaned.isEmpty()) credentials.add(new vibe.liteming.llmcore.ProviderSpec.Credential(
+                    name + "#" + keyIndex++, cleaned, 1));
+        }
+        java.util.List<String> models = vibe.liteming.llmcore.ProviderSpec.parseModels(model);
         vibe.liteming.llmcore.ProviderSpec spec = new vibe.liteming.llmcore.ProviderSpec(name, safeFormat, url,
-                model, null, null, java.util.List.of(new vibe.liteming.llmcore.ProviderSpec.Credential(name + "#1", key, 1)));
+                models.isEmpty() ? "" : models.get(0), null, null, null, credentials, models, requestMode);
         try {
             return ProviderFiles.setup(editableProvidersFile(name), secretFilePath, spec, rate);
         } catch (Exception failure) {
@@ -194,9 +209,17 @@ public class ProviderLoader {
 
     public static boolean updateWithoutKey(String name, String url, String model, String format,
             vibe.liteming.llmcore.LlmCostRate rate) {
+        return updateWithoutKey(name, url, model, format, rate,
+                vibe.liteming.llmcore.ProviderSpec.RequestMode.ROTATION);
+    }
+
+    public static boolean updateWithoutKey(String name, String url, String model, String format,
+            vibe.liteming.llmcore.LlmCostRate rate,
+            vibe.liteming.llmcore.ProviderSpec.RequestMode requestMode) {
         if (gameRootDir == null) return false;
         try {
-            return ProviderFiles.updateProvider(editableProvidersFile(name), name, url, model, format, true, rate);
+            return ProviderFiles.updateProvider(editableProvidersFile(name), name, url,
+                    vibe.liteming.llmcore.ProviderSpec.parseModels(model), format, true, rate, requestMode);
         } catch (Exception failure) {
             LlmCoreMod.LOGGER.error("Failed to save provider {}", name, failure);
             return false;

@@ -63,7 +63,7 @@ class ProviderManagerRuntimeTest {
 
         LlmOrchestrator published = SharedLlmRuntime.current().orElseThrow();
         assertSame(published, SharedLlmRuntime.current().orElseThrow());
-        assertEquals(List.of("qwen"), published.getRoutingConfig().purposeChains().get("CHAT"));
+        assertEquals(List.of("qwen/qwen-plus"), published.getRoutingConfig().purposeChains().get("CHAT"));
         assertTrue(published.isWebSearchAllowed("CHAT"));
         assertTrue(published.isProviderWebSearchCapable("qwen"));
         assertEquals(HostedWebSearchAdapterIds.DASHSCOPE_OPENAI_CHAT,
@@ -96,15 +96,16 @@ class ProviderManagerRuntimeTest {
     void rollingMetricsExpireOldSamplesAndExposeRealAverage() {
         ProviderManager.RuntimeMetrics metrics = new ProviderManager.RuntimeMetrics();
         long now = 10_000_000L;
-        metrics.record(now - 3_600_001L, 900L, true, "");
-        metrics.record(now - 1000L, 100L, true, "");
-        metrics.record(now, 300L, false, "boom");
+        metrics.record(now - 3_600_001L, 900L, true, "", vibe.liteming.llmcore.LlmCacheUsage.unknown("old"));
+        metrics.record(now - 1000L, 100L, true, "", vibe.liteming.llmcore.LlmCacheUsage.reported(60L, 0L, 40L, 100L));
+        metrics.record(now, 300L, false, "boom", vibe.liteming.llmcore.LlmCacheUsage.unknown("failed"));
 
         var json = metrics.toJson(now);
         assertEquals(2, json.get("requests1h").getAsInt());
         assertEquals(0.5D, json.get("successRate1h").getAsDouble());
-        assertEquals(200L, json.get("averageLatency1hMs").getAsLong());
-        assertFalse(json.get("cacheSupported").getAsBoolean());
+        assertEquals(100L, json.get("averageLatency1hMs").getAsLong());
+        assertEquals(0.6D, json.get("cacheHitRatio1h").getAsDouble());
+        assertEquals(60L, json.get("cacheReadInputTokens1h").getAsLong());
         assertEquals("boom", json.get("lastError").getAsString());
     }
 }

@@ -3,6 +3,8 @@ package vibe.liteming.llmjs.client.widget;
 import vibe.liteming.llmjs.network.LLMNetwork;
 import vibe.liteming.llmcore.LlmCostRate;
 import vibe.liteming.llmjs.network.packet.C2SSetupProviderPacket;
+import vibe.liteming.llmjs.network.packet.C2SDiscoverModelsPacket;
+import vibe.liteming.llmcore.ProviderSpec;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -32,21 +34,28 @@ public class SetupPanel {
     private final EditBox keyInput;
     private final EditBox inputCostInput;
     private final EditBox outputCostInput;
+    private final EditBox cacheReadCostInput;
+    private final EditBox cacheWriteCostInput;
     private final Button saveButton;
     private final Button clearKeyButton;
+    private final Button modeButton;
+    private final Button discoverButton;
+    private final Button deepSeekButton;
     private @Nullable String statusMessage;
     private int statusColor = 0xFFFFFF;
     private boolean visible = true;
     private boolean editMode = false;
     private String pendingSaveId = "";
+    private String pendingDiscoveryId = "";
+    private ProviderSpec.RequestMode requestMode = ProviderSpec.RequestMode.ROTATION;
     private @Nullable String currentMaskedKey;
 
     private static final int LABEL_W = 70;
     private static final int ROW_H = 26;
     private static final int COMPACT_ROW_H = 20;
-    private static final int NORMAL_MIN_CONTENT_HEIGHT = 276;
-    private static final int COMPACT_MIN_CONTENT_HEIGHT = 224;
-    private static final int STACKED_MIN_CONTENT_HEIGHT = 388;
+    private static final int NORMAL_MIN_CONTENT_HEIGHT = 350;
+    private static final int COMPACT_MIN_CONTENT_HEIGHT = 310;
+    private static final int STACKED_MIN_CONTENT_HEIGHT = 470;
 
     public SetupPanel(int x, int y, int width, int height, Font font) {
         this.x = x;
@@ -74,12 +83,12 @@ public class SetupPanel {
         row += ROW_H;
 
         modelInput = new EditBox(font, inputX, row, inputW, 18, text("setup.model"));
-        modelInput.setMaxLength(128);
+        modelInput.setMaxLength(2048);
         modelInput.setValue("");
         row += ROW_H;
 
         keyInput = new EditBox(font, inputX, row, inputW, 18, text("setup.api_key"));
-        keyInput.setMaxLength(256);
+        keyInput.setMaxLength(4096);
         keyInput.setValue("");
         // Hide typed characters for security; leave empty to keep existing key
         keyInput.setFormatter((value, pos) -> net.minecraft.util.FormattedCharSequence.forward(
@@ -88,11 +97,21 @@ public class SetupPanel {
 
         inputCostInput = new EditBox(font, inputX, row, inputW, 18, text("setup.input_cost"));
         outputCostInput = new EditBox(font, inputX, row, inputW, 18, text("setup.output_cost"));
+        cacheReadCostInput = new EditBox(font, inputX, row, inputW, 18, text("setup.cache_read_cost"));
+        cacheWriteCostInput = new EditBox(font, inputX, row, inputW, 18, text("setup.cache_write_cost"));
         for (EditBox input : List.of(inputCostInput, outputCostInput)) {
             input.setMaxLength(24);
             input.setValue("1.0");
             tooltip(input, "setup.cost.tip");
         }
+        for (EditBox input : List.of(cacheReadCostInput, cacheWriteCostInput)) {
+            input.setMaxLength(24);
+            input.setValue("");
+            tooltip(input, "setup.cache_cost.tip");
+        }
+        modeButton = tooltip(Button.builder(text("setup.mode.rotation"), b -> toggleMode()).build(), "setup.mode.tip");
+        discoverButton = tooltip(Button.builder(text("setup.discover"), b -> discoverModels()).build(), "setup.discover.tip");
+        deepSeekButton = tooltip(Button.builder(text("setup.deepseek"), b -> applyDeepSeekPreset()).build(), "setup.deepseek.tip");
         saveButton = tooltip(Button.builder(text("setup.save"), b -> save())
                 .pos(inputX, row).size(100, 20).build(), "setup.save.tip");
         clearKeyButton = tooltip(Button.builder(text("setup.clear_key"), b -> {
@@ -109,7 +128,9 @@ public class SetupPanel {
     }
 
     public List<net.minecraft.client.gui.components.AbstractWidget> getWidgets() {
-        return List.of(nameInput, formatInput, urlInput, modelInput, keyInput, inputCostInput, outputCostInput, saveButton, clearKeyButton);
+        return List.of(nameInput, formatInput, urlInput, modelInput, keyInput, inputCostInput, outputCostInput,
+                cacheReadCostInput, cacheWriteCostInput, modeButton, discoverButton, deepSeekButton,
+                saveButton, clearKeyButton);
     }
 
     public void setBounds(int x, int y, int width, int height) {
@@ -149,30 +170,43 @@ public class SetupPanel {
     }
 
     private int buttonRelativeY() {
-        if (stackedLayout) return 252;
-        if (compactLayout()) return fieldRelativeY(6) + 18 + 6;
-        return 198;
+        if (stackedLayout) return 324;
+        if (compactLayout()) return fieldRelativeY(8) + 18 + 6;
+        return 244;
     }
 
     private int statusRelativeY() {
-        if (stackedLayout) return 306;
-        if (compactLayout()) return buttonRelativeY() + 24;
-        return 228;
+        if (stackedLayout) return buttonRelativeY() + 102;
+        return buttonRelativeY() + 50;
     }
 
     private void layoutWidgets() {
         int inputX = stackedLayout ? x + 8 : x + LABEL_W + 10;
         int inputW = stackedLayout ? Math.max(40, width - 20)
                 : Math.max(60, Math.min(width - LABEL_W - 28, 360));
-        List<EditBox> inputs = List.of(nameInput, formatInput, urlInput, modelInput, keyInput, inputCostInput, outputCostInput);
+        List<EditBox> inputs = List.of(nameInput, formatInput, urlInput, modelInput, keyInput, inputCostInput,
+                outputCostInput, cacheReadCostInput, cacheWriteCostInput);
         for (int index = 0; index < inputs.size(); index++) {
             place(inputs.get(index), inputX, contentY(fieldRelativeY(index)), inputW, 18);
         }
-        place(saveButton, inputX, contentY(buttonRelativeY()), Math.min(100, inputW), 20);
         if (stackedLayout) {
-            place(clearKeyButton, inputX, contentY(buttonRelativeY() + 24), Math.min(120, inputW), 20);
+            place(modeButton, inputX, contentY(buttonRelativeY()), inputW, 20);
+            place(discoverButton, inputX, contentY(buttonRelativeY() + 24), inputW, 20);
+            place(deepSeekButton, inputX, contentY(buttonRelativeY() + 48), inputW, 20);
+            place(saveButton, inputX, contentY(buttonRelativeY() + 72), Math.min(100, inputW), 20);
         } else {
-            place(clearKeyButton, inputX + 108, contentY(buttonRelativeY()),
+            int third = Math.max(45, (inputW - 8) / 3);
+            place(modeButton, inputX, contentY(buttonRelativeY()), third, 20);
+            place(discoverButton, inputX + third + 4, contentY(buttonRelativeY()), third, 20);
+            place(deepSeekButton, inputX + (third + 4) * 2, contentY(buttonRelativeY()),
+                    Math.max(40, inputW - (third + 4) * 2), 20);
+            place(saveButton, inputX, contentY(buttonRelativeY() + 24), Math.min(100, inputW), 20);
+        }
+        if (stackedLayout) {
+            place(clearKeyButton, inputX + Math.min(108, Math.max(0, inputW - 120)),
+                    contentY(buttonRelativeY() + 72), Math.min(120, inputW), 20);
+        } else {
+            place(clearKeyButton, inputX + 108, contentY(buttonRelativeY() + 24),
                     Math.max(40, Math.min(120, x + width - 8 - (inputX + 108))), 20);
         }
         for (var widget : getWidgets()) {
@@ -199,12 +233,21 @@ public class SetupPanel {
 
     public void prefill(String name, String format, String url, String model, @Nullable String maskedKey,
             LlmCostRate rate) {
+        prefill(name, format, url, model, maskedKey, rate, ProviderSpec.RequestMode.ROTATION);
+    }
+
+    public void prefill(String name, String format, String url, String model, @Nullable String maskedKey,
+            LlmCostRate rate, ProviderSpec.RequestMode mode) {
         pendingSaveId = "";
         getWidgets().forEach(widget -> widget.active = true);
         editMode = true;
         currentMaskedKey = maskedKey;
         inputCostInput.setValue(Double.toString(rate.inputMultiplier()));
         outputCostInput.setValue(Double.toString(rate.outputMultiplier()));
+        cacheReadCostInput.setValue(rate.cacheReadInputMultiplier() == null ? "" : Double.toString(rate.cacheReadInputMultiplier()));
+        cacheWriteCostInput.setValue(rate.cacheWriteInputMultiplier() == null ? "" : Double.toString(rate.cacheWriteInputMultiplier()));
+        requestMode = mode == null ? ProviderSpec.RequestMode.ROTATION : mode;
+        updateModeLabel();
         nameInput.setValue(name == null ? "" : name);
         if (format != null && !format.isEmpty() && !"-".equals(format)) formatInput.setValue(format);
         urlInput.setValue(url == null ? "" : url);
@@ -250,7 +293,8 @@ public class SetupPanel {
         LlmCostRate rate;
         try {
             rate = new LlmCostRate(Double.parseDouble(inputCostInput.getValue().strip()),
-                    Double.parseDouble(outputCostInput.getValue().strip()));
+                    Double.parseDouble(outputCostInput.getValue().strip()),
+                    optionalDouble(cacheReadCostInput.getValue()), optionalDouble(cacheWriteCostInput.getValue()));
         } catch (IllegalArgumentException invalid) {
             statusMessage = string("setup.validation.cost_rate");
             statusColor = 0xFF5555;
@@ -259,10 +303,78 @@ public class SetupPanel {
         String sendKey = key.isEmpty() ? "__KEEP__" : key;
         pendingSaveId = java.util.UUID.randomUUID().toString();
         LLMNetwork.CHANNEL.sendToServer(new C2SSetupProviderPacket(name, url, model, sendKey, format,
-                rate.inputMultiplier(), rate.outputMultiplier(), pendingSaveId));
+                rate.inputMultiplier(), rate.outputMultiplier(), rate.cacheReadInputMultiplier(),
+                rate.cacheWriteInputMultiplier(), requestMode, pendingSaveId));
         statusMessage = string("setup.status.saving", name);
         statusColor = 0xFFFF55;
         getWidgets().forEach(widget -> widget.active = false);
+    }
+
+    private static Double optionalDouble(String value) {
+        String cleaned = value == null ? "" : value.strip();
+        return cleaned.isEmpty() ? null : Double.parseDouble(cleaned);
+    }
+
+    private void toggleMode() {
+        requestMode = requestMode == ProviderSpec.RequestMode.ROTATION
+                ? ProviderSpec.RequestMode.PARALLEL : ProviderSpec.RequestMode.ROTATION;
+        updateModeLabel();
+    }
+
+    private void updateModeLabel() {
+        modeButton.setMessage(text(requestMode == ProviderSpec.RequestMode.PARALLEL
+                ? "setup.mode.parallel" : "setup.mode.rotation"));
+    }
+
+    private void applyDeepSeekPreset() {
+        nameInput.setValue("deepseek");
+        formatInput.setValue("openai");
+        urlInput.setValue("https://api.deepseek.com/chat/completions");
+        modelInput.setValue("deepseek-chat");
+        statusMessage = string("setup.status.deepseek_applied");
+        statusColor = 0x55FF55;
+    }
+
+    private void discoverModels() {
+        if (!pendingDiscoveryId.isEmpty()) return;
+        String url = urlInput.getValue().strip();
+        if (url.isEmpty()) {
+            statusMessage = string("setup.validation.url_required");
+            statusColor = 0xFF5555;
+            return;
+        }
+        String key = keyInput.getValue().strip();
+        if (key.isEmpty() && !editMode) {
+            statusMessage = string("setup.validation.key_required");
+            statusColor = 0xFF5555;
+            return;
+        }
+        pendingDiscoveryId = java.util.UUID.randomUUID().toString();
+        LLMNetwork.CHANNEL.sendToServer(new C2SDiscoverModelsPacket(pendingDiscoveryId,
+                nameInput.getValue().strip(), formatInput.getValue().strip(), url,
+                key.isEmpty() ? "__KEEP__" : key));
+        statusMessage = string("setup.status.discovering");
+        statusColor = 0xFFFF55;
+    }
+
+    public void onModelDiscovery(String requestId, List<String> models, String error) {
+        if (pendingDiscoveryId.isEmpty() || !pendingDiscoveryId.equals(requestId)) return;
+        pendingDiscoveryId = "";
+        if (error != null && !error.isBlank()) {
+            statusMessage = string("setup.status.discovery_failed", error);
+            statusColor = 0xFF5555;
+            return;
+        }
+        StringBuilder selected = new StringBuilder();
+        for (String model : models) {
+            int extra = (selected.length() == 0 ? 0 : 1) + model.length();
+            if (selected.length() + extra > 2048) break;
+            if (selected.length() > 0) selected.append(',');
+            selected.append(model);
+        }
+        modelInput.setValue(selected.toString());
+        statusMessage = string("setup.status.discovery_applied", models.size());
+        statusColor = 0x55FF55;
     }
 
     public void onStatusUpdate(String statusJson) {
@@ -293,7 +405,7 @@ public class SetupPanel {
 
         int labelX = x + 8;
         String[] labelKeys = {"setup.name", "setup.format", "setup.url", "setup.model", "setup.api_key",
-                "setup.input_cost", "setup.output_cost"};
+                "setup.input_cost", "setup.output_cost", "setup.cache_read_cost", "setup.cache_write_cost"};
         for (int index = 0; index < labelKeys.length; index++) {
             graphics.drawString(font, text(labelKeys[index]), labelX, contentY(labelRelativeY(index)), 0xFFFFFF, false);
         }

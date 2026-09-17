@@ -144,13 +144,18 @@ public class RoutingPanel extends AbstractWidget {
             if (root.has("providers") && root.get("providers").isJsonArray()) {
                 for (JsonElement el : root.getAsJsonArray("providers")) {
                     JsonObject p = el.getAsJsonObject();
-                    String name = p.get("name").getAsString();
                     if (p.has("type") && "raw".equals(p.get("type").getAsString())) continue;
-                    newProviders.add(name);
-                    if (p.has("billing")) {
-                        JsonObject billing = p.getAsJsonObject("billing");
-                        newRates.put(name, new LlmCostRate(billing.get("inputMultiplier").getAsDouble(),
-                                billing.get("outputMultiplier").getAsDouble()));
+                    if (p.has("targets") && p.get("targets").isJsonArray()) {
+                        for (JsonElement targetElement : p.getAsJsonArray("targets")) {
+                            JsonObject target = targetElement.getAsJsonObject();
+                            String id = target.get("id").getAsString();
+                            newProviders.add(id);
+                            if (target.has("billing")) {
+                                JsonObject billing = target.getAsJsonObject("billing");
+                                newRates.put(id, new LlmCostRate(billing.get("inputMultiplier").getAsDouble(),
+                                        billing.get("outputMultiplier").getAsDouble()));
+                            }
+                        }
                     }
                 }
             }
@@ -225,7 +230,7 @@ public class RoutingPanel extends AbstractWidget {
         return LlmRoute.empty();
     }
 
-    private List<String> getRowChain(int row) { return getRowRoute(row).providers(); }
+    private List<String> getRowChain(int row) { return getRowRoute(row).targetIds(); }
 
     private void setRowRoute(int row, LlmRoute route) {
         if (row == 0) editedDefault = route;
@@ -770,7 +775,7 @@ public class RoutingPanel extends AbstractWidget {
         List<LlmRoute.Stage> stages = new ArrayList<>(route.stages());
         stages.sort(java.util.Comparator.comparingDouble(stage -> stage.candidates().stream()
                 .mapToDouble(target -> {
-                    LlmCostRate rate = rates.getOrDefault(target.provider(), LlmCostRate.DEFAULT);
+                    LlmCostRate rate = rates.getOrDefault(target.id(), LlmCostRate.DEFAULT);
                     return rate.inputMultiplier() + rate.outputMultiplier();
                 }).sum()));
         return new LlmRoute(stages, route.deadlineOverrideSeconds());
@@ -819,7 +824,7 @@ public class RoutingPanel extends AbstractWidget {
                 if (index++ == flatIndex) {
                     String prefix = "[" + (stage + 1) + (step.racing() ? "|" : "") + "] ";
                     String suffix = target.retries() == null ? "" : "*" + target.retries();
-                    return ellipsize(prefix + ellipsize(target.provider(), maxWidth - font.width(prefix + suffix))
+                    return ellipsize(prefix + ellipsize(target.target().displayName(), maxWidth - font.width(prefix + suffix))
                             + suffix, maxWidth);
                 }
             }
@@ -1094,7 +1099,7 @@ public class RoutingPanel extends AbstractWidget {
         if (button == previousButton && !stages.isEmpty()) {
             int last = stages.size() - 1;
             LlmRoute.Stage tail = stages.get(last);
-            if (button == 0 && !tail.racing() && tail.candidates().get(0).provider().equals(provider)) {
+            if (button == 0 && !tail.racing() && tail.candidates().get(0).id().equals(provider)) {
                 LlmRoute.Target target = tail.candidates().get(0);
                 // The first click retains automatic key failover; the second and third select *2 and *3.
                 int retries = target.retries() == null ? 2 : target.retries() + 1;
@@ -1102,7 +1107,7 @@ public class RoutingPanel extends AbstractWidget {
                 return new LlmRoute(stages, route.deadlineOverrideSeconds());
             }
             if (button == 1) {
-                if (tail.candidates().stream().anyMatch(target -> target.provider().equals(provider))) return route;
+                if (tail.candidates().stream().anyMatch(target -> target.id().equals(provider))) return route;
                 List<LlmRoute.Target> candidates = new ArrayList<>(tail.candidates());
                 candidates.add(new LlmRoute.Target(provider, null));
                 stages.set(last, new LlmRoute.Stage(candidates));

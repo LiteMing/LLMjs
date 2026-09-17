@@ -43,7 +43,9 @@ public final class ProviderConfigLoader {
                     getDouble(definition, "temperature"),
                     getInteger(definition, "max_tokens"),
                     getContextWindow(definition),
-                    readCredentials(entry.getKey(), secrets));
+                    readCredentials(entry.getKey(), secrets),
+                    readModels(definition),
+                    ProviderSpec.RequestMode.parse(getString(definition, "request_mode", "rotation")));
             if (spec.isValid()) {
                 result.put(spec.name(), spec);
             }
@@ -65,7 +67,9 @@ public final class ProviderConfigLoader {
                     getDouble(secretDefinition, "temperature"),
                     getInteger(secretDefinition, "max_tokens"),
                     getContextWindow(secretDefinition),
-                    readCredentials(entry.getKey(), secrets));
+                    readCredentials(entry.getKey(), secrets),
+                    readModels(secretDefinition),
+                    ProviderSpec.RequestMode.parse(getString(secretDefinition, "request_mode", "rotation")));
             if (spec.isValid()) {
                 result.put(spec.name(), spec);
             }
@@ -96,8 +100,10 @@ public final class ProviderConfigLoader {
             if (definition == null && secrets.has(provider) && secrets.get(provider).isJsonObject()) {
                 definition = secrets.getAsJsonObject(provider);
             }
+            LlmCostRate providerRate = readCostRate(provider, definition);
             result.put(provider, new ProviderProfile(provider,
-                    readCapabilities(provider, definition, sink), readCostRate(provider, definition)));
+                    readCapabilities(provider, definition, sink), providerRate,
+                    readModelCostRates(provider, definition, providerRate)));
         }
         return result;
     }
@@ -137,14 +143,33 @@ public final class ProviderConfigLoader {
             if (!value.isJsonObject()) throw new IllegalArgumentException("billing must be an object");
             JsonObject billing = value.getAsJsonObject();
             rejectUnknownFields(billing,
-                    Set.of("inputMultiplier", "outputMultiplier"), "billing");
+                    Set.of("inputMultiplier", "outputMultiplier", "cacheReadInputMultiplier",
+                            "cacheWriteInputMultiplier"), "billing");
             double input = getDoubleOrDefault(billing, "inputMultiplier", 1.0D);
             double output = getDoubleOrDefault(billing, "outputMultiplier", input);
-            return new LlmCostRate(input, output);
+            Double cacheRead = getDouble(billing, "cacheReadInputMultiplier");
+            Double cacheWrite = getDouble(billing, "cacheWriteInputMultiplier");
+            return new LlmCostRate(input, output, cacheRead, cacheWrite);
         } catch (RuntimeException error) {
             throw new IllegalArgumentException("Provider '" + provider + "' has invalid billing: "
                     + error.getMessage(), error);
         }
+    }
+
+    private static Map<String, LlmCostRate> readModelCostRates(String provider, JsonObject definition,
+            LlmCostRate fallback) {
+        if (definition == null || !definition.has("models") || !definition.get("models").isJsonArray()) {
+            return Map.of();
+        }
+        Map<String, LlmCostRate> rates = new LinkedHashMap<>();
+        for (JsonElement value : definition.getAsJsonArray("models")) {
+            if (!value.isJsonObject()) continue;
+            JsonObject model = value.getAsJsonObject();
+            String id = getString(model, "id", getString(model, "model", "")).trim();
+            if (id.isEmpty()) throw new IllegalArgumentException("Provider '" + provider + "' has a model without id");
+            rates.put(id, model.has("billing") ? readCostRate(provider + "/" + id, model) : fallback);
+        }
+        return Map.copyOf(rates);
     }
 
     private static ProviderCapabilities.HostedWebSearch readWebSearch(JsonObject capabilities) {
@@ -235,6 +260,22 @@ public final class ProviderConfigLoader {
             credentials.add(new ProviderSpec.Credential(provider + "#1", object.get("key").getAsString(), 1));
         }
         return credentials;
+    }
+
+    private static List<String> readModels(JsonObject definition) {
+        List<String> models = new ArrayList<>();
+        if (definition.has("models") && definition.get("models").isJsonArray()) {
+            for (JsonElement value : definition.getAsJsonArray("models")) {
+                if (value.isJsonPrimitive()) models.add(value.getAsString());
+                else if (value.isJsonObject()) {
+                    JsonObject model = value.getAsJsonObject();
+                    String id = getString(model, "id", getString(model, "model", ""));
+                    if (!id.isBlank()) models.add(id);
+                }
+            }
+        }
+        if (models.isEmpty()) models.addAll(ProviderSpec.parseModels(getString(definition, "model", "")));
+        return models;
     }
 
     private static JsonObject loadObject(Path file) {
