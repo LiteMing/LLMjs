@@ -38,6 +38,21 @@ class ProviderConfigLoaderTest {
     }
 
     @Test
+    void treatsMissingSecretAsAnAnonymousCredentialForLocalProviders() throws Exception {
+        Path providers = tempDir.resolve("providers-local.json");
+        Path secret = tempDir.resolve("llmcore-local.secret");
+        Files.writeString(providers, """
+                {"local":{"format":"openai","url":"http://127.0.0.1:1234/v1/chat/completions","model":"local-model"}}
+                """);
+
+        ProviderSpec spec = ProviderConfigLoader.load(null, providers, secret).get("local");
+
+        assertEquals(1, spec.credentials().size());
+        assertEquals("", spec.credentials().get(0).key());
+        assertFalse(spec.credentials().get(0).isConfigured());
+    }
+
+    @Test
     void loadsMultipleModelsRequestModeAndCachePricing() throws Exception {
         Path providers = tempDir.resolve("providers-multi.json");
         Path secret = tempDir.resolve("llmcore-multi.secret");
@@ -180,6 +195,19 @@ class ProviderConfigLoaderTest {
         assertTrue(profile.capabilities().inputModalities().contains("image"));
         assertFalse(Files.readString(providers).contains("test-key"));
         assertEquals(8000, ProviderConfigLoader.load(providers, null, secret).get("model").contextWindowTokens());
+    }
+
+    @Test
+    void setupPersistsAnExplicitEmptyKey() throws Exception {
+        Path providers = tempDir.resolve("providers-empty-key.json");
+        Path secret = tempDir.resolve("llmcore-empty-key.secret");
+        ProviderSpec spec = new ProviderSpec("local", "openai", "http://localhost/chat", "model",
+                null, null, List.of(new ProviderSpec.Credential("local#1", "", 1)));
+
+        assertTrue(ProviderFiles.setup(providers, secret, spec));
+        assertEquals("", ProviderConfigLoader.load(providers, null, secret)
+                .get("local").credentials().get(0).key());
+        assertTrue(Files.readString(secret).contains("\"key\": \"\""));
     }
 
     @Test

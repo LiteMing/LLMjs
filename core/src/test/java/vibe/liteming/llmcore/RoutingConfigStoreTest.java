@@ -71,6 +71,17 @@ class RoutingConfigStoreTest {
     }
 
     @Test
+    void targetIdsKeepMachineEncodingWhileDisplayNamesRemainReadable() {
+        LlmTarget target = LlmTarget.of("\u4E2D\u6587\u63D0\u4F9B\u5546", "\u4E2D\u6587\u6A21\u578B");
+
+        assertTrue(target.id().contains("%E4%B8%AD"));
+        assertEquals("\u4E2D\u6587\u63D0\u4F9B\u5546", LlmTarget.parse(target.id()).provider());
+        assertEquals("\u4E2D\u6587\u6A21\u578B", LlmTarget.parse(target.id()).model());
+        assertEquals("\u4E2D\u6587\u63D0\u4F9B\u5546/\u4E2D\u6587\u6A21\u578B",
+                LlmTarget.parse(target.id()).displayName());
+    }
+
+    @Test
     void deadlinesCanOverrideIndependentlyOfInheritedProviders() {
         PriorityRoutingConfig config = RoutingConfigStore.parse("""
                 {"schemaVersion":3,"default":{"route":"","deadlineSeconds":30},"purposes":{

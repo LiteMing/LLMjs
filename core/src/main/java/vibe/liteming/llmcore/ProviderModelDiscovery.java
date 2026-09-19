@@ -44,10 +44,11 @@ public final class ProviderModelDiscovery {
                     .GET().header("Accept", "application/json");
             String key = apiKey == null ? "" : apiKey.trim();
             if ("claude".equals(normalized) || "anthropic".equals(normalized)) {
-                request.header("x-api-key", key).header("anthropic-version", "2023-06-01");
+                request.header("anthropic-version", "2023-06-01");
+                if (!key.isEmpty()) request.header("x-api-key", key);
             } else if ("gemini".equals(normalized)) {
-                request.header("x-goog-api-key", key);
-            } else {
+                if (!key.isEmpty()) request.header("x-goog-api-key", key);
+            } else if (!key.isEmpty()) {
                 request.header("Authorization", "Bearer " + key);
             }
             return CLIENT.sendAsync(request.build(), HttpResponse.BodyHandlers.ofByteArray())

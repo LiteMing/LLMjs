@@ -231,7 +231,7 @@ public final class ProviderConfigLoader {
 
     private static List<ProviderSpec.Credential> readCredentials(String provider, JsonObject secrets) {
         if (!secrets.has(provider)) {
-            return List.of();
+            return List.of(new ProviderSpec.Credential(provider + "#1", "", 1));
         }
         JsonElement value = secrets.get(provider);
         List<ProviderSpec.Credential> credentials = new ArrayList<>();
@@ -240,7 +240,7 @@ public final class ProviderConfigLoader {
             return credentials;
         }
         if (!value.isJsonObject()) {
-            return List.of();
+            return List.of(new ProviderSpec.Credential(provider + "#1", "", 1));
         }
         JsonObject object = value.getAsJsonObject();
         if (object.has("keys") && object.get("keys").isJsonArray()) {
@@ -259,7 +259,9 @@ public final class ProviderConfigLoader {
         } else if (object.has("key")) {
             credentials.add(new ProviderSpec.Credential(provider + "#1", object.get("key").getAsString(), 1));
         }
-        return credentials;
+        return credentials.isEmpty()
+                ? List.of(new ProviderSpec.Credential(provider + "#1", "", 1))
+                : credentials;
     }
 
     private static List<String> readModels(JsonObject definition) {

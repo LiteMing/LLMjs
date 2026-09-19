@@ -70,6 +70,35 @@ class LlmOrchestratorTest {
     }
 
     @Test
+    void executesLocalProviderWithEmptyKeyWithoutAuthHeader() throws Exception {
+        AtomicInteger requests = new AtomicInteger();
+        List<String> authorizations = new ArrayList<>();
+        server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/chat", exchange -> {
+            requests.incrementAndGet();
+            authorizations.add(exchange.getRequestHeaders().getFirst("Authorization"));
+            byte[] body = "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}"
+                    .getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        ProviderSpec spec = new ProviderSpec("local", "openai",
+                "http://localhost:" + server.getAddress().getPort() + "/chat", "model", null, 20,
+                List.of());
+
+        LlmResponse response = new LlmOrchestrator(Map.of("local", spec)).send(new LlmRequest(
+                List.of(new LlmMessage("user", "hi")), List.of("local"), null, 20, 5,
+                LlmRequestContext.chat())).join();
+
+        assertTrue(response.success(), response.error());
+        assertEquals(1, requests.get());
+        assertNull(authorizations.get(0));
+        assertEquals("local#1", response.credentialId());
+    }
+
+    @Test
     void rateLimitedCredentialFallsBackToNextSlot() throws Exception {
         server = HttpServer.create(new InetSocketAddress(0), 0);
         server.createContext("/chat", exchange -> {

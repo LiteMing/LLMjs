@@ -52,6 +52,9 @@ public final class LlmOrchestrator implements AutoCloseable {
     public LlmOrchestrator(Map<String, ProviderSpec> providerSpecs) {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(15))
+                // Some OpenAI-compatible uvicorn/vLLM endpoints mishandle HTTP/2
+                // request bodies sent over clear-text connections.
+                .version(HttpClient.Version.HTTP_1_1)
                 .build();
         replaceProviders(providerSpecs);
     }
@@ -862,12 +865,12 @@ public final class LlmOrchestrator implements AutoCloseable {
                 parameters.temperature(), parameters.maxOutputTokens(), false);
         body.addProperty("stream", true);
         String requestBody = GSON.toJson(body);
-        HttpRequest httpRequest = HttpRequest.newBuilder(URI.create(provider.url()))
+        HttpRequest.Builder streamBuilder = HttpRequest.newBuilder(URI.create(provider.url()))
                 .timeout(Duration.ofSeconds(parameters.timeoutSeconds()))
                 .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + credential.key())
-                .POST(HttpRequest.BodyPublishers.ofString(requestBody))
-                .build();
+                .POST(HttpRequest.BodyPublishers.ofString(requestBody));
+        applyHeaders(streamBuilder, provider.format(), credential.key());
+        HttpRequest httpRequest = streamBuilder.build();
         LlmCostRate rate = costRate(provider);
         LlmRequestAccounting.Reservation reservation = LlmRequestAccounting.reserve(request,
                 attemptEstimate(request, provider, parameters, rate));
@@ -1245,6 +1248,12 @@ public final class LlmOrchestrator implements AutoCloseable {
     }
 
     private static void applyHeaders(HttpRequest.Builder builder, String format, String key) {
+        if (key == null || key.isBlank()) {
+            if ("claude".equals(format) || "anthropic".equals(format)) {
+                builder.header("anthropic-version", "2023-06-01");
+            }
+            return;
+        }
         if ("claude".equals(format) || "anthropic".equals(format)) {
             builder.header("x-api-key", key).header("anthropic-version", "2023-06-01");
         } else if (!"gemini".equals(format)) {
@@ -1258,6 +1267,7 @@ public final class LlmOrchestrator implements AutoCloseable {
         }
         String base = provider.url().replace("{model}", provider.model());
         if (base.contains("{key}")) return base.replace("{key}", key);
+        if (key == null || key.isBlank()) return base;
         return base + (base.contains("?") ? "&" : "?") + "key=" + key;
     }
 
@@ -1397,10 +1407,11 @@ public final class LlmOrchestrator implements AutoCloseable {
 
         private ProviderRuntime(ProviderSpec spec) {
             this.spec = spec;
-            this.credentials = spec.credentials().stream()
-                    .filter(ProviderSpec.Credential::isConfigured)
-                    .map(CredentialRuntime::new)
-                    .toList();
+            List<ProviderSpec.Credential> configured = spec.credentials();
+            if (configured.isEmpty() && spec.isValid()) {
+                configured = List.of(new ProviderSpec.Credential(spec.name() + "#1", "", 1));
+            }
+            this.credentials = configured.stream().map(CredentialRuntime::new).toList();
         }
 
         CredentialRuntime selectAvailable(long nowMs, Set<CredentialRuntime> excluded) {
