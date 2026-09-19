@@ -2,12 +2,14 @@ package vibe.liteming.llmjs.client.widget;
 
 import org.junit.jupiter.api.Test;
 import vibe.liteming.llmcore.LlmRoute;
+import vibe.liteming.llmcore.LlmTarget;
 import vibe.liteming.llmcore.PriorityRoutingConfig;
 import vibe.liteming.llmcore.RoutingConfigStore;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RoutingPanelLayoutTest {
     @Test
@@ -103,5 +105,16 @@ class RoutingPanelLayoutTest {
         assertEquals("D > E > (B | C) > A*3", sorted.expression());
         assertEquals(90, sorted.deadlineSeconds());
         assertEquals("A*3 > (B | C) > D > E", route.expression());
+    }
+
+    @Test
+    void routeDisplayUsesReadableChineseNamesForEncodedTargets() {
+        String target = LlmTarget.of("\u4E2D\u6587\u63D0\u4F9B\u5546", "\u4E2D\u6587\u6A21\u578B").id();
+        LlmRoute route = LlmRoute.parse(target + "*2 > (" + target + " | fallback)");
+
+        assertEquals("\u4E2D\u6587\u63D0\u4F9B\u5546/\u4E2D\u6587\u6A21\u578B*2 > (\u4E2D\u6587\u63D0\u4F9B\u5546/\u4E2D\u6587\u6A21\u578B | fallback)",
+                RoutingPanel.displayRoute(route));
+        assertEquals(route, LlmRoute.parse(RoutingPanel.displayRoute(route)));
+        assertTrue(route.expression().contains("%E4%B8%AD"));
     }
 }

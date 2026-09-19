@@ -13,11 +13,11 @@ public class S2CLogPacket {
     }
 
     public void encode(FriendlyByteBuf buf) {
-        buf.writeUtf(logEntryJson, 32767);
+        buf.writeUtf(logEntryJson, 262144);
     }
 
     public static S2CLogPacket decode(FriendlyByteBuf buf) {
-        return new S2CLogPacket(buf.readUtf(32767));
+        return new S2CLogPacket(buf.readUtf(262144));
     }
 
     public static void handle(S2CLogPacket msg, Supplier<NetworkEvent.Context> ctx) {

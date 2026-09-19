@@ -15,7 +15,7 @@ import java.util.function.Consumer;
 
 public class LLMLogger {
     public static final LLMLogger INSTANCE = new LLMLogger();
-    private static final int MAX_BODY_CHARS = 12000;
+    private static final int MAX_BODY_CHARS = 100_000;
 
     public enum Level { INFO, WARN, ERROR }
 

@@ -18,7 +18,7 @@ public class S2CLogHistoryPacket {
     public void encode(FriendlyByteBuf buf) {
         buf.writeVarInt(entries.size());
         for (String entry : entries) {
-            buf.writeUtf(entry, 32767);
+            buf.writeUtf(entry, 262144);
         }
     }
 
@@ -26,7 +26,7 @@ public class S2CLogHistoryPacket {
         int count = buf.readVarInt();
         List<String> entries = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
-            entries.add(buf.readUtf(32767));
+            entries.add(buf.readUtf(262144));
         }
         return new S2CLogHistoryPacket(entries);
     }

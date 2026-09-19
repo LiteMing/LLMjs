@@ -26,6 +26,7 @@ import java.util.Map;
 
 import static vibe.liteming.llmjs.client.ConsoleTexts.string;
 import static vibe.liteming.llmjs.client.ConsoleTexts.text;
+import static vibe.liteming.llmjs.client.ConsoleTexts.targetDisplayName;
 
 /** Player-scoped ordering of server-enabled provider/model targets. */
 @OnlyIn(Dist.CLIENT)
@@ -168,7 +169,9 @@ public final class PersonalRoutingPanel extends AbstractWidget {
                 getX() + getWidth() / 2, getY() + 29, 0xFFFFFF);
 
         graphics.drawString(font, text("preferences.route"), getX() + 8, getY() + 50, 0xAAAAAA, false);
-        String route = draft.isEmpty() ? string("preferences.server_default") : String.join(" > ", draft);
+        String route = draft.isEmpty() ? string("preferences.server_default")
+                : draft.stream().map(value -> targetDisplayName(value))
+                        .collect(java.util.stream.Collectors.joining(" > "));
         graphics.drawString(font, font.plainSubstrByWidth(route, Math.max(8, getWidth() - 16)),
                 getX() + 8, getY() + 64, dirty ? 0xFFFF55 : 0xDDDDDD, false);
         graphics.drawString(font, text("preferences.available"), getX() + 8, getY() + 79, 0xAAAAAA, false);

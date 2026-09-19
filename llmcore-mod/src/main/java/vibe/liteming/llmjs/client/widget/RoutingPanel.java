@@ -31,6 +31,7 @@ import java.util.Set;
 
 import static vibe.liteming.llmjs.client.ConsoleTexts.string;
 import static vibe.liteming.llmjs.client.ConsoleTexts.text;
+import static vibe.liteming.llmjs.client.ConsoleTexts.targetDisplayName;
 import static vibe.liteming.llmjs.client.ConsoleTexts.tooltip;
 
 /**
@@ -244,7 +245,7 @@ public class RoutingPanel extends AbstractWidget {
 
     private void loadRouteFields() {
         LlmRoute route = getRowRoute(editingRow);
-        setInputValue(routeInput, route.expression());
+        setInputValue(routeInput, displayRoute(route));
         setInputValue(deadlineInput, number(route.deadlineOverrideSeconds()));
         deadlineInput.setHint(Component.literal(Integer.toString(editingRow == 0
                 ? LlmRoute.DEFAULT_DEADLINE_SECONDS : editedDefault.deadlineSeconds())));
@@ -321,7 +322,7 @@ public class RoutingPanel extends AbstractWidget {
             LlmRoute route = (advancedRouteOpen ? LlmRoute.parse(routeInput.getValue())
                     : getRowRoute(editingRow)).withDeadline(deadline);
             if (!route.equals(getRowRoute(editingRow))) setRowRoute(editingRow, route);
-            if (!advancedRouteOpen) setInputValue(routeInput, route.expression());
+            if (!advancedRouteOpen) setInputValue(routeInput, displayRoute(route));
             if (editingRow == 0) { parameterError = ""; return true; }
 
             LlmRouteOptions options = new LlmRouteOptions(
@@ -902,11 +903,33 @@ public class RoutingPanel extends AbstractWidget {
     }
 
     private String providerLabel(String providerName) {
-        return providerName == null || providerName.isBlank() ? string("common.none") : providerName;
+        return providerName == null || providerName.isBlank()
+                ? string("common.none") : targetDisplayName(providerName);
     }
 
     private String chainDetails(LlmRoute route) {
-        return route.isEmpty() ? string("routing.chain_all") : route.expression();
+        return route.isEmpty() ? string("routing.chain_all") : displayRoute(route);
+    }
+
+    /** Presentation-only route text; persistence and packet payloads keep {@link LlmRoute#expression()}. */
+    static String displayRoute(LlmRoute route) {
+        if (route == null || route.isEmpty()) return "";
+        return route.stages().stream().map(stage -> {
+            String candidates = stage.candidates().stream().map(target -> {
+                String retries = target.retries() == null ? "" : "*" + target.retries();
+                return displayTargetExpression(target) + retries;
+            }).collect(java.util.stream.Collectors.joining(" | "));
+            return stage.racing() ? "(" + candidates + ")" : candidates;
+        }).collect(java.util.stream.Collectors.joining(" > "));
+    }
+
+    private static String displayTargetExpression(LlmRoute.Target target) {
+        String displayName = target.target().displayName();
+        // Keep the encoded form for names that the route grammar cannot represent
+        // losslessly as a human-readable provider/model pair.
+        if (target.provider().contains("/") || displayName.indexOf('%') >= 0) return target.id();
+        if (displayName.matches("[\\p{L}\\p{N}_:./%-]+")) return displayName;
+        return "\"" + displayName.replace("\\", "\\\\").replace("\"", "\\\"") + "\"";
     }
 
     private String ellipsize(String value, int maxWidth) {
@@ -933,7 +956,8 @@ public class RoutingPanel extends AbstractWidget {
         if (availableIndex >= 0) {
             String name = providerNames.get(availableIndex);
             LlmCostRate rate = costRates.getOrDefault(name, LlmCostRate.DEFAULT);
-            return text("routing.provider.cost", name, rate.inputMultiplier(), rate.outputMultiplier());
+            return text("routing.provider.cost", targetDisplayName(name),
+                    rate.inputMultiplier(), rate.outputMultiplier());
         }
         return null;
     }

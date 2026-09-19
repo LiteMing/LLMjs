@@ -18,7 +18,7 @@ public interface Provider {
                                               int timeoutSeconds);
     CompletableFuture<LLMResponse> testConnection(int timeoutSeconds);
     boolean isValid();
-    /** Whether this provider has a valid API key configured. */
+    /** Whether this provider can be selected for requests; local providers may use an empty key. */
     boolean isConfigured();
     String getMaskedKey();
 

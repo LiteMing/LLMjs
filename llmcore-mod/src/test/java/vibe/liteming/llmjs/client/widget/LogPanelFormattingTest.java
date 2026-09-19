@@ -42,4 +42,11 @@ class LogPanelFormattingTest {
         assertTrue(formatted.contains("C:\\\\new\\\\test.txt"));
         assertTrue(formatted.contains("\"literal\": \"\\\\n\""));
     }
+
+    @Test
+    void truncatedJsonWithLiteralNewlinesFallsBackToReadableLines() {
+        String truncated = "{\"messages\":[{\"role\":\"system\",\"content\":\"hello\\nworld\"} ...[truncated]";
+        String formatted = LogPanel.formatBodyForDisplay(truncated);
+        assertTrue(formatted.contains("hello\nworld"));
+    }
 }

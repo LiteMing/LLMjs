@@ -192,6 +192,9 @@ public class ProviderLoader {
             if (!cleaned.isEmpty()) credentials.add(new vibe.liteming.llmcore.ProviderSpec.Credential(
                     name + "#" + keyIndex++, cleaned, 1));
         }
+        if (credentials.isEmpty()) {
+            credentials.add(new vibe.liteming.llmcore.ProviderSpec.Credential(name + "#1", "", 1));
+        }
         java.util.List<String> models = vibe.liteming.llmcore.ProviderSpec.parseModels(model);
         vibe.liteming.llmcore.ProviderSpec spec = new vibe.liteming.llmcore.ProviderSpec(name, safeFormat, url,
                 models.isEmpty() ? "" : models.get(0), null, null, null, credentials, models, requestMode);

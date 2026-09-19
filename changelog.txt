@@ -1,3 +1,8 @@
+LLM Core 1.5.3 (Hotfix)
+=======================
+ - Console Routing, personal routing, and advanced route editing now display provider and model names with their original Unicode text while keeping encoded target IDs for persistence and routing.
+ - Console Setup now accepts empty API keys for local providers and keeps anonymous credentials usable through routing.
+
 LLM Core 1.5.0
 ==============
  - Configure separate input/output cost multipliers per provider/model in Console Setup; budgets now show both raw tokens and weighted cost units.

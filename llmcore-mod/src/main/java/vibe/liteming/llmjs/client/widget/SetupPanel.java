@@ -262,7 +262,6 @@ public class SetupPanel {
         } else {
             statusMessage = string("setup.status.editing_no_key", name);
             statusColor = 0xFFFF55;
-            editMode = false;
         }
     }
 
@@ -284,12 +283,6 @@ public class SetupPanel {
             statusColor = 0xFF5555;
             return;
         }
-        if (key.isEmpty() && !editMode) {
-            statusMessage = string("setup.validation.key_required");
-            statusColor = 0xFF5555;
-            return;
-        }
-
         LlmCostRate rate;
         try {
             rate = new LlmCostRate(Double.parseDouble(inputCostInput.getValue().strip()),
@@ -300,7 +293,7 @@ public class SetupPanel {
             statusColor = 0xFF5555;
             return;
         }
-        String sendKey = key.isEmpty() ? "__KEEP__" : key;
+        String sendKey = key.isEmpty() && editMode ? "__KEEP__" : key;
         pendingSaveId = java.util.UUID.randomUUID().toString();
         LLMNetwork.CHANNEL.sendToServer(new C2SSetupProviderPacket(name, url, model, sendKey, format,
                 rate.inputMultiplier(), rate.outputMultiplier(), rate.cacheReadInputMultiplier(),
@@ -344,15 +337,10 @@ public class SetupPanel {
             return;
         }
         String key = keyInput.getValue().strip();
-        if (key.isEmpty() && !editMode) {
-            statusMessage = string("setup.validation.key_required");
-            statusColor = 0xFF5555;
-            return;
-        }
         pendingDiscoveryId = java.util.UUID.randomUUID().toString();
         LLMNetwork.CHANNEL.sendToServer(new C2SDiscoverModelsPacket(pendingDiscoveryId,
                 nameInput.getValue().strip(), formatInput.getValue().strip(), url,
-                key.isEmpty() ? "__KEEP__" : key));
+                key.isEmpty() && editMode ? "__KEEP__" : key));
         statusMessage = string("setup.status.discovering");
         statusColor = 0xFFFF55;
     }

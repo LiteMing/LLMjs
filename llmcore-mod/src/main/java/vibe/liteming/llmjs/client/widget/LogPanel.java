@@ -548,8 +548,12 @@ public class LogPanel extends AbstractWidget {
         try {
             return humanizeEscapedText(PRETTY_JSON.toJson(JsonParser.parseString(trimmed)));
         } catch (Exception ignored) {
-            return body;
+            return humanizeEscapedFallback(body);
         }
+    }
+
+    private static String humanizeEscapedFallback(String body) {
+        return body.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\\"", "\"");
     }
 
     /** Presentation only: decode each JSON string once, preserving literal backslash sequences. */

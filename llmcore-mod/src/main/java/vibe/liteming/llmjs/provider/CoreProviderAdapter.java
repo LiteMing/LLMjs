@@ -93,7 +93,7 @@ final class CoreProviderAdapter implements Provider {
 
     @Override
     public boolean isConfigured() {
-        return spec.credentials().stream().anyMatch(ProviderSpec.Credential::isConfigured);
+        return spec.isValid();
     }
 
     @Override
