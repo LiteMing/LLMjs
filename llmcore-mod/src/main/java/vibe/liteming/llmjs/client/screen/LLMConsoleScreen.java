@@ -12,6 +12,7 @@ import vibe.liteming.llmjs.client.widget.TestPanel;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraftforge.api.distmarker.Dist;
@@ -54,6 +55,12 @@ public class LLMConsoleScreen extends Screen {
     private Button testTab;
     private Button setupTab;
     private Button confirmBudgetButton;
+    private EditBox logSearchBox;
+    private EditBox logPurposeBox;
+    private EditBox logModelBox;
+    private Button logLiveButton;
+    private Button logHistoryButton;
+    private Button logAllButton;
 
     public LLMConsoleScreen(String statusJson) {
         this(statusJson, null, null);
@@ -114,12 +121,36 @@ public class LLMConsoleScreen extends Screen {
         int panelW = Math.max(1, width - margin * 2);
         int panelX = margin;
 
-        logPanel = new LogPanel(panelX, panelY, panelW, panelH);
+        int logPanelY = panelY + 44;
+        logPanel = new LogPanel(panelX, logPanelY, panelW, Math.max(1, panelH - 44));
         budgetPanel = new BudgetPanel(panelX, panelY, panelW, panelH, initialStatusJson);
         providerPanel = new ProviderListPanel(panelX, panelY, panelW, panelH, initialStatusJson);
         personalRoutingPanel = new PersonalRoutingPanel(panelX, panelY, panelW, panelH, font, initialStatusJson);
         routingPanel = new RoutingPanel(panelX, panelY, panelW, panelH, font, initialStatusJson);
         addRenderableWidget(logPanel);
+        logSearchBox = new EditBox(font, panelX, panelY, Math.min(110, panelW), 20, text("log.search"));
+        logSearchBox.setHint(text("log.search.hint"));
+        logSearchBox.setResponder(value -> updateLogFilters());
+        logPurposeBox = new EditBox(font, panelX + Math.min(114, panelW), panelY,
+                Math.min(85, Math.max(1, panelW - 114)), 20, text("log.purpose"));
+        logPurposeBox.setHint(text("log.purpose.hint"));
+        logPurposeBox.setResponder(value -> updateLogFilters());
+        logModelBox = new EditBox(font, panelX + Math.min(203, panelW), panelY,
+                Math.min(100, Math.max(1, panelW - 203)), 20, text("log.model"));
+        logModelBox.setHint(text("log.model.hint"));
+        logModelBox.setResponder(value -> updateLogFilters());
+        logLiveButton = Button.builder(text("log.live"), b -> logPanel.setViewMode(LogPanel.ViewMode.LIVE))
+                .pos(panelX, panelY + 22).size(52, 20).build();
+        logHistoryButton = Button.builder(text("log.history"), b -> logPanel.setViewMode(LogPanel.ViewMode.HISTORY))
+                .pos(panelX + 54, panelY + 22).size(62, 20).build();
+        logAllButton = Button.builder(text("log.all"), b -> logPanel.setViewMode(LogPanel.ViewMode.ALL))
+                .pos(panelX + 118, panelY + 22).size(52, 20).build();
+        addRenderableWidget(logSearchBox);
+        addRenderableWidget(logPurposeBox);
+        addRenderableWidget(logModelBox);
+        addRenderableWidget(logLiveButton);
+        addRenderableWidget(logHistoryButton);
+        addRenderableWidget(logAllButton);
         addRenderableWidget(budgetPanel);
         addRenderableWidget(providerPanel);
         addRenderableWidget(personalRoutingPanel);
@@ -169,7 +200,18 @@ public class LLMConsoleScreen extends Screen {
         int panelH = Math.max(1, height - panelY - 10);
         int panelW = Math.max(1, width - margin * 2);
         int panelX = margin;
-        logPanel.setBounds(panelX, panelY, panelW, panelH);
+        int logPanelY = panelY + 44;
+        logPanel.setBounds(panelX, logPanelY, panelW, Math.max(1, panelH - 44));
+        if (logSearchBox != null) {
+            logSearchBox.setX(panelX); logSearchBox.setY(panelY); logSearchBox.setWidth(Math.min(110, panelW));
+            logPurposeBox.setX(panelX + Math.min(114, panelW)); logPurposeBox.setY(panelY);
+            logPurposeBox.setWidth(Math.min(85, Math.max(1, panelW - 114)));
+            logModelBox.setX(panelX + Math.min(203, panelW)); logModelBox.setY(panelY);
+            logModelBox.setWidth(Math.min(100, Math.max(1, panelW - 203)));
+            logLiveButton.setX(panelX); logLiveButton.setY(panelY + 22);
+            logHistoryButton.setX(panelX + 54); logHistoryButton.setY(panelY + 22);
+            logAllButton.setX(panelX + 118); logAllButton.setY(panelY + 22);
+        }
         budgetPanel.setBounds(panelX, panelY, panelW, panelH);
         providerPanel.setBounds(panelX, panelY, panelW, panelH);
         personalRoutingPanel.setBounds(panelX, panelY, panelW, panelH);
@@ -189,6 +231,10 @@ public class LLMConsoleScreen extends Screen {
         }
         activeTab = tab;
         logPanel.visible = (tab == Tab.LOG);
+        if (logSearchBox != null) {
+            logSearchBox.visible = logPurposeBox.visible = logModelBox.visible = (tab == Tab.LOG);
+            logLiveButton.visible = logHistoryButton.visible = logAllButton.visible = (tab == Tab.LOG);
+        }
         budgetPanel.visible = (tab == Tab.BUDGET);
         providerPanel.visible = (tab == Tab.PROVIDERS);
         personalRoutingPanel.setPanelVisible(tab == Tab.PREFERENCES);
@@ -351,6 +397,18 @@ public class LLMConsoleScreen extends Screen {
     public void onLogHistory(List<String> entries) {
         if (logPanel != null) {
             logPanel.setHistory(entries);
+        }
+    }
+
+    public void onLogEntries(List<String> entries) {
+        if (logPanel != null && entries != null) {
+            for (String entry : entries) logPanel.addEntry(entry);
+        }
+    }
+
+    private void updateLogFilters() {
+        if (logPanel != null && logSearchBox != null) {
+            logPanel.setSearchFilters(logSearchBox.getValue(), logPurposeBox.getValue(), logModelBox.getValue());
         }
     }
 

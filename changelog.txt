@@ -1,3 +1,9 @@
+LLM Core 1.6.0
+==============
+ - Fixed Jev's Rhino overload failure so ACTION_DECISION requests stay on the llmcore routing and logging path.
+ - Console logs now retain the selected model, separate per-world history from the current client session, and persist history across server restarts.
+ - Added log search plus purpose/model filters and route/model color markers for faster traffic inspection.
+
 LLM Core 1.5.3 (Hotfix)
 =======================
  - Console Routing, personal routing, and advanced route editing now display provider and model names with their original Unicode text while keeping encoded target IDs for persistence and routing.

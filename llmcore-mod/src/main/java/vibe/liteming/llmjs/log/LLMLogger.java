@@ -2,10 +2,14 @@ package vibe.liteming.llmjs.log;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.jetbrains.annotations.Nullable;
 import vibe.liteming.llmcore.LlmRequestLogger;
 
 import java.time.Instant;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
@@ -23,6 +27,7 @@ public class LLMLogger {
             Instant timestamp,
             Level level,
             String provider,
+            String model,
             String requestSummary,
             String status,
             long latencyMs,
@@ -52,6 +57,7 @@ public class LLMLogger {
             obj.addProperty("timestamp", timestamp.toString());
             obj.addProperty("level", level.name());
             obj.addProperty("provider", provider);
+            if (model != null && !model.isBlank()) obj.addProperty("model", model);
             obj.addProperty("requestSummary", requestSummary);
             obj.addProperty("status", status);
             obj.addProperty("latencyMs", latencyMs);
@@ -85,6 +91,8 @@ public class LLMLogger {
     private final ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     private final List<Consumer<LogEntry>> listeners = new java.util.concurrent.CopyOnWriteArrayList<>();
     private boolean coreHookInstalled;
+    @Nullable
+    private Path persistenceFile;
 
     private LLMLogger() {
         this.buffer = new LogEntry[200];
@@ -103,7 +111,7 @@ public class LLMLogger {
         if (event.purpose() != null && !event.purpose().isBlank()) {
             summary = "[" + event.purpose() + "] " + summary;
         }
-        log(level, event.provider(), summary, status, event.latencyMs(), event.promptTokens(),
+        logWithModel(level, event.provider(), event.model(), summary, status, event.latencyMs(), event.promptTokens(),
                 event.completionTokens(), event.error(), event.purpose(), event.requestId(),
                 event.source(), event.requestBody(), event.responseBody(), event.finishReason(),
                 event.contentLength(), event.responsePreview(), event.responderEntityId(), event.responderName(),
@@ -126,14 +134,49 @@ public class LLMLogger {
         }
     }
 
+    /** Opens the per-world archive used as Console history. */
+    public void openPersistence(@Nullable Path file) {
+        lock.writeLock().lock();
+        try {
+            persistenceFile = file;
+            Arrays.fill(buffer, null);
+            head = 0;
+            size = 0;
+            if (file == null || !Files.exists(file)) return;
+            try {
+                var root = JsonParser.parseString(Files.readString(file));
+                if (!root.isJsonArray()) return;
+                for (var element : root.getAsJsonArray()) {
+                    if (!element.isJsonObject()) continue;
+                    LogEntry loaded = fromJson(element.getAsJsonObject());
+                    buffer[head] = loaded;
+                    head = (head + 1) % buffer.length;
+                    if (size < buffer.length) size++;
+                }
+            } catch (Exception ignored) {
+                // A damaged archive must not prevent the world from starting.
+            }
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    /** Flushes the current world archive and detaches it from this runtime. */
+    public void closePersistence() {
+        persist();
+        lock.writeLock().lock();
+        try { persistenceFile = null; } finally { lock.writeLock().unlock(); }
+    }
+
     /** Removes every buffered entry belonging to one request identity. */
     public boolean removeByRequestId(String requestId) {
         if (requestId == null || requestId.isBlank()) return false;
+        boolean removed;
         lock.writeLock().lock();
         try {
             LogEntry[] replacement = new LogEntry[buffer.length];
             int retained = 0;
-            boolean removed = false;
+            removed = false;
             for (int i = 0; i < size; i++) {
                 int index = (head - size + i + buffer.length) % buffer.length;
                 LogEntry entry = buffer[index];
@@ -148,10 +191,11 @@ public class LLMLogger {
                 size = retained;
                 head = retained % buffer.length;
             }
-            return removed;
         } finally {
             lock.writeLock().unlock();
         }
+        if (removed) persist();
+        return removed;
     }
 
     /** Clears only the server's in-memory log ring. */
@@ -164,6 +208,7 @@ public class LLMLogger {
         } finally {
             lock.writeLock().unlock();
         }
+        persist();
     }
 
     public void log(Level level, String provider, String prompt, String status,
@@ -223,9 +268,24 @@ public class LLMLogger {
                     String responsePreview, String responderEntityId, String responderName,
                     String triggerSource, String addressee, String audience, String inputKind,
                     String billingPrincipal, String billingPrincipalId, String causalRootRequestId) {
+        logWithModel(level, provider, "", prompt, status, latencyMs, promptTokens, completionTokens,
+                errorMessage, purpose, requestId, source, requestBody, responseBody, finishReason,
+                contentLength, responsePreview, responderEntityId, responderName, triggerSource,
+                addressee, audience, inputKind, billingPrincipal, billingPrincipalId, causalRootRequestId);
+    }
+
+    /** Records a completion while preserving the concrete model selected by the router. */
+    private void logWithModel(Level level, String provider, String model, String prompt, String status,
+                    long latencyMs, int promptTokens, int completionTokens,
+                    @Nullable String errorMessage, String purpose, String requestId, String source,
+                    String requestBody, String responseBody, String finishReason, int contentLength,
+                    String responsePreview, String responderEntityId, String responderName,
+                    String triggerSource, String addressee, String audience, String inputKind,
+                    String billingPrincipal, String billingPrincipalId, String causalRootRequestId) {
         String summary = prompt == null ? "" : prompt;
         if (summary.length() > 100) summary = summary.substring(0, 100) + "...";
-        LogEntry entry = new LogEntry(Instant.now(), level, provider == null ? "" : provider, summary,
+        LogEntry entry = new LogEntry(Instant.now(), level, provider == null ? "" : provider,
+                model == null ? "" : model, summary,
                 status == null ? "" : status, latencyMs, promptTokens, completionTokens, errorMessage,
                 purpose == null ? "" : purpose, requestId == null ? "" : requestId,
                 source == null ? "" : source, trimBody(requestBody), trimBody(responseBody),
@@ -253,6 +313,7 @@ public class LLMLogger {
         for (Consumer<LogEntry> listener : listeners) {
             try { listener.accept(entry); } catch (Exception ignored) {}
         }
+        persist();
     }
 
     public void logInfo(String provider, String prompt, long latencyMs,
@@ -338,6 +399,57 @@ public class LLMLogger {
 
     public void addListener(Consumer<LogEntry> listener) { listeners.add(listener); }
     public void removeListener(Consumer<LogEntry> listener) { listeners.remove(listener); }
+
+    private void persist() {
+        Path file;
+        JsonArray snapshot = new JsonArray();
+        lock.readLock().lock();
+        try {
+            file = persistenceFile;
+            if (file == null) return;
+            for (LogEntry entry : getRecentEntries(size)) snapshot.add(entry.toJson());
+        } finally {
+            lock.readLock().unlock();
+        }
+        try {
+            if (file.getParent() != null) Files.createDirectories(file.getParent());
+            Path temp = file.resolveSibling(file.getFileName() + ".tmp");
+            Files.writeString(temp, snapshot.toString());
+            try {
+                Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+            } catch (Exception atomicUnsupported) {
+                Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (Exception ignored) {}
+    }
+
+    private static LogEntry fromJson(JsonObject obj) {
+        Instant timestamp;
+        try { timestamp = Instant.parse(value(obj, "timestamp", Instant.now().toString())); }
+        catch (Exception ignored) { timestamp = Instant.now(); }
+        Level level;
+        try { level = Level.valueOf(value(obj, "level", "INFO")); }
+        catch (Exception ignored) { level = Level.INFO; }
+        return new LogEntry(timestamp, level, value(obj, "provider", ""), value(obj, "model", ""),
+                value(obj, "requestSummary", ""), value(obj, "status", ""), number(obj, "latencyMs"),
+                number(obj, "promptTokens"), number(obj, "completionTokens"), value(obj, "error", null),
+                value(obj, "purpose", ""), value(obj, "requestId", ""), value(obj, "source", ""),
+                value(obj, "requestBody", ""), value(obj, "responseBody", ""), value(obj, "finishReason", ""),
+                number(obj, "contentLength"), value(obj, "responsePreview", ""), value(obj, "responderEntityId", ""),
+                value(obj, "responderName", ""), value(obj, "triggerSource", ""), value(obj, "addressee", ""),
+                value(obj, "audience", ""), value(obj, "inputKind", ""), value(obj, "billingPrincipal", ""),
+                value(obj, "billingPrincipalId", ""), value(obj, "causalRootRequestId", ""));
+    }
+
+    private static String value(JsonObject obj, String key, String fallback) {
+        try { return obj.has(key) && !obj.get(key).isJsonNull() ? obj.get(key).getAsString() : fallback; }
+        catch (Exception ignored) { return fallback; }
+    }
+
+    private static int number(JsonObject obj, String key) {
+        try { return obj.has(key) ? obj.get(key).getAsInt() : 0; }
+        catch (Exception ignored) { return 0; }
+    }
 
     private static String trimBody(String body) {
         if (body == null || body.isBlank()) return "";

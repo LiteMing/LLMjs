@@ -44,6 +44,7 @@ import vibe.liteming.llmjs.security.PersonalBudgetService;
 public final class LlmCoreMod {
     public static final String MODID = "llmcore";
     public static final Logger LOGGER = LoggerFactory.getLogger("llmcore");
+    private java.util.function.Consumer<LLMLogger.LogEntry> networkLogListener;
 
     public LlmCoreMod() {
         LLMConfig.register();
@@ -96,20 +97,27 @@ public final class LlmCoreMod {
         ConsoleTestGrantService.INSTANCE.clear();
         LlmConsoleTestBridge.install(ConsoleTestGrantService.INSTANCE::issue);
         LLMLogger.INSTANCE.resize(LLMConfig.LOG_BUFFER_SIZE.get());
+        LLMLogger.INSTANCE.openPersistence(worldRoot.resolve("llmcore/log-history.json"));
         LLMLogger.INSTANCE.installCoreHook();
-        LLMLogger.INSTANCE.addListener(entry -> {
+        networkLogListener = entry -> {
             S2CLogPacket packet = new S2CLogPacket(entry.toJson().toString());
             server.getPlayerList().getPlayers().forEach(player -> {
                 if (PermissionCheck.canUse(player)) {
                     LLMNetwork.CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
                 }
             });
-        });
+        };
+        LLMLogger.INSTANCE.addListener(networkLogListener);
         LOGGER.info("llm-core providers loaded: {}", ProviderManager.INSTANCE.getProviderNames());
     }
 
     @SubscribeEvent
     public void onServerStopped(ServerStoppedEvent event) {
+        LLMLogger.INSTANCE.closePersistence();
+        if (networkLogListener != null) {
+            LLMLogger.INSTANCE.removeListener(networkLogListener);
+            networkLogListener = null;
+        }
         ProviderManager.INSTANCE.close();
         LlmRequestAccounting.clear();
         PersonalBudgetService.INSTANCE.close();

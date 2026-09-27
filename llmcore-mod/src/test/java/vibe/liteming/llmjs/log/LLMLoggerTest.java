@@ -7,6 +7,7 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import java.nio.file.Files;
 
 class LLMLoggerTest {
     private final LLMLogger logger = LLMLogger.INSTANCE;
@@ -53,6 +54,20 @@ class LLMLoggerTest {
         assertEquals("player-event", json.get("triggerSource").getAsString());
         assertEquals("PLAYER:alex", json.get("addressee").getAsString());
         assertEquals("PUBLIC", json.get("audience").getAsString());
+    }
+
+    @Test
+    void restoresHistoryFromPerWorldArchive() throws Exception {
+        var archive = Files.createTempFile("llmcore-log", ".json");
+        Files.deleteIfExists(archive);
+        logger.openPersistence(archive);
+        log("persisted-request");
+        logger.closePersistence();
+        logger.openPersistence(archive);
+
+        assertEquals("persisted-request", logger.getRecentEntries()[0].requestId());
+        logger.closePersistence();
+        Files.deleteIfExists(archive);
     }
 
     private void log(String requestId) {

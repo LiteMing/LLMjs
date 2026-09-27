@@ -31,8 +31,9 @@ public class ClientEventHandler {
     @Nullable
     private static Screen pendingReturnScreen = null;
 
-    /** Survives while console is closed; server history may replace on open. */
-    private static final List<String> clientLogBuffer = new ArrayList<>();
+    /** Server snapshot is kept separately from entries received during this client session. */
+    private static final List<String> historyLogBuffer = new ArrayList<>();
+    private static final List<String> liveLogBuffer = new ArrayList<>();
 
     public static void openConsole(String statusJson) {
         String handoff = pendingTestHandoff;
@@ -42,13 +43,14 @@ public class ClientEventHandler {
         LLMConsoleScreen screen = new LLMConsoleScreen(statusJson, handoff, returnScreen);
         activeConsole = screen;
         net.minecraft.client.Minecraft.getInstance().setScreen(screen);
-        List<String> snapshot;
+        List<String> historySnapshot;
+        List<String> liveSnapshot;
         synchronized (BUFFER_LOCK) {
-            snapshot = new ArrayList<>(clientLogBuffer);
+            historySnapshot = new ArrayList<>(historyLogBuffer);
+            liveSnapshot = new ArrayList<>(liveLogBuffer);
         }
-        if (!snapshot.isEmpty()) {
-            screen.onLogHistory(snapshot);
-        }
+        screen.onLogHistory(historySnapshot);
+        screen.onLogEntries(liveSnapshot);
     }
 
     public static void handleChatResponse(UUID requestId, String resultJson) {
@@ -80,8 +82,8 @@ public class ClientEventHandler {
     public static void handleLogEntry(String logEntryJson) {
         if (logEntryJson == null || logEntryJson.isBlank()) return;
         synchronized (BUFFER_LOCK) {
-            clientLogBuffer.add(logEntryJson);
-            trimBuffer();
+            liveLogBuffer.add(logEntryJson);
+            trimBuffer(liveLogBuffer);
         }
         if (activeConsole != null) {
             activeConsole.onLogEntry(logEntryJson);
@@ -92,19 +94,19 @@ public class ClientEventHandler {
         if (entries == null) return;
         List<String> snapshot;
         synchronized (BUFFER_LOCK) {
-            clientLogBuffer.clear();
-            clientLogBuffer.addAll(entries);
-            trimBuffer();
-            snapshot = new ArrayList<>(clientLogBuffer);
+            historyLogBuffer.clear();
+            historyLogBuffer.addAll(entries);
+            trimBuffer(historyLogBuffer);
+            snapshot = new ArrayList<>(historyLogBuffer);
         }
         if (activeConsole != null) {
             activeConsole.onLogHistory(snapshot);
         }
     }
 
-    private static void trimBuffer() {
-        while (clientLogBuffer.size() > MAX_CLIENT_BUFFER) {
-            clientLogBuffer.remove(0);
+    private static void trimBuffer(List<String> buffer) {
+        while (buffer.size() > MAX_CLIENT_BUFFER) {
+            buffer.remove(0);
         }
     }
 
@@ -140,6 +142,10 @@ public class ClientEventHandler {
         activeConsole = null;
         pendingTestHandoff = null;
         pendingReturnScreen = null;
+        synchronized (BUFFER_LOCK) {
+            historyLogBuffer.clear();
+            liveLogBuffer.clear();
+        }
     }
 
     /** Forwarded from S2CVisionProbeResultPacket on the client thread. */

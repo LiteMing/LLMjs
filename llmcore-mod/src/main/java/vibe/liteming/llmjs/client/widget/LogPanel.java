@@ -25,6 +25,11 @@ import static vibe.liteming.llmjs.client.ConsoleTexts.text;
 @OnlyIn(Dist.CLIENT)
 public class LogPanel extends AbstractWidget {
     private final List<LogDisplayEntry> entries = new ArrayList<>();
+    private final List<LogDisplayEntry> allEntries = new ArrayList<>();
+    private ViewMode viewMode = ViewMode.LIVE;
+    private String searchText = "";
+    private String purposeFilter = "";
+    private String modelFilter = "";
     private int scrollOffset = 0;
     private int selectionAnchor = -1;
     private int selectionEnd = -1;
@@ -40,6 +45,8 @@ public class LogPanel extends AbstractWidget {
             .setPrettyPrinting()
             .disableHtmlEscaping()
             .create();
+
+    public enum ViewMode { LIVE, HISTORY, ALL }
 
     // Detail (raw JSON) area character-level selection.
     // Each point is (logicalLine, charOffset) into unwrappedDetailLines.
@@ -60,7 +67,10 @@ public class LogPanel extends AbstractWidget {
     private record LogDisplayEntry(
             String text,
             int color,
+            int routeColor,
+            int modelColor,
             String requestId,
+            String model,
             String purpose,
             String requestBody,
             String responseBody,
@@ -74,7 +84,8 @@ public class LogPanel extends AbstractWidget {
             String billingPrincipalId,
             String causalRootRequestId,
             String finishReason,
-            int contentLength) {}
+            int contentLength,
+            boolean historical) {}
 
     public LogPanel(int x, int y, int width, int height) {
         super(x, y, width, height, text("tab.log"));
@@ -95,6 +106,7 @@ public class LogPanel extends AbstractWidget {
 
     public void clear() {
         entries.clear();
+        allEntries.clear();
         selectionAnchor = -1;
         selectionEnd = -1;
         scrollOffset = 0;
@@ -115,16 +127,16 @@ public class LogPanel extends AbstractWidget {
     }
 
     public void setHistory(List<String> history) {
-        clear();
-        if (history == null) return;
-        for (String json : history) {
-            addEntry(json, false);
+        allEntries.removeIf(LogDisplayEntry::historical);
+        if (history != null) for (String json : history) {
+            addEntry(json, false, true);
         }
+        rebuildEntries();
         autoScrollToBottom();
     }
 
     public void addEntry(String logEntryJson) {
-        addEntry(logEntryJson, true);
+        addEntry(logEntryJson, true, false);
         // New entry: detail cache invalid; clear detail selection.
         detailAnchorLine = -1;
         detailAnchorChar = -1;
@@ -136,11 +148,25 @@ public class LogPanel extends AbstractWidget {
         detailCacheValid = false;
     }
 
-    private void addEntry(String logEntryJson, boolean autoScroll) {
+    public void setViewMode(ViewMode mode) {
+        viewMode = mode == null ? ViewMode.LIVE : mode;
+        rebuildEntries();
+        autoScrollToBottom();
+    }
+
+    public void setSearchFilters(String search, String purpose, String model) {
+        searchText = search == null ? "" : search.trim().toLowerCase(java.util.Locale.ROOT);
+        purposeFilter = purpose == null ? "" : purpose.trim().toLowerCase(java.util.Locale.ROOT);
+        modelFilter = model == null ? "" : model.trim().toLowerCase(java.util.Locale.ROOT);
+        rebuildEntries();
+    }
+
+    private void addEntry(String logEntryJson, boolean autoScroll, boolean historical) {
         try {
             JsonObject obj = JsonParser.parseString(logEntryJson).getAsJsonObject();
             String level = obj.has("level") ? obj.get("level").getAsString() : "INFO";
             String provider = obj.has("provider") ? obj.get("provider").getAsString() : "?";
+            String model = obj.has("model") ? obj.get("model").getAsString() : "";
             String status = obj.has("status") ? obj.get("status").getAsString() : "";
             long latency = obj.has("latencyMs") ? obj.get("latencyMs").getAsLong() : 0;
             String summary = obj.has("requestSummary") ? obj.get("requestSummary").getAsString() : "";
@@ -172,18 +198,46 @@ public class LogPanel extends AbstractWidget {
             String tag = purpose.isBlank() ? "" : purpose + " ";
             String src = source.isBlank() ? "" : source + " ";
             String actor = responder.isBlank() ? "" : "[Responder: " + responder + "] ";
-            String text = String.format("[%s] %s%s%s%s | %s | %dms | %s", level, src, tag, actor,
-                    provider, status, latency, summary);
-            entries.add(new LogDisplayEntry(text, color, requestId, purpose, requestBody, responseBody, error,
+            String modelLabel = model.isBlank() ? "" : " / " + model;
+            String text = String.format("[%s] %s%s%s%s%s | %s | %dms | %s", level, src, tag, actor,
+                    provider, modelLabel, status, latency, summary);
+            int routeColor = colorFor(purpose.isBlank() ? provider : purpose, 0xFF55AAFF);
+            int modelColor = colorFor(model, 0xFFAAAAAA);
+            allEntries.add(new LogDisplayEntry(text, color, routeColor, modelColor, requestId, model, purpose,
+                    requestBody, responseBody, error,
                     responder, triggerSource, addressee, audience, inputKind, billingPrincipal, billingPrincipalId,
-                    causalRootRequestId, finishReason, contentLength));
-            while (entries.size() > MAX_ENTRIES) {
-                entries.remove(0);
-                if (selectionAnchor >= 0) selectionAnchor = Math.max(-1, selectionAnchor - 1);
-                if (selectionEnd >= 0) selectionEnd = Math.max(-1, selectionEnd - 1);
-            }
+                    causalRootRequestId, finishReason, contentLength, historical));
+            while (allEntries.size() > MAX_ENTRIES * 2) allEntries.remove(0);
+            rebuildEntries();
             if (autoScroll) autoScrollToBottom();
         } catch (Exception ignored) {}
+    }
+
+    private void rebuildEntries() {
+        entries.clear();
+        for (LogDisplayEntry entry : allEntries) {
+            if (viewMode == ViewMode.LIVE && entry.historical()) continue;
+            if (viewMode == ViewMode.HISTORY && !entry.historical()) continue;
+            String haystack = (entry.text() + " " + entry.purpose() + " " + entry.model() + " "
+                    + entry.requestBody() + " " + entry.responseBody()).toLowerCase(java.util.Locale.ROOT);
+            if (!searchText.isBlank() && !haystack.contains(searchText)) continue;
+            if (!purposeFilter.isBlank() && !entry.purpose().toLowerCase(java.util.Locale.ROOT).contains(purposeFilter)) continue;
+            if (!modelFilter.isBlank() && !entry.model().toLowerCase(java.util.Locale.ROOT).contains(modelFilter)) continue;
+            entries.add(entry);
+        }
+        selectionAnchor = -1;
+        selectionEnd = -1;
+        scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, entries.size() - 1)));
+        invalidateDetailCache();
+    }
+
+    private static int colorFor(String value, int fallback) {
+        if (value == null || value.isBlank()) return fallback;
+        int h = value.hashCode() * 0x45d9f3b;
+        int r = 80 + ((h >>> 16) & 0x7F);
+        int g = 80 + ((h >>> 8) & 0x7F);
+        int b = 80 + (h & 0x7F);
+        return 0xFF000000 | (r << 16) | (g << 8) | b;
     }
 
     private void autoScrollToBottom() {
@@ -382,6 +436,11 @@ public class LogPanel extends AbstractWidget {
                 boolean canDelete = canManage && !entry.requestId().isBlank();
                 int reservedWidth = canDelete ? DELETE_WIDTH + 12 : 8;
                 String line = font.plainSubstrByWidth(entry.text, Math.max(8, width - reservedWidth));
+                // Purpose/route on the left and concrete model on the right make
+                // mixed routing chains scannable without reading every row.
+                graphics.fill(getX() + 1, drawY - 1, getX() + 3, drawY + LINE_HEIGHT - 1, entry.routeColor());
+                graphics.fill(getX() + width - 3, drawY - 1, getX() + width - 1,
+                        drawY + LINE_HEIGHT - 1, entry.modelColor());
                 graphics.drawString(font, line, getX() + 4, drawY, entry.color, false);
                 if (canDelete) {
                     boolean deleteHovered = i == hoveredRow && isOverDelete(i, mouseX, mouseY);
@@ -523,6 +582,8 @@ public class LogPanel extends AbstractWidget {
     private void appendEntryDetailSegs(List<DetailSeg> segs, List<String> unwrapped, LogDisplayEntry e) {
         addLineSeg(segs, unwrapped, e.text);
         if (e.purpose != null && !e.purpose.isBlank()) addLineSeg(segs, unwrapped, "purpose: " + e.purpose);
+        if (e.model != null && !e.model.isBlank()) addLineSeg(segs, unwrapped, "model: " + e.model);
+        addLineSeg(segs, unwrapped, "record: " + (e.historical ? "history" : "live"));
         if (e.responder != null && !e.responder.isBlank()) addLineSeg(segs, unwrapped, "responder: " + e.responder);
         if (e.triggerSource != null && !e.triggerSource.isBlank()) addLineSeg(segs, unwrapped, "trigger: " + e.triggerSource);
         if (e.addressee != null && !e.addressee.isBlank()) addLineSeg(segs, unwrapped, "addressee: " + e.addressee);
