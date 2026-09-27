@@ -3,6 +3,8 @@ package vibe.liteming.llmjs.client.screen;
 import com.google.gson.JsonParser;
 import vibe.liteming.llmjs.client.ClientEventHandler;
 import vibe.liteming.llmjs.client.widget.LogPanel;
+import vibe.liteming.llmjs.client.widget.LogColorPanel;
+import vibe.liteming.llmjs.client.widget.LogFilterPanel;
 import vibe.liteming.llmjs.client.widget.BudgetPanel;
 import vibe.liteming.llmjs.client.widget.ProviderListPanel;
 import vibe.liteming.llmjs.client.widget.PersonalRoutingPanel;
@@ -12,7 +14,6 @@ import vibe.liteming.llmjs.client.widget.TestPanel;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
-import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraftforge.api.distmarker.Dist;
@@ -28,10 +29,12 @@ import static vibe.liteming.llmjs.client.ConsoleTexts.tooltip;
 
 @OnlyIn(Dist.CLIENT)
 public class LLMConsoleScreen extends Screen {
-    private enum Tab { LOG, BUDGET, PROVIDERS, PREFERENCES, ROUTING, TEST, SETUP }
+    private enum Tab { LOG, COLORS, BUDGET, PROVIDERS, PREFERENCES, ROUTING, TEST, SETUP }
 
     private Tab activeTab = Tab.LOG;
     private LogPanel logPanel;
+    private LogColorPanel logColorPanel;
+    private LogFilterPanel logFilterPanel;
     private BudgetPanel budgetPanel;
     private ProviderListPanel providerPanel;
     private PersonalRoutingPanel personalRoutingPanel;
@@ -48,6 +51,7 @@ public class LLMConsoleScreen extends Screen {
     private boolean canManageBudgets;
     private boolean budgetDefaultConfirmationRequired;
     private Button logTab;
+    private Button colorsTab;
     private Button budgetTab;
     private Button providersTab;
     private Button preferencesTab;
@@ -55,12 +59,6 @@ public class LLMConsoleScreen extends Screen {
     private Button testTab;
     private Button setupTab;
     private Button confirmBudgetButton;
-    private EditBox logSearchBox;
-    private EditBox logPurposeBox;
-    private EditBox logModelBox;
-    private Button logLiveButton;
-    private Button logHistoryButton;
-    private Button logAllButton;
 
     public LLMConsoleScreen(String statusJson) {
         this(statusJson, null, null);
@@ -83,25 +81,28 @@ public class LLMConsoleScreen extends Screen {
     protected void init() {
         int tabY = tabY();
         int gap = width < 340 ? 2 : 4;
-        int tabW = Math.max(26, Math.min(62, (width - 16 - gap * 6) / 7));
-        int totalW = tabW * 7 + gap * 6;
+        int tabW = Math.max(26, Math.min(62, (width - 16 - gap * 7) / 8));
+        int totalW = tabW * 8 + gap * 7;
         int startX = Math.max(4, (width - totalW) / 2);
 
         logTab = tooltip(Button.builder(text("tab.log"), b -> switchTab(Tab.LOG))
                 .pos(startX, tabY).size(tabW, 20).build(), "tab.log.tip");
+        colorsTab = tooltip(Button.builder(text("tab.colors"), b -> switchTab(Tab.COLORS))
+                .pos(startX + (tabW + gap), tabY).size(tabW, 20).build(), "tab.colors.tip");
         budgetTab = tooltip(Button.builder(text("tab.budget"), b -> switchTab(Tab.BUDGET))
-                .pos(startX + (tabW + gap), tabY).size(tabW, 20).build(), "tab.budget.tip");
+                .pos(startX + (tabW + gap) * 2, tabY).size(tabW, 20).build(), "tab.budget.tip");
         providersTab = tooltip(Button.builder(text("tab.providers"), b -> switchTab(Tab.PROVIDERS))
-                .pos(startX + (tabW + gap) * 2, tabY).size(tabW, 20).build(), "tab.providers.tip");
+                .pos(startX + (tabW + gap) * 3, tabY).size(tabW, 20).build(), "tab.providers.tip");
         preferencesTab = tooltip(Button.builder(text("tab.preferences"), b -> switchTab(Tab.PREFERENCES))
-                .pos(startX + (tabW + gap) * 3, tabY).size(tabW, 20).build(), "tab.preferences.tip");
+                .pos(startX + (tabW + gap) * 4, tabY).size(tabW, 20).build(), "tab.preferences.tip");
         routingTab = tooltip(Button.builder(text("tab.routing"), b -> switchTab(Tab.ROUTING))
-                .pos(startX + (tabW + gap) * 4, tabY).size(tabW, 20).build(), "tab.routing.tip");
+                .pos(startX + (tabW + gap) * 5, tabY).size(tabW, 20).build(), "tab.routing.tip");
         testTab = tooltip(Button.builder(text("tab.test"), b -> switchTab(Tab.TEST))
-                .pos(startX + (tabW + gap) * 5, tabY).size(tabW, 20).build(), "tab.test.tip");
+                .pos(startX + (tabW + gap) * 6, tabY).size(tabW, 20).build(), "tab.test.tip");
         setupTab = tooltip(Button.builder(text("tab.setup"), b -> switchTab(Tab.SETUP))
-                .pos(startX + (tabW + gap) * 6, tabY).size(tabW, 20).build(), "tab.setup.tip");
+                .pos(startX + (tabW + gap) * 7, tabY).size(tabW, 20).build(), "tab.setup.tip");
         addRenderableWidget(logTab);
+        addRenderableWidget(colorsTab);
         addRenderableWidget(budgetTab);
         addRenderableWidget(providersTab);
         addRenderableWidget(preferencesTab);
@@ -123,34 +124,17 @@ public class LLMConsoleScreen extends Screen {
 
         int logPanelY = panelY + 44;
         logPanel = new LogPanel(panelX, logPanelY, panelW, Math.max(1, panelH - 44));
+        logColorPanel = new LogColorPanel(panelX, panelY, panelW, panelH, font, logPanel, initialStatusJson);
+        logFilterPanel = new LogFilterPanel(panelX, panelY, panelW, panelH, font, logPanel, initialStatusJson);
         budgetPanel = new BudgetPanel(panelX, panelY, panelW, panelH, initialStatusJson);
         providerPanel = new ProviderListPanel(panelX, panelY, panelW, panelH, initialStatusJson);
         personalRoutingPanel = new PersonalRoutingPanel(panelX, panelY, panelW, panelH, font, initialStatusJson);
         routingPanel = new RoutingPanel(panelX, panelY, panelW, panelH, font, initialStatusJson);
         addRenderableWidget(logPanel);
-        logSearchBox = new EditBox(font, panelX, panelY, Math.min(110, panelW), 20, text("log.search"));
-        logSearchBox.setHint(text("log.search.hint"));
-        logSearchBox.setResponder(value -> updateLogFilters());
-        logPurposeBox = new EditBox(font, panelX + Math.min(114, panelW), panelY,
-                Math.min(85, Math.max(1, panelW - 114)), 20, text("log.purpose"));
-        logPurposeBox.setHint(text("log.purpose.hint"));
-        logPurposeBox.setResponder(value -> updateLogFilters());
-        logModelBox = new EditBox(font, panelX + Math.min(203, panelW), panelY,
-                Math.min(100, Math.max(1, panelW - 203)), 20, text("log.model"));
-        logModelBox.setHint(text("log.model.hint"));
-        logModelBox.setResponder(value -> updateLogFilters());
-        logLiveButton = Button.builder(text("log.live"), b -> logPanel.setViewMode(LogPanel.ViewMode.LIVE))
-                .pos(panelX, panelY + 22).size(52, 20).build();
-        logHistoryButton = Button.builder(text("log.history"), b -> logPanel.setViewMode(LogPanel.ViewMode.HISTORY))
-                .pos(panelX + 54, panelY + 22).size(62, 20).build();
-        logAllButton = Button.builder(text("log.all"), b -> logPanel.setViewMode(LogPanel.ViewMode.ALL))
-                .pos(panelX + 118, panelY + 22).size(52, 20).build();
-        addRenderableWidget(logSearchBox);
-        addRenderableWidget(logPurposeBox);
-        addRenderableWidget(logModelBox);
-        addRenderableWidget(logLiveButton);
-        addRenderableWidget(logHistoryButton);
-        addRenderableWidget(logAllButton);
+        addRenderableWidget(logFilterPanel);
+        for (var widget : logFilterPanel.getWidgets()) addRenderableWidget(widget);
+        addRenderableWidget(logColorPanel);
+        for (var widget : logColorPanel.getWidgets()) addRenderableWidget(widget);
         addRenderableWidget(budgetPanel);
         addRenderableWidget(providerPanel);
         addRenderableWidget(personalRoutingPanel);
@@ -179,10 +163,11 @@ public class LLMConsoleScreen extends Screen {
         }
         int tabY = tabY();
         int gap = width < 340 ? 2 : 4;
-        int tabW = Math.max(26, Math.min(62, (width - 16 - gap * 6) / 7));
-        int totalW = tabW * 7 + gap * 6;
+        int tabW = Math.max(26, Math.min(62, (width - 16 - gap * 7) / 8));
+        int totalW = tabW * 8 + gap * 7;
         int startX = Math.max(4, (width - totalW) / 2);
-        List<Button> tabs = List.of(logTab, budgetTab, providersTab, preferencesTab, routingTab, testTab, setupTab);
+        List<Button> tabs = List.of(logTab, colorsTab, budgetTab, providersTab, preferencesTab,
+                routingTab, testTab, setupTab);
         for (int index = 0; index < tabs.size(); index++) {
             Button tab = tabs.get(index);
             tab.setX(startX + (tabW + gap) * index);
@@ -202,16 +187,8 @@ public class LLMConsoleScreen extends Screen {
         int panelX = margin;
         int logPanelY = panelY + 44;
         logPanel.setBounds(panelX, logPanelY, panelW, Math.max(1, panelH - 44));
-        if (logSearchBox != null) {
-            logSearchBox.setX(panelX); logSearchBox.setY(panelY); logSearchBox.setWidth(Math.min(110, panelW));
-            logPurposeBox.setX(panelX + Math.min(114, panelW)); logPurposeBox.setY(panelY);
-            logPurposeBox.setWidth(Math.min(85, Math.max(1, panelW - 114)));
-            logModelBox.setX(panelX + Math.min(203, panelW)); logModelBox.setY(panelY);
-            logModelBox.setWidth(Math.min(100, Math.max(1, panelW - 203)));
-            logLiveButton.setX(panelX); logLiveButton.setY(panelY + 22);
-            logHistoryButton.setX(panelX + 54); logHistoryButton.setY(panelY + 22);
-            logAllButton.setX(panelX + 118); logAllButton.setY(panelY + 22);
-        }
+        logColorPanel.setBounds(panelX, panelY, panelW, panelH);
+        logFilterPanel.setBounds(panelX, panelY, panelW, panelH);
         budgetPanel.setBounds(panelX, panelY, panelW, panelH);
         providerPanel.setBounds(panelX, panelY, panelW, panelH);
         personalRoutingPanel.setBounds(panelX, panelY, panelW, panelH);
@@ -222,7 +199,7 @@ public class LLMConsoleScreen extends Screen {
     }
 
     private void switchTab(Tab tab) {
-        if ((tab == Tab.LOG && !canView)
+        if (((tab == Tab.LOG || tab == Tab.COLORS) && !canView)
                 || (tab == Tab.BUDGET && !(canView || canTest))
                 || (tab == Tab.PREFERENCES && !canPersonalRoute)
                 || (tab == Tab.TEST && !canTest)
@@ -230,11 +207,10 @@ public class LLMConsoleScreen extends Screen {
             tab = canTest ? Tab.TEST : Tab.LOG;
         }
         activeTab = tab;
+        if (tab == Tab.COLORS) logColorPanel.refreshObservedTags();
         logPanel.visible = (tab == Tab.LOG);
-        if (logSearchBox != null) {
-            logSearchBox.visible = logPurposeBox.visible = logModelBox.visible = (tab == Tab.LOG);
-            logLiveButton.visible = logHistoryButton.visible = logAllButton.visible = (tab == Tab.LOG);
-        }
+        logFilterPanel.setPanelVisible(tab == Tab.LOG);
+        logColorPanel.setPanelVisible(tab == Tab.COLORS);
         budgetPanel.visible = (tab == Tab.BUDGET);
         providerPanel.visible = (tab == Tab.PROVIDERS);
         personalRoutingPanel.setPanelVisible(tab == Tab.PREFERENCES);
@@ -256,6 +232,7 @@ public class LLMConsoleScreen extends Screen {
         // Active tab underline
         Button active = switch (activeTab) {
             case LOG -> logTab;
+            case COLORS -> colorsTab;
             case BUDGET -> budgetTab;
             case PROVIDERS -> providersTab;
             case PREFERENCES -> preferencesTab;
@@ -313,6 +290,8 @@ public class LLMConsoleScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int button) {
+        if (activeTab == Tab.LOG && logFilterPanel != null
+                && logFilterPanel.mouseClicked(mouseX, mouseY, button)) return true;
         if (activeTab == Tab.TEST && testPanel != null) {
             if (testPanel.mouseClicked(mouseX, mouseY, button)) {
                 setFocused(null);
@@ -344,6 +323,8 @@ public class LLMConsoleScreen extends Screen {
 
     @Override
     public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
+        if (activeTab == Tab.LOG && logFilterPanel != null
+                && logFilterPanel.mouseScrolled(mouseX, mouseY, delta)) return true;
         if (activeTab == Tab.TEST && testPanel != null && testPanel.mouseScrolled(mouseX, mouseY, delta)) {
             return true;
         }
@@ -385,6 +366,8 @@ public class LLMConsoleScreen extends Screen {
         if (routingPanel != null) {
             routingPanel.updateStatus(statusJson);
         }
+        if (logColorPanel != null) logColorPanel.updateStatus(statusJson);
+        if (logFilterPanel != null) logFilterPanel.updateStatus(statusJson);
         if (personalRoutingPanel != null) personalRoutingPanel.updateStatus(statusJson);
         if (logTab != null) repositionElements();
         applyAccessState();
@@ -403,12 +386,6 @@ public class LLMConsoleScreen extends Screen {
     public void onLogEntries(List<String> entries) {
         if (logPanel != null && entries != null) {
             for (String entry : entries) logPanel.addEntry(entry);
-        }
-    }
-
-    private void updateLogFilters() {
-        if (logPanel != null && logSearchBox != null) {
-            logPanel.setSearchFilters(logSearchBox.getValue(), logPurposeBox.getValue(), logModelBox.getValue());
         }
     }
 
@@ -436,6 +413,7 @@ public class LLMConsoleScreen extends Screen {
     private void applyAccessState() {
         if (providersTab == null) return;
         logTab.active = canView;
+        colorsTab.active = canView;
         budgetTab.active = canView || canTest;
         providersTab.active = canAdminister;
         preferencesTab.active = canPersonalRoute;

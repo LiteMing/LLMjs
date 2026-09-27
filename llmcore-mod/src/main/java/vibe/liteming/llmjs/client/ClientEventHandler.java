@@ -82,6 +82,7 @@ public class ClientEventHandler {
     public static void handleLogEntry(String logEntryJson) {
         if (logEntryJson == null || logEntryJson.isBlank()) return;
         synchronized (BUFFER_LOCK) {
+            historyLogBuffer.remove(logEntryJson);
             liveLogBuffer.add(logEntryJson);
             trimBuffer(liveLogBuffer);
         }
@@ -95,7 +96,10 @@ public class ClientEventHandler {
         List<String> snapshot;
         synchronized (BUFFER_LOCK) {
             historyLogBuffer.clear();
-            historyLogBuffer.addAll(entries);
+            java.util.Set<String> liveEntries = new java.util.HashSet<>(liveLogBuffer);
+            for (String entry : entries) {
+                if (!liveEntries.contains(entry)) historyLogBuffer.add(entry);
+            }
             trimBuffer(historyLogBuffer);
             snapshot = new ArrayList<>(historyLogBuffer);
         }

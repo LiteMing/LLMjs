@@ -4,6 +4,7 @@ import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.mojang.math.Axis;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphics;
@@ -13,11 +14,15 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.api.distmarker.OnlyIn;
+import vibe.liteming.llmjs.client.ConsoleColorStore;
 import vibe.liteming.llmjs.network.LLMNetwork;
 import vibe.liteming.llmjs.network.packet.C2SLogMutationPacket;
 
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 import static vibe.liteming.llmjs.client.ConsoleTexts.string;
 import static vibe.liteming.llmjs.client.ConsoleTexts.text;
@@ -46,7 +51,7 @@ public class LogPanel extends AbstractWidget {
             .disableHtmlEscaping()
             .create();
 
-    public enum ViewMode { LIVE, HISTORY, ALL }
+    public enum ViewMode { LIVE, HISTORY }
 
     // Detail (raw JSON) area character-level selection.
     // Each point is (logicalLine, charOffset) into unwrappedDetailLines.
@@ -67,11 +72,11 @@ public class LogPanel extends AbstractWidget {
     private record LogDisplayEntry(
             String text,
             int color,
-            int routeColor,
-            int modelColor,
             String requestId,
+            String provider,
             String model,
             String purpose,
+            String routeTag,
             String requestBody,
             String responseBody,
             String error,
@@ -161,6 +166,15 @@ public class LogPanel extends AbstractWidget {
         rebuildEntries();
     }
 
+    public List<String> colorTags(ConsoleColorStore.Group group) {
+        Set<String> tags = new LinkedHashSet<>(ConsoleColorStore.configuredTags(group));
+        for (LogDisplayEntry entry : allEntries) {
+            String tag = group == ConsoleColorStore.Group.ROUTE ? entry.routeTag() : entry.model();
+            if (tag != null && !tag.isBlank()) tags.add(tag);
+        }
+        return tags.stream().sorted(Comparator.comparing(String::toLowerCase)).toList();
+    }
+
     private void addEntry(String logEntryJson, boolean autoScroll, boolean historical) {
         try {
             JsonObject obj = JsonParser.parseString(logEntryJson).getAsJsonObject();
@@ -201,9 +215,16 @@ public class LogPanel extends AbstractWidget {
             String modelLabel = model.isBlank() ? "" : " / " + model;
             String text = String.format("[%s] %s%s%s%s%s | %s | %dms | %s", level, src, tag, actor,
                     provider, modelLabel, status, latency, summary);
-            int routeColor = colorFor(purpose.isBlank() ? provider : purpose, 0xFF55AAFF);
-            int modelColor = colorFor(model, 0xFFAAAAAA);
-            allEntries.add(new LogDisplayEntry(text, color, routeColor, modelColor, requestId, model, purpose,
+            String routeTag = purpose.isBlank() ? provider : purpose;
+            if (!requestId.isBlank()) {
+                boolean liveAlreadyPresent = allEntries.stream()
+                        .anyMatch(entry -> !entry.historical() && requestId.equals(entry.requestId()));
+                if (historical && liveAlreadyPresent) return;
+                if (!historical) {
+                    allEntries.removeIf(entry -> entry.historical() && requestId.equals(entry.requestId()));
+                }
+            }
+            allEntries.add(new LogDisplayEntry(text, color, requestId, provider, model, purpose, routeTag,
                     requestBody, responseBody, error,
                     responder, triggerSource, addressee, audience, inputKind, billingPrincipal, billingPrincipalId,
                     causalRootRequestId, finishReason, contentLength, historical));
@@ -221,23 +242,14 @@ public class LogPanel extends AbstractWidget {
             String haystack = (entry.text() + " " + entry.purpose() + " " + entry.model() + " "
                     + entry.requestBody() + " " + entry.responseBody()).toLowerCase(java.util.Locale.ROOT);
             if (!searchText.isBlank() && !haystack.contains(searchText)) continue;
-            if (!purposeFilter.isBlank() && !entry.purpose().toLowerCase(java.util.Locale.ROOT).contains(purposeFilter)) continue;
-            if (!modelFilter.isBlank() && !entry.model().toLowerCase(java.util.Locale.ROOT).contains(modelFilter)) continue;
+            if (!purposeFilter.isBlank() && !entry.routeTag().equalsIgnoreCase(purposeFilter)) continue;
+            if (!modelFilter.isBlank() && !entry.model().equalsIgnoreCase(modelFilter)) continue;
             entries.add(entry);
         }
         selectionAnchor = -1;
         selectionEnd = -1;
         scrollOffset = Math.max(0, Math.min(scrollOffset, Math.max(0, entries.size() - 1)));
         invalidateDetailCache();
-    }
-
-    private static int colorFor(String value, int fallback) {
-        if (value == null || value.isBlank()) return fallback;
-        int h = value.hashCode() * 0x45d9f3b;
-        int r = 80 + ((h >>> 16) & 0x7F);
-        int g = 80 + ((h >>> 8) & 0x7F);
-        int b = 80 + (h & 0x7F);
-        return 0xFF000000 | (r << 16) | (g << 8) | b;
     }
 
     private void autoScrollToBottom() {
@@ -430,6 +442,11 @@ public class LogPanel extends AbstractWidget {
             for (int i = startIdx; i < endIdx; i++) {
                 LogDisplayEntry entry = entries.get(i);
                 int drawY = contentY + (i - startIdx) * LINE_HEIGHT;
+                int routeColor = ConsoleColorStore.resolve(ConsoleColorStore.Group.ROUTE,
+                        entry.routeTag(), 0xFF55AAFF);
+                int modelColor = ConsoleColorStore.resolve(ConsoleColorStore.Group.MODEL,
+                        entry.model(), 0xFFAAAAAA);
+                renderRowColors(graphics, drawY, routeColor, modelColor);
                 if (isSelected(i)) {
                     graphics.fill(getX() + 1, drawY - 1, getX() + width - 1, drawY + LINE_HEIGHT - 1, 0x553388FF);
                 }
@@ -438,9 +455,9 @@ public class LogPanel extends AbstractWidget {
                 String line = font.plainSubstrByWidth(entry.text, Math.max(8, width - reservedWidth));
                 // Purpose/route on the left and concrete model on the right make
                 // mixed routing chains scannable without reading every row.
-                graphics.fill(getX() + 1, drawY - 1, getX() + 3, drawY + LINE_HEIGHT - 1, entry.routeColor());
+                graphics.fill(getX() + 1, drawY - 1, getX() + 4, drawY + LINE_HEIGHT - 1, routeColor);
                 graphics.fill(getX() + width - 3, drawY - 1, getX() + width - 1,
-                        drawY + LINE_HEIGHT - 1, entry.modelColor());
+                        drawY + LINE_HEIGHT - 1, modelColor);
                 graphics.drawString(font, line, getX() + 4, drawY, entry.color, false);
                 if (canDelete) {
                     boolean deleteHovered = i == hoveredRow && isOverDelete(i, mouseX, mouseY);
@@ -520,6 +537,33 @@ public class LogPanel extends AbstractWidget {
                 graphics.renderTooltip(font, text("log.delete.tip"), mouseX, mouseY);
             }
         }
+    }
+
+    private void renderRowColors(GuiGraphics graphics, int drawY, int routeColor, int modelColor) {
+        int left = getX() + 1;
+        int right = getX() + width - 1;
+        int middle = left + (right - left) / 2;
+        int top = drawY - 1;
+        int bottom = drawY + LINE_HEIGHT - 1;
+        fillHorizontalGradient(graphics, left, top, middle, bottom,
+                withMaximumAlpha(routeColor, 0x88), routeColor & 0x00FFFFFF);
+        fillHorizontalGradient(graphics, middle, top, right, bottom,
+                modelColor & 0x00FFFFFF, withMaximumAlpha(modelColor, 0x88));
+    }
+
+    public static void fillHorizontalGradient(GuiGraphics graphics, int left, int top, int right, int bottom,
+            int leftColor, int rightColor) {
+        if (right <= left || bottom <= top) return;
+        graphics.pose().pushPose();
+        graphics.pose().translate(left, bottom, 0);
+        graphics.pose().mulPose(Axis.ZP.rotationDegrees(-90));
+        graphics.fillGradient(0, 0, bottom - top, right - left, leftColor, rightColor);
+        graphics.pose().popPose();
+    }
+
+    private static int withMaximumAlpha(int color, int maximumAlpha) {
+        int alpha = Math.min((color >>> 24) & 0xFF, maximumAlpha);
+        return (color & 0x00FFFFFF) | (alpha << 24);
     }
 
     // Draw the highlight for this display segment based on the current char selection.
